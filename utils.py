@@ -361,6 +361,16 @@ def compute_fid_and_is(gen_dir: str | Path, real_dir: str | Path):
     is_value, is_std = compute_is(gen_images)
     return fid_value, is_value, is_std
 
+def compute_metrics(gen_dir:str | Path, real_dir:str | Path, texts:list[str]) -> dict[str, float]:
+    real_images = _load_images_from_dir(real_dir)
+    gen_images = _load_images_from_dir(gen_dir)
+    metrics = {}
+    metrics['fid'] = compute_fid(real_images, gen_images)
+    metrics['is'] = compute_is(gen_images)
+    metrics['clipscore'] = compute_clipscore(gen_images, texts)
+    return metrics
+
+
 def compute_fid(real_images:torch.Tensor, gen_images:torch.Tensor) -> float:
     from torchmetrics.image.fid import FrechetInceptionDistance
     fid = FrechetInceptionDistance(feature=2048, normalize=False)
@@ -369,13 +379,13 @@ def compute_fid(real_images:torch.Tensor, gen_images:torch.Tensor) -> float:
     fid.update(gen_images,real=False)
     return float(fid.compute().item())
 
+
 def compute_is(gen_images:torch.Tensor) -> tuple[float, float]:
     from torchmetrics.image.inception import InceptionScore
     is_model = InceptionScore(normalize=False, splits=5)
     is_model.update(gen_images)
     is_mean, is_std = is_model.compute()
     return float(is_mean), float(is_std)
-
 
 
 def compute_clipscore(
@@ -422,6 +432,7 @@ def compute_clipscore(
     gen_images = gen_images.to(dev)
     metric.update(gen_images, cap_list)
     return float(metric.compute().item())
+
 
 
 
