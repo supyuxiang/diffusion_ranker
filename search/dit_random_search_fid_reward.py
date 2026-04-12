@@ -8,18 +8,15 @@ DiT Random Search with FID as Verifier (Inference-Time Scaling)
 - 初始化：前 ``init_random_samples`` 张图随机生成，用于初始化 μ̂, Σ̂
 - 迭代：每轮生成 K 批候选（不同 seed），选使 FID（解析式）相对 μ_ref, Σ_ref 下降最多的一批加入已选集
 
-**最终** FID / IS（及可选 KID）由 ``utils.compute_metrics``（torchmetrics）在生成目录与真实目录上计算，与
-``eval_dit_scaling_laws_rollout_level.py`` 一致。
+**最终** FID / IS 由 ``utils.compute_metrics``（torchmetrics）在生成目录与真实目录上计算。
 
 **权重精度**：``--dtype bf16|fp16|fp32``（见 ``utils.load_dit``），可选 ``--compile`` 加速 transformer。
 
 ``--imagenet_val`` 必须指向**已解压**的 ILSVRC val 图片根目录（递归搜索常见图片后缀）。
 autodl 镜像里 ``/root/autodl-pub/ImageNet/ILSVRC2012`` 只有 ``ILSVRC2012_img_val.tar`` 等压缩包，**不能**直接当路径用；请先解压（同目录 ``extract_imagenet.py`` 默认解压到 ``/root/autodl-tmp/imagenet/val``）。
 
-**无外网**：torch-fidelity / FID 用的 Inception 权重默认会从 GitHub 拉取。请在本机下载
-``weights-inception-2015-12-05-6726825d.pth``（torch-fidelity v0.2.0 release）拷到服务器
-``/root/autodl-pub/torch_fidelity_weights/`` 或 ``~/.cache/torch/hub/checkpoints/``，或设置环境变量
-``TORCH_FIDELITY_INCEPTION_WEIGHTS`` 指向该文件。详见 ``utils.resolve_fidelity_inception_weights_path``。
+**Inception 权重**：本脚本写死本地路径（见 ``INCEPTION_WEIGHTS_PATH``）；可运行
+``python3 scripts/download_torch_fidelity_inception_weights.py`` 预下载到同一路径。
 
 用法:
   CUDA_VISIBLE_DEVICES=0 python3 /root/diffusion_ranker_main/search_algoriths/dit_random_search_fid_reward.py \
@@ -31,8 +28,7 @@ autodl 镜像里 ``/root/autodl-pub/ImageNet/ILSVRC2012`` 只有 ``ILSVRC2012_im
     --num_candidates 8 \
     --init_random_samples 1024 \
     --deno_steps 10 \
-    --dtype bf16 \
-    --compile
+    --dtype bf16 
 """
 
 from __future__ import annotations
@@ -60,21 +56,7 @@ from dit_random_search_common import (
     rollout_dit_batch_fid_images,
 )
 
-from utils import compute_metrics, fid_features_to_statistics, fid_statistics_to_distance, load_dit, merge_fid_statistics, resolve_fidelity_inception_weights_path, set_seed
-
-
-def get_inception_feature_extractor(device: str):
-    from torch_fidelity.utils import create_feature_extractor
-
-    w = resolve_fidelity_inception_weights_path()
-    kw = dict(feature_extractor_weights_path=w) if w else {}
-    return create_feature_extractor(
-        "inception-v3-compat",
-        ["2048"],
-        cuda=(device == "cuda"),
-        verbose=False,
-        **kw,
-    )
+from utils import *
 
 
 def extract_features_from_images(
@@ -105,15 +87,13 @@ def extract_features_from_images(
             if isinstance(out, tuple):
                 out = out[0]
             feats_list.append(out.cpu().numpy())
-    return np.concatenate(feats_list, axis=0)
+    return np.concatenate(feats_list, axis=0) # [N, 2048]
 
 
 def compute_ref_statistics(real_dir: Path, device: str, cache_name: str = "imagenet_val") -> dict:
     from torch_fidelity.metric_fid import fid_input_id_to_statistics_cached
     from torch_fidelity.utils import create_feature_extractor
 
-    w = resolve_fidelity_inception_weights_path()
-    inc_kw = dict(feature_extractor_weights_path=w) if w else {}
     kwargs = dict(
         input2=str(real_dir),
         input2_cache_name=cache_name,
@@ -124,18 +104,11 @@ def compute_ref_statistics(real_dir: Path, device: str, cache_name: str = "image
         batch_size=64,
         verbose=True,
         cache=True,
-        **inc_kw,
+        feature_extractor_weights_path=INCEPTION_WEIGHTS_PATH,
     )
     feat_extractor = create_feature_extractor("inception-v3-compat", ["2048"], **kwargs)
     feat_layer = "2048"
     return fid_input_id_to_statistics_cached(2, feat_extractor, feat_layer, **kwargs)
-
-
-def _parse_fid_real_max_samples(s: str) -> int | None:
-    t = str(s).strip().lower()
-    if t in ("none", "null", ""):
-        return None
-    return int(t)
 
 
 @torch.inference_mode()
@@ -277,11 +250,6 @@ def parse_args() -> argparse.Namespace:
         choices=("fp32", "fp16", "bf16"),
         help="Pipeline weight dtype (see utils.load_dit). Default bf16.",
     )
-    p.add_argument(
-        "--compile",
-        action="store_true",
-        help="torch.compile(transformer) on CUDA (mode=reduce-overhead).",
-    )
     p.add_argument("--ref_cache_name", default="imagenet_val")
     p.add_argument(
         "--init_random_samples",
@@ -289,59 +257,31 @@ def parse_args() -> argparse.Namespace:
         default=1024,
         help="论文：前 N 张随机选择以初始化 μ̂, Σ̂，默认 1024",
     )
-    p.add_argument(
-        "--kid",
-        action="store_true",
-        help="最终 metrics 额外计算 KID（torchmetrics，更慢）。",
-    )
-    p.add_argument(
-        "--fid_real_max_samples",
-        type=_parse_fid_real_max_samples,
-        default=None,
-        help="最终 FID/KID 参考真实图上限；none 表示用目录内全部。默认 none。",
-    )
-    p.add_argument("--fid_real_subset_seed", type=int, default=0, help="参考子集抽样种子（仅当限制张数时）。")
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    assert args.deno_steps >= 1, "deno_steps 需 >= 1"
-    assert 0 <= args.init_random_samples <= args.num_samples, "init_random_samples 需在 [0, num_samples] 内"
-
     output_dir = Path(args.output_dir)
     imagenet_val = Path(args.imagenet_val).expanduser().resolve()
-    if not imagenet_val.is_dir():
-        raise FileNotFoundError(f"--imagenet_val is not a directory: {imagenet_val}")
-    print(f"Using ImageNet real dir: {imagenet_val}")
-
-    if resolve_fidelity_inception_weights_path() is None:
-        print(
-            "警告: 未找到本地 Inception 权重，将尝试经 torch.hub 从外网下载（国内无代理常失败）。"
-            " 请将 weights-inception-2015-12-05-6726825d.pth 放到 "
-            "/root/autodl-pub/torch_fidelity_weights/ 或设置 TORCH_FIDELITY_INCEPTION_WEIGHTS。"
-        )
 
     set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    print("1. 预计算真实集 FID 统计量 (torch_fidelity 缓存，供搜索阶段解析式 FID)...")
+    print("precompute real set FID statistics")
     ref_stats = compute_ref_statistics(imagenet_val, device, args.ref_cache_name)
     print(f"   μ_ref shape: {ref_stats['mu'].shape}, Σ_ref shape: {ref_stats['sigma'].shape}")
 
-    print("2. 加载 DiT...")
-    pipe = load_dit(args.model_name, device, dtype=args.dtype)
-    if args.compile and device == "cuda":
-        pipe.transformer = torch.compile(pipe.transformer, mode="reduce-overhead")
-        print("   torch.compile enabled (transformer)")
+    pipe = model_loader(args.model_name, device, dtype=args.dtype)
+    pipe.transformer = torch.compile(pipe.transformer, mode="reduce-overhead") # 加速 transformer
 
-    print("3. 创建 Inception 特征提取器 (搜索内在线特征)...")
+    print("create inception feature extractor")
     feat_extractor = get_inception_feature_extractor(device)
 
     init_stats = None
     n_init = 0
     if args.init_random_samples > 0:
-        print("4a. 随机初始化（论文：前 N 张）...")
+        print("randomly initialize")
         init_stats, n_init = init_random_samples_fid(
             pipe,
             feat_extractor,
@@ -353,9 +293,9 @@ def main() -> None:
             args.seed,
             guidance_scale=args.guidance_scale,
         )
-        print(f"   已初始化 {n_init} 张，μ̂ shape={init_stats['mu'].shape}")
+        print(f"initialized {n_init} samples, μ̂ shape={init_stats['mu'].shape}")
 
-    print("4b. 运行 Random Search (FID verifier)...")
+    print("run random search (FID verifier)")
     print(f"   deno_steps={args.deno_steps}, num_candidates={args.num_candidates}")
     run_random_search_fid(
         pipe,
@@ -388,17 +328,14 @@ def main() -> None:
                 "num_candidates": args.num_candidates,
                 "dtype": args.dtype,
                 "compile": bool(args.compile),
-                "kid_final": args.kid,
-                "fid_real_max_samples": args.fid_real_max_samples,
-                "fid_real_subset_seed": args.fid_real_subset_seed,
             },
             f,
             indent=2,
             ensure_ascii=False,
         )
-    print(f"\n完成。图像保存至 {output_dir}，配置: {log_path}")
+    print(f"\ncompleted. images saved to {output_dir}, config: {log_path}")
 
-    print("\n5. 最终 FID / IS（torchmetrics，与 rollout eval 一致）...")
+    print("\nfinal FID / IS (torchmetrics, same as rollout eval)")
     metrics = compute_metrics(
         output_dir,
         imagenet_val,
@@ -406,13 +343,10 @@ def main() -> None:
         real_cache_name=args.ref_cache_name,
         fid=True,
         isc=True,
-        kid=args.kid,
-        real_max_samples=args.fid_real_max_samples,
-        real_subset_seed=args.fid_real_subset_seed,
     )
     fid_val = metrics.get("FID", float("nan"))
     is_val = metrics.get("IS", float("nan"))
-    print(f"   FID: {fid_val:.2f}, IS: {is_val:.4f}" + (f", KID: {metrics['KID']:.6f}" if args.kid else ""))
+    print(f"   FID: {fid_val:.2f}, IS: {is_val:.4f}")
 
     out_metrics = {k: v for k, v in metrics.items() if isinstance(v, (int, float)) or v is None}
     with open(output_dir / "final_metrics.json", "w", encoding="utf-8") as f:

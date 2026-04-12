@@ -9,39 +9,25 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-# torch-fidelity InceptionV3 weights (same file as torch.hub would download from GitHub releases).
-FIDELITY_INCEPTION_WEIGHTS_FILENAME = "weights-inception-2015-12-05-6726825d.pth"
 
 
-def resolve_fidelity_inception_weights_path() -> str | None:
-    """Resolve local path to torch-fidelity Inception weights to avoid ``torch.hub`` download.
+INCEPTION_WEIGHTS_PATH = (
+    "/root/diffusion_ranker/third_party/torch_fidelity_weights/"
+    "weights-inception-2015-12-05-6726825d.pth"
+)
 
-    Order: env ``TORCH_FIDELITY_INCEPTION_WEIGHTS`` (must exist if set), then
-    ``<this_repo>/third_party/torch_fidelity_weights/``, ``/root/autodl-pub/torch_fidelity_weights/``,
-    ``~/.cache/torch/hub/checkpoints/``. Returns ``None`` if not found (online download may run).
 
-    On a networked machine, fetch then ``scp`` to the server (filename
-    ``weights-inception-2015-12-05-6726825d.pth`` from torch-fidelity GitHub releases v0.2.0).
-    """
-    env = os.environ.get("TORCH_FIDELITY_INCEPTION_WEIGHTS", "").strip()
-    if env:
-        p = Path(env).expanduser().resolve()
-        if not p.is_file():
-            raise FileNotFoundError(
-                f"TORCH_FIDELITY_INCEPTION_WEIGHTS={env!r} is not an existing file."
-            )
-        return str(p)
+def get_inception_feature_extractor(device: str):
+    from torch_fidelity.utils import create_feature_extractor
 
-    roots = [
-        Path(__file__).resolve().parent / "third_party" / "torch_fidelity_weights",
-        Path("/root/autodl-pub/torch_fidelity_weights"),
-        Path.home() / ".cache" / "torch" / "hub" / "checkpoints",
-    ]
-    for r in roots:
-        cand = r / FIDELITY_INCEPTION_WEIGHTS_FILENAME
-        if cand.is_file():
-            return str(cand.resolve())
-    return None
+    return create_feature_extractor(
+        "inception-v3-compat",
+        ["2048"],
+        cuda=(device == "cuda"),
+        verbose=False,
+        feature_extractor_weights_path=INCEPTION_WEIGHTS_PATH,
+    )
+    
 
 
 def _torchmetrics_inception_module_for_layer(weights_path: str | None, layer: str | int):
