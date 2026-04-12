@@ -16,12 +16,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-export CUDA_VISIBLE_DEVICES=5
+export CUDA_VISIBLE_DEVICES=2
 
-DIT_PATH="${DIT_PATH:-/data/yxfeng/models/dit_model}"
-IMAGENET_VAL="${IMAGENET_VAL:-/data/yxfeng/datasets/imagenet/val}"
-CLIP_MODEL_PATH="${CLIP_MODEL_PATH:-/data/yxfeng/models/clip/models--openai--clip-vit-large-patch14}"
-BASE_OUT="${BASE_OUT:-/data/yxfeng/eval_dit_random_search_clip_nc_sweep}"
+DIT_PATH="${DIT_PATH:-/root/autodl-tmp/models/dit_model}"
+IMAGENET_VAL="${IMAGENET_VAL:-/root/autodl-tmp/imagenet/val}"
+CLIP_MODEL_PATH="${CLIP_MODEL_PATH:-/root/autodl-tmp/openai_clip-vit-large-patch14}"
+BASE_OUT="${BASE_OUT:-/root/autodl-tmp/eval_dit_random_search_clipscore_nc_sweep}"
 SEED="${SEED:-42}"
 
 mkdir -p "$BASE_OUT"
@@ -29,7 +29,7 @@ mkdir -p "$BASE_OUT"
 SUMMARY="$BASE_OUT/sweep_summary.jsonl"
 : >"$SUMMARY"
 
-for k in 2 3 4 5 6 7 8; do
+for k in 2 4 8 16; do
   out="${BASE_OUT}/num_candidates_${k}"
   echo "========== num_candidates=${k} -> ${out} =========="
   python3 "${SCRIPT_DIR}/dit_random_search_clipscore.py" \

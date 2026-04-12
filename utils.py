@@ -189,7 +189,7 @@ def model_name2path(model_name:str) -> Path:
     from pathlib import Path
     assert model_name in ['dit-xl-2-256','google_ddpm-celebahq-256']
     if model_name == 'dit-xl-2-256':
-        return Path("/autodl-tmp/DiT-XL-2-256")
+        return Path("/root/autodl-tmp/DiT-XL-2-256")
     if model_name == 'google_ddpm-celebahq-256':
         return Path("/root/autodl-tmp/google_ddpm-celebahq-256")
 
