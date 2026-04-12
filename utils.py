@@ -556,6 +556,10 @@ def rollout_dit_with_steps(
     return img_counter
 
 
+
+
+
+
 @torch.inference_mode()
 def rollout_ddpm_with_steps(
     pipe,
@@ -571,10 +575,7 @@ def rollout_ddpm_with_steps(
     image_size: int = 256,
 ) -> int:
     """无条件 DDPM：按 ``num_inference_steps`` 独立采样，保存 ``{idx:05d}.png``（与 ``compute_metrics`` 递归读图兼容）。"""
-    if device is None:
-        device = set_device()
-    else:
-        device = torch.device(device)
+    device = device or set_device()
     save_dir.mkdir(parents=True, exist_ok=True)
     img_counter = 0
     num_batches = (num_samples + batch_size - 1) // batch_size
