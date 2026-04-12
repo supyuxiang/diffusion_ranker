@@ -322,13 +322,17 @@ def _remove_corrupted_images(gen_dir: str | Path) -> int:
 
 
 
-def compute_metrics(gen_dir:str | Path, real_dir:str | Path, texts:list[str]) -> dict[str, float]:
+def compute_metrics(gen_dir:str | Path, real_dir:str | Path) -> dict[str, float]:
     real_images = _load_images_from_dir(real_dir)
     gen_images = _load_images_from_dir(gen_dir)
     metrics = {}
     metrics['fid'] = compute_fid(real_images, gen_images)
     metrics['is'] = compute_is(gen_images)
-    metrics['clipscore'] = compute_clipscore(gen_images, texts)
+    labels_ls = [
+        int(path.split('_')[-1].split('.')[0]) for path in gen_dir.iterdir()
+    ]
+    prompts = imagenet_label2text_for_clipscore(labels_ls)
+    metrics['clipscore'] = compute_clipscore(gen_images, prompts)
     return metrics
 
 
@@ -369,13 +373,13 @@ def _imagenet_simple_labels_tuple() -> tuple[str, ...]:
     return tuple(str(x) for x in labels)
 
 
-def imagenet_idx2text_for_clipscore(idx_ls: list[int]) -> list[str]:
+def imagenet_label2text_for_clipscore(label_ls: list[int]) -> list[str]:
     """ImageNet 类索引 ``0 <= idx < 1000`` → 可读短名称（来自 :func:`imagenet_labels_json_path`）。"""
-    assert isinstance(idx_ls, list) and all(isinstance(idx, int) and 0 <= idx < 1000 for idx in idx_ls), f"idx_ls must be a list of int in [0, 999], got {idx_ls}"
+    assert isinstance(label_ls, list) and all(isinstance(label, int) and 0 <= label < 1000 for label in label_ls), f"label_ls must be a list of int in [0, 999], got {label_ls}"
     prompt_template = "a photo of a {label}"
     formatted_prompts = [
-        prompt_template.replace('{label}', _imagenet_simple_labels_tuple()[idx])
-        for idx in idx_ls
+        prompt_template.replace('{label}', _imagenet_simple_labels_tuple()[label])
+        for label in label_ls
     ]
     return formatted_prompts
 
@@ -383,7 +387,7 @@ def imagenet_idx2text_for_clipscore(idx_ls: list[int]) -> list[str]:
 
 def compute_clipscore(
     gen_images:torch.Tensor,
-    idx_ls:list[int],
+    prompts:list[str],
     *,
     clip_model_dir: str | Path | None = None,
     device: str | None = None,
@@ -397,16 +401,14 @@ def compute_clipscore(
     """
     from torchmetrics.multimodal.clip_score import CLIPScore
 
-    texts = imagenet_idx2text_for_clipscore(idx_ls)
-
     n = gen_images.shape[0]
-    if len(texts) == 1 and n > 1:
-        cap_list = list(texts) * n
-    elif len(texts) == n:
-        cap_list = list(texts)
+    if len(prompts) == 1 and n > 1:
+        cap_list = list(prompts) * n
+    elif len(prompts) == n:
+        cap_list = list(prompts)
     else:
         raise ValueError(
-            f"texts length ({len(texts)}) must be 1 or match number of images ({n})"
+            f"prompts length ({len(prompts)}) must be 1 or match number of images ({n})"
         )
 
     root = clip_model_dir or os.environ.get("CLIP_MODEL_DIR", "/autodl-tmp/openai_clip-vit-base-patch32")
@@ -425,8 +427,8 @@ def compute_clipscore(
     dev = device or str(set_device())
     metric = CLIPScore(model_name_or_path=model_id).to(dev)
     gen_images = gen_images.to(dev)
-    metric.update(gen_images, cap_list)
-    return float(metric.compute().item())
+    metric.update(gen_images, prompts)
+    return float(metric.compute().item()) # 0-100, higher is better
 
 
 # do not implement now
@@ -494,23 +496,23 @@ def rollout_dit_with_steps(
     pbar = tqdm(range(num_batches),desc=f"steps={num_steps}",leave=False)
     for batch_idx in pbar:
         batch_num_samples = min(batch_size, num_samples - batch_idx * batch_size)
-        labels_ls = torch.randint(0, num_classes, (batch_num_samples,), device=device).tolist() # [batch_size]
+        batch_labels_ls = torch.randint(0, num_classes, (batch_num_samples,), device=device).tolist() # [batch_size]
         gen = torch.Generator(device=device).manual_seed(seed + batch_idx) # build a generator for each batch
 
         out = pipe(
-            class_labels=labels_ls,
+            class_labels=batch_labels_ls,
             num_inference_steps=num_steps,
             guidance_scale=guidance_scale,
             generator=gen,
         ) # 
-        images = out.images # [batch_size, 3, 256, 256]
+        batch_images = out.images # [batch_size, 3, 256, 256]
 
         to_save: list[tuple[Path, Image.Image]] = []
-        for img in images:
+        for label, img in zip(batch_labels_ls, batch_images):
             if img_counter >= num_samples:
                 break
             img = _prepare_pil_for_save(img, image_size)
-            to_save.append((save_dir / f"{img_counter:05d}.png", img.copy()))
+            to_save.append((save_dir / f'image_{img_counter:05d}_{label:05d}.png', img.copy())) # save as png, save label info for clipscore
             img_counter += 1
 
         with ThreadPoolExecutor(max_workers=_ROLLOUT_SAVE_WORKERS) as ex:
@@ -531,7 +533,8 @@ def rollout_dit_with_steps(
     torch.cuda.empty_cache()
 
     return img_counter
-    
+
+
 
 
 
