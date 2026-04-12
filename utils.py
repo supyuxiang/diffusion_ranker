@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -350,16 +351,15 @@ def _remove_corrupted_images(gen_dir: str | Path) -> int:
 
 
 
+# def compute_fid_and_is(gen_dir: str | Path, real_dir: str | Path):
+#     from torchmetrics.image.fid import FrechetInceptionDistance
+#     from torchmetrics.image.inception import InceptionScore
 
-def compute_fid_and_is(gen_dir: str | Path, real_dir: str | Path):
-    from torchmetrics.image.fid import FrechetInceptionDistance
-    from torchmetrics.image.inception import InceptionScore
-
-    real_images = _load_images_from_dir(real_dir)
-    gen_images = _load_images_from_dir(gen_dir)
-    fid_value = compute_fid(real_images, gen_images)
-    is_value, is_std = compute_is(gen_images)
-    return fid_value, is_value, is_std
+#     real_images = _load_images_from_dir(real_dir)
+#     gen_images = _load_images_from_dir(gen_dir)
+#     fid_value = compute_fid(real_images, gen_images)
+#     is_value, is_std = compute_is(gen_images)
+#     return fid_value, is_value, is_std
 
 def compute_metrics(gen_dir:str | Path, real_dir:str | Path, texts:list[str]) -> dict[str, float]:
     real_images = _load_images_from_dir(real_dir)
@@ -388,9 +388,48 @@ def compute_is(gen_images:torch.Tensor) -> tuple[float, float]:
     return float(is_mean), float(is_std)
 
 
+# 离线标签：先运行 ``python3 scripts/build_imagenet_simple_labels.py``（从 autodl-pub devkit 生成 json）
+_DEFAULT_IMAGENET_LABELS_JSON = Path("/root/autodl-tmp/imagenet-simple-labels.json")
+
+
+def imagenet_labels_json_path() -> Path:
+    """``IMAGENET_LABELS_JSON`` 环境变量可覆盖默认路径。"""
+    return Path(
+        os.environ.get("IMAGENET_LABELS_JSON", str(_DEFAULT_IMAGENET_LABELS_JSON))
+    ).expanduser().resolve()
+
+
+@lru_cache(maxsize=1)
+def _imagenet_simple_labels_tuple() -> tuple[str, ...]:
+    """1000 个类名字符串；下标与 DiT / PyTorch ImageNet（WNID 字典序）一致。仅读 json 文件。"""
+    path = imagenet_labels_json_path()
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"ImageNet labels json not found: {path}. "
+            "Run once (offline): python3 scripts/build_imagenet_simple_labels.py"
+        )
+    with open(path, "r", encoding="utf-8") as f:
+        labels = json.load(f)
+    if not isinstance(labels, list) or len(labels) != 1000:
+        raise ValueError(f"expected list of 1000 strings in {path}")
+    return tuple(str(x) for x in labels)
+
+
+def imagenet_idx2text_for_clipscore(idx_ls: list[int]) -> list[str]:
+    """ImageNet 类索引 ``0 <= idx < 1000`` → 可读短名称（来自 :func:`imagenet_labels_json_path`）。"""
+    assert isinstance(idx_ls, list) and all(isinstance(idx, int) and 0 <= idx < 1000 for idx in idx_ls), f"idx_ls must be a list of int in [0, 999], got {idx_ls}"
+    prompt_template = "a photo of a {label}"
+    formatted_prompts = [
+        prompt_template.replace('{label}', _imagenet_simple_labels_tuple()[idx])
+        for idx in idx_ls
+    ]
+    return formatted_prompts
+
+
+
 def compute_clipscore(
     gen_images:torch.Tensor,
-    texts: list[str],
+    idx_ls:list[int],
     *,
     clip_model_dir: str | Path | None = None,
     device: str | None = None,
@@ -403,6 +442,8 @@ def compute_clipscore(
     ``/autodl-tmp/openai_clip-vit-base-patch32``。
     """
     from torchmetrics.multimodal.clip_score import CLIPScore
+
+    texts = imagenet_idx2text_for_clipscore(idx_ls)
 
     n = gen_images.shape[0]
     if len(texts) == 1 and n > 1:
