@@ -1,9 +1,9 @@
 """
 example:
-CUDA_VISIBLE_DEVICES=0 python /root/diffusion_ranker/dit_scaling_with_different_steps.py \
+CUDA_VISIBLE_DEVICES=2 python /root/diffusion_ranker/dit_scaling_with_different_steps.py \
     --model_name dit-xl-2-256 \
     --cfg 1.0 \
-    --batch_size 16 \
+    --batch_size 512 \
     --num_gen 50000 \
     --save_dir /root/autodl-tmp/outputs/dit_scaling_with_different_steps \
     --imagenet_val /root/autodl-tmp/imagenet/val
@@ -60,8 +60,11 @@ def main() -> None:
     base_save = Path(args.save_dir).expanduser().resolve()
     imagenet_val = Path(args.imagenet_val).expanduser().resolve()
 
+    out_dir_ls = []
+
     for deno_step in _DENO_STEP_LS:
-        out_dir = base_save / f"deno_step_{deno_step}"
+        out_dir = base_save / f"deno_step_{deno_step}_rollout"
+        out_dir_ls.append(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
         rollout_dit_with_steps(
@@ -74,16 +77,23 @@ def main() -> None:
             seed=args.seed,
             guidance_scale=args.cfg,
         )
-
-        metrics = compute_fid_is_clipscore(out_dir, imagenet_val)
+    metrics_path = base_save / "metrics_deno_step_summary.json"
+    metrics_dict: dict[str, list] = {
+        "deno_step": list(_DENO_STEP_LS),
+        "fid": [],
+        "is": [],
+        "is_std": [],
+        "clipscore": [],
+    }
+    for out_dir in out_dir_ls:
+        metrics = compute_fid_is_clipscore(out_dir, imagenet_val, device=device)
         metrics_serializable = {k: float(v) for k, v in metrics.items()}
-        print(f"Done! Saved to {out_dir}")
-        print(f"Metrics: {metrics_serializable}")
-
-        metrics_path = out_dir / f"metrics_deno_step_{deno_step}.json"
-        with open(metrics_path, "w", encoding="utf-8") as f:
-            json.dump(metrics_serializable, f, indent=2)
-        print(f"Metrics saved to {metrics_path}")
+        for k, v in metrics_serializable.items():
+            if k in metrics_dict:
+                metrics_dict[k].append(v)
+    with open(metrics_path, "w", encoding="utf-8") as f:
+        json.dump(metrics_dict, f, indent=2)
+    print(f"Metrics saved to {metrics_path}")
 
 
 if __name__ == "__main__":
