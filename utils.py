@@ -388,21 +388,14 @@ def compute_is(gen_images:torch.Tensor) -> tuple[float, float]:
     return float(is_mean), float(is_std)
 
 
-# 离线标签：先运行 ``python3 scripts/build_imagenet_simple_labels.py``（从 autodl-pub devkit 生成 json）
-_DEFAULT_IMAGENET_LABELS_JSON = Path("/root/autodl-tmp/imagenet-simple-labels.json")
-
-
-def imagenet_labels_json_path() -> Path:
-    """``IMAGENET_LABELS_JSON`` 环境变量可覆盖默认路径。"""
-    return Path(
-        os.environ.get("IMAGENET_LABELS_JSON", str(_DEFAULT_IMAGENET_LABELS_JSON))
-    ).expanduser().resolve()
-
 
 @lru_cache(maxsize=1)
 def _imagenet_simple_labels_tuple() -> tuple[str, ...]:
     """1000 个类名字符串；下标与 DiT / PyTorch ImageNet（WNID 字典序）一致。仅读 json 文件。"""
-    path = imagenet_labels_json_path()
+    # 离线标签：先运行 ``python3 scripts/build_imagenet_simple_labels.py``（从 autodl-pub devkit 生成 json）
+    _DEFAULT_IMAGENET_LABELS_JSON = Path("/root/diffusion_ranker/imagenet-simple-labels.json")
+
+    path = _DEFAULT_IMAGENET_LABELS_JSON.expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(
             f"ImageNet labels json not found: {path}. "
