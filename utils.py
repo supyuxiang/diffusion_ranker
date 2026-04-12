@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -217,12 +218,12 @@ def _dtype_str_to_torch(dtype: str) -> torch.dtype:
     raise ValueError(f"Unknown dtype {dtype!r}; use fp32|fp16|bf16")
 
 
-def dit_laoder(
+def dit_loader(
     model_name: str | Path,
     device: str,
     *,
     dtype: str = 'fp16',
-) -> DiTPipeline | DDPMPipeline:
+) -> DiTPipeline:
     """Load DiT pipeline. Prefer ``dtype=`` over legacy ``fp16=`` (fp32 / fp16 / bf16)."""
     from diffusers import DiTPipeline, DPMSolverMultistepScheduler, DDPMPipeline
     model_path = model_name if isinstance(model_name, Path) else model_name2path(model_name)
@@ -258,9 +259,9 @@ def ddpm_loader(
 
 def model_loader(model_name:str, device:str, dtype:str='fp16') -> DiTPipeline | DDPMPipeline:
     if model_name == 'dit-xl-2-256':
-        return load_dit(model_name, device, dtype=dtype)
+        return dit_loader(model_name, device, dtype=dtype)
     if model_name == 'google_ddpm-celebahq-256':
-        return load_ddpm(model_name, device, dtype=dtype)
+        return ddpm_loader(model_name, device, dtype=dtype)
     raise ValueError(f"Unknown model name: {model_name}")
 
 ##########################################################
@@ -444,7 +445,93 @@ def compute_Recall(gen_dir:str | Path, real_dir:str | Path) -> float:
 
 
 
-###########  baseline verifier    ############
+###########  my pipeline    ############
+
+def _prepare_pil_for_save(img: Image.Image, target_short: int) -> Image.Image:
+    """Prepare PIL image for saving. Resize if necessary."""
+    if img.size != (target_short, target_short):
+        return img.resize((target_short, target_short), Image.Resampling.LANCZOS)
+    return img # no resize
+
+
+def _save_pil_task(path: Path, img: Image.Image, *, fmt: str, jpeg_quality: int, png_compress_level: int) -> None:
+    if fmt == "jpeg":
+        img.save(path, quality=jpeg_quality, subsampling=0)
+    else:
+        img.save(path, compress_level=png_compress_level)
+
+
+_ROLLOUT_SAVE_WORKERS = 4
+
+
+@torch.inference_mode()
+def rollout_dit_with_steps(
+    pipe: DiTPipeline,
+    save_dir: Path,
+    num_steps: int,
+    num_samples: int,
+    batch_size: int,
+    device: str=set_device(),
+    seed: int=42,
+    guidance_scale: float = 1.0,
+    *,
+    jpeg_quality: int = 92,
+    png_compress_level: int = 1,
+    image_size: int = 256,
+):
+    """
+    For each batch: call ``DiTPipeline.__call__`` with ``num_inference_steps=num_steps`` so the
+    scheduler uses an independent full trajectory (same semantics as the former manual loop).
+
+    This is not inherently faster than a hand-written loop (both step over timesteps in Python);
+    speed comes from ``torch.compile``, fp16, and batch size. Using the official API keeps parity
+    with diffusers and avoids duplicating CFG / sigma-split logic.
+    """
+    num_classes = 1000 # for imagenet dataset
+    img_counter = 0
+    num_batches = (num_samples + batch_size - 1) // batch_size
+
+    pbar = tqdm(range(num_batches),desc=f"steps={num_steps}",leave=False)
+    for batch_idx in pbar:
+        batch_num_samples = min(batch_size, num_samples - batch_idx * batch_size)
+        labels_ls = torch.randint(0, num_classes, (batch_num_samples,), device=device).tolist() # [batch_size]
+        gen = torch.Generator(device=device).manual_seed(seed + batch_idx) # build a generator for each batch
+
+        out = pipe(
+            class_labels=labels_ls,
+            num_inference_steps=num_steps,
+            guidance_scale=guidance_scale,
+            generator=gen,
+        ) # 
+        images = out.images # [batch_size, 3, 256, 256]
+
+        to_save: list[tuple[Path, Image.Image]] = []
+        for img in images:
+            if img_counter >= num_samples:
+                break
+            img = _prepare_pil_for_save(img, image_size)
+            to_save.append((save_dir / f"{img_counter:05d}.png", img.copy()))
+            img_counter += 1
+
+        with ThreadPoolExecutor(max_workers=_ROLLOUT_SAVE_WORKERS) as ex:
+            futures = [
+                ex.submit(
+                    _save_pil_task,
+                    path,
+                    im,
+                    fmt="png",
+                    jpeg_quality=jpeg_quality,
+                    png_compress_level=png_compress_level,
+                )
+                for path, im in to_save
+            ]
+            for fut in as_completed(futures):
+                fut.result()
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return img_counter
+    
 
 
 
@@ -461,7 +548,7 @@ def baseline_fid_verifier(model_name:str, cfg:float, denoising_steps:int=10) -> 
         seed = Constants_default['seed']
         set_seed(seed)
         device = set_device()
-        pipe = load_dit(model_name, device, fp16=True)
+        pipe = model_loader(model_name, device, dtype='fp16')
         pipe.scheduler.set_timesteps(denoising_steps)
         pbar = tqdm(pipe.scheduler.timesteps, desc=f'{model_name}-{cfg}-{parallel_size}')
         
