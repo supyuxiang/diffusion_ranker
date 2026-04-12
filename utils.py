@@ -357,22 +357,36 @@ def compute_fid_and_is(gen_dir: str | Path, real_dir: str | Path):
 
     real_images = _load_images_from_dir(real_dir)
     gen_images = _load_images_from_dir(gen_dir)
+    fid_value = compute_fid(real_images, gen_images)
+    is_value, is_std = compute_is(gen_images)
+    return fid_value, is_value, is_std
+
+def compute_fid(real_images:torch.Tensor, gen_images:torch.Tensor) -> float:
+    from torchmetrics.image.fid import FrechetInceptionDistance
     fid = FrechetInceptionDistance(feature=2048, normalize=False)
     fid.set_dtype(torch.float64)
-    fid.update(real_images, real=True)
-    fid.update(gen_images, real=False)
-    fid_val = float(fid.compute().item())
+    fid.update(real_images,real=True)
+    fid.update(gen_images,real=False)
+    return float(fid.compute().item())
+
+def compute_is(gen_images:torch.Tensor) -> tuple[float, float]:
+    from torchmetrics.image.inception import InceptionScore
     is_model = InceptionScore(normalize=False, splits=5)
     is_model.update(gen_images)
     is_mean, is_std = is_model.compute()
-    return fid_val, is_mean, is_std
+    return float(is_mean), float(is_std)
 
 
-def compute_clipscore(gen_dir:str):
+
+def compute_clipscore(gen_dir:str, texts:list[str]) -> float:
     from torchmetrics.multimodal.clip_score import CLIPScore
     from torchvision.transforms.functional import pil_to_tensor
-
-    metric = CLIPScore(model_name_or_path="openai/clip-vit-base-patch32").to(device)
+    clip_path = Path("/autodl-tmp/openai_clip-vit-base-patch32")
+    if not clip_path.is_dir():
+        raise FileNotFoundError(f"Missing {clip_path}; place the CLIP checkpoint under {clip_path} (e.g. huggingface-cli download).")
+    metrics = CLIPScore(model_name_or_path=clip_path)
+    metrics.update(gen_images, texts)
+    return float(metrics.compute().item())
 
 
 
