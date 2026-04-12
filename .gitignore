@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Secrets & local env
+.env
+.env.*
+*.pem
+
+# Data & checkpoints (keep code only on GitHub)
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.bin
+*.h5
+*.npz
+data/
+datasets/
+outputs/
+wandb/
+
+# Logs
+*.log
