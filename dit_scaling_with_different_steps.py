@@ -59,8 +59,6 @@ def main() -> None:
 
     base_save = Path(args.save_dir).expanduser().resolve()
     imagenet_val = Path(args.imagenet_val).expanduser().resolve()
-    if not imagenet_val.is_dir():
-        raise FileNotFoundError(f"--imagenet_val is not a directory: {imagenet_val}")
 
     for deno_step in _DENO_STEP_LS:
         out_dir = base_save / f"deno_step_{deno_step}"

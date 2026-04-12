@@ -63,7 +63,7 @@ sys.path.insert(0, str(_ROOT))
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
-from utils import ensure_image_reward_on_path, load_dit, set_seed
+from utils import ensure_image_reward_on_path, model_loader, set_seed
 
 NUM_IMAGENET_CLASSES = 1000
 NULL_CLASS_ID = 1000
@@ -625,7 +625,11 @@ def main() -> None:
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    pipe = load_dit(args.model_name, str(device), fp16=args.fp16)
+    pipe = model_loader(
+        args.model_name,
+        device,
+        dtype="fp16" if args.fp16 else "fp32",
+    )
     n_blocks = len(pipe.transformer.transformer_blocks)
     hidden_layer_idx = resolve_hidden_layer_idx(n_blocks, args.layer_ratio, args.hidden_layer_idx)
     dit_hidden_dim = int(pipe.transformer.inner_dim)

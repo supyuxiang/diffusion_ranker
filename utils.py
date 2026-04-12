@@ -244,12 +244,31 @@ def ddpm_loader(
     return pipe
 
 
-def model_loader(model_name:str, device: torch.device, dtype:str='fp16') -> DiTPipeline | DDPMPipeline:
-    if model_name == 'dit-xl-2-256':
-        return dit_loader(model_name, device=device, dtype=dtype)
-    if model_name == 'google_ddpm-celebahq-256':
-        return ddpm_loader(model_name, device=device, dtype=dtype)
-    raise ValueError(f"Unknown model name: {model_name}")
+def model_loader(
+    model_name: str | Path,
+    device: torch.device | str,
+    dtype: str = "fp16",
+) -> DiTPipeline | DDPMPipeline:
+    """加载 DiT 或 DDPM。
+
+    - 注册名：``dit-xl-2-256``、``google_ddpm-celebahq-256``（走 :func:`model_name2path`）。
+    - **本地目录**：``Path`` 或已存在的目录字符串 → 按 DiT ``DiTPipeline`` 加载。
+    """
+    dev = torch.device(device) if isinstance(device, str) else device
+    if isinstance(model_name, Path):
+        return dit_loader(model_name.expanduser().resolve(), device=dev, dtype=dtype)
+    s = str(model_name).strip()
+    p = Path(s).expanduser()
+    if p.is_dir():
+        return dit_loader(p.resolve(), device=dev, dtype=dtype)
+    if s == "dit-xl-2-256":
+        return dit_loader(s, device=dev, dtype=dtype)
+    if s == "google_ddpm-celebahq-256":
+        return ddpm_loader(s, device=dev, dtype=dtype)
+    raise ValueError(
+        f"Unknown model_name={model_name!r}; use dit-xl-2-256, google_ddpm-celebahq-256, "
+        "or a local DiT checkpoint directory path."
+    )
 
 
 ############    compute metrics    ############
@@ -376,6 +395,11 @@ def _imagenet_simple_labels_tuple() -> tuple[str, ...]:
     if not isinstance(labels, list) or len(labels) != 1000:
         raise ValueError(f"expected list of 1000 strings in {path}")
     return tuple(str(x) for x in labels)
+
+
+def imagenet_simple_labels_list() -> list[str]:
+    """1000 个类名（list），下标与 DiT / ImageNet 一致；数据来自仓库 ``imagenet-simple-labels.json``。"""
+    return list(_imagenet_simple_labels_tuple())
 
 
 def imagenet_label2text_for_clipscore(label_ls: list[int]) -> list[str]:

@@ -45,7 +45,7 @@ import train_ranker_imagenet as tr
 from dit_random_search_common import (
     CANDIDATE_SEED_HIGH,
     init_random_samples,
-    load_dit,
+    model_loader,
     rollout_dit_batch_with_pooled_hidden,
 )
 from utils import compute_fid_and_is, setup_seed
@@ -223,7 +223,11 @@ def main() -> None:
     ranker = ranker.to(device_torch)
 
     print("1. 加载 DiT...")
-    pipe = load_dit(Path(dit_path), device_str, fp16=args.fp16)
+    pipe = model_loader(
+        Path(dit_path),
+        device_torch,
+        dtype="fp16" if args.fp16 else "fp32",
+    )
     hidden_layer_idx = resolve_pipe_and_layer(pipe, cfg)
     n_blocks = len(pipe.transformer.transformer_blocks)
     print(f"   capture_block={hidden_layer_idx}/{n_blocks}, deno_steps={deno_steps_cfg}, guidance={guidance_cfg}")

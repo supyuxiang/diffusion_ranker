@@ -10,7 +10,7 @@ DiT Random Search with FID as Verifier (Inference-Time Scaling)
 
 **最终** FID / IS 由 ``utils.compute_metrics``（torchmetrics）在生成目录与真实目录上计算。
 
-**权重精度**：``--dtype bf16|fp16|fp32``（见 ``utils.load_dit``），可选 ``--compile`` 加速 transformer。
+**权重精度**：``--dtype bf16|fp16|fp32``（见 ``utils.model_loader``），可选 ``--compile`` 加速 transformer。
 
 ``--imagenet_val`` 必须指向**已解压**的 ILSVRC val 图片根目录（递归搜索常见图片后缀）。
 autodl 镜像里 ``/root/autodl-pub/ImageNet/ILSVRC2012`` 只有 ``ILSVRC2012_img_val.tar`` 等压缩包，**不能**直接当路径用；请先解压（同目录 ``extract_imagenet.py`` 默认解压到 ``/root/autodl-tmp/imagenet/val``）。
@@ -84,8 +84,6 @@ def extract_features_from_images(
             if device == "cuda":
                 tensors = tensors.cuda(non_blocking=True)
             out = feat_extractor(tensors)
-            if isinstance(out, tuple):
-                out = out[0]
             feats_list.append(out.cpu().numpy())
     return np.concatenate(feats_list, axis=0) # [N, 2048]
 
@@ -248,7 +246,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="bf16",
         choices=("fp32", "fp16", "bf16"),
-        help="Pipeline weight dtype (see utils.load_dit). Default bf16.",
+        help="Pipeline weight dtype (see utils.model_loader). Default bf16.",
     )
     p.add_argument("--ref_cache_name", default="imagenet_val")
     p.add_argument(

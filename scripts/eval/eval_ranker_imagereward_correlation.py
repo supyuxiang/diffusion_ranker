@@ -27,7 +27,7 @@ sys.path.insert(0, str(_ROOT))
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 import train_ranker_imagenet as tr
-from utils import load_dit
+from utils import model_loader
 
 NUM_IMAGENET_CLASSES = getattr(tr, "NUM_IMAGENET_CLASSES", 1000)
 EPS = 1e-12
@@ -86,7 +86,7 @@ def load_cfg_and_ranker(ranker_dir: Path, ckpt_name: str, device: torch.device):
         cfg = json.load(f)
 
     fp16 = bool(cfg.get("fp16", True))
-    pipe = load_dit(cfg["dit_path"], str(device), fp16=fp16)
+    pipe = model_loader(cfg["dit_path"], device, dtype="fp16" if fp16 else "fp32")
     n_blocks = len(pipe.transformer.transformer_blocks)
     hidden_layer_idx = tr.resolve_hidden_layer_idx(
         n_blocks,

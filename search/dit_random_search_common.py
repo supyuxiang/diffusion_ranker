@@ -8,9 +8,7 @@ DiT Random Search 脚本共用：随机类条件 rollout、ImageNet 标签、ini
 
 from __future__ import annotations
 
-import json
 import sys
-import urllib.request
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from pathlib import Path
 from typing import Callable
@@ -25,7 +23,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from utils import load_dit
+from utils import _prepare_pil_for_save, imagenet_simple_labels_list, model_loader
 
 ##########################################
 IMAGENET_NUM_CLASSES = 1000
@@ -38,21 +36,16 @@ CANDIDATE_SEED_HIGH = 2**31
 
 
 def load_imagenet_simple_labels(cache_dir: Path | None = None) -> list[str]:
-    cache_dir = cache_dir or (Path.home() / ".cache" / "diffusion_ranker")
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    path = cache_dir / "imagenet-simple-labels.json"
-    url = "https://raw.githubusercontent.com/anishathalye/imagenet-simple-labels/master/imagenet-simple-labels.json"
-    if not path.exists():
-        try:
-            urllib.request.urlretrieve(url, path)
-        except Exception as e:
-            print(f"警告: 无法下载 ImageNet 标签 ({e})，将使用占位 prompt。")
-            return [f"imagenet class {i}" for i in range(1000)]
-    with open(path, "r", encoding="utf-8") as f:
-        labels = json.load(f)
-    if len(labels) != 1000:
+    """与 ``utils.imagenet_simple_labels_list`` 同源（仓库 ``imagenet-simple-labels.json``）。
+
+    ``cache_dir`` 已弃用，保留仅为兼容旧调用。
+    """
+    _ = cache_dir
+    try:
+        return imagenet_simple_labels_list()
+    except (FileNotFoundError, ValueError) as e:
+        print(f"警告: ImageNet 标签未就绪 ({e})，将使用占位名。请运行 scripts/build_imagenet_simple_labels.py")
         return [f"imagenet class {i}" for i in range(1000)]
-    return labels
 
 
 def prompt_for_class(labels: list[str], class_id: int, template: str) -> str:
@@ -185,7 +178,7 @@ def _decode_latents_to_pil(
     samples = (samples / 2 + 0.5).clamp(0, 1)
     samples_np = samples.cpu().permute(0, 2, 3, 1).float().detach().numpy()
     images = pipe.numpy_to_pil(samples_np)
-    return [img.resize((OUTPUT_IMAGE_SIZE, OUTPUT_IMAGE_SIZE), Image.LANCZOS) for img in images]
+    return [_prepare_pil_for_save(img, OUTPUT_IMAGE_SIZE) for img in images]
 
 
 def rollout_dit_batch(
@@ -312,7 +305,8 @@ def init_random_samples(
         for img in batch_images:
             if img_counter >= init_samples:
                 break
-            img.save(output_dir / f"{img_counter:06d}.png")
+            im = _prepare_pil_for_save(img, OUTPUT_IMAGE_SIZE)
+            im.save(output_dir / f"{img_counter:06d}.png")
             img_counter += 1
     return img_counter
 
@@ -324,7 +318,7 @@ __all__ = [
     "NULL_CLASS_ID",
     "OUTPUT_IMAGE_SIZE",
     "init_random_samples",
-    "load_dit",
+    "model_loader",
     "load_imagenet_simple_labels",
     "prompt_for_class",
     "rollout_dit_batch",

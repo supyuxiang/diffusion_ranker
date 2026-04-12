@@ -45,8 +45,8 @@ import ImageReward as RM
 from dit_random_search_common import (
     CANDIDATE_SEED_HIGH,
     init_random_samples,
-    load_dit,
     load_imagenet_simple_labels,
+    model_loader,
     prompt_for_class,
     rollout_dit_batch,
 )
@@ -176,7 +176,11 @@ def main() -> None:
     reward_model = RM.load("ImageReward-v1.0")
 
     print("2. 加载 DiT...")
-    pipe = load_dit(Path(args.dit_path), device, fp16=args.fp16)
+    pipe = model_loader(
+        Path(args.dit_path),
+        device,
+        dtype="fp16" if args.fp16 else "fp32",
+    )
 
     n_init = 0
     if args.init_random_samples > 0:

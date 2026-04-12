@@ -23,7 +23,7 @@ import torch
 from diffusers import DiTPipeline
 from diffusers.utils.torch_utils import randn_tensor
 
-from utils import Constants_default, load_dit, set_device, set_seed
+from utils import Constants_default, model_loader, set_device, set_seed
 
 
 
@@ -131,7 +131,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     device = set_device()
-    pipe_dit = load_dit(Constants_default["model_name"], device, fp16=True)
+    pipe_dit = model_loader(Constants_default["model_name"], device, dtype="fp16")
     seed = Constants_default["seed"]
     set_seed(seed)
 
