@@ -378,15 +378,50 @@ def compute_is(gen_images:torch.Tensor) -> tuple[float, float]:
 
 
 
-def compute_clipscore(gen_dir:str, texts:list[str]) -> float:
+def compute_clipscore(
+    gen_images:torch.Tensor,
+    texts: list[str],
+    *,
+    clip_model_dir: str | Path | None = None,
+    device: str | None = None,
+) -> float:
+    """Mean CLIPScore (0–100) between images under ``gen_dir`` and ``texts``.
+
+    ``torchmetrics`` 要求 ``model_name_or_path`` 为 **str**（内部用 ``"openai" in path`` 选加载分支）；
+    本地目录名需包含 ``openai``（如 ``.../openai_clip-vit-base-patch32``），否则会报
+    ``Invalid model_name_or_path``。未提供 ``clip_model_dir`` 时用环境变量 ``CLIP_MODEL_DIR`` 或默认
+    ``/autodl-tmp/openai_clip-vit-base-patch32``。
+    """
     from torchmetrics.multimodal.clip_score import CLIPScore
-    from torchvision.transforms.functional import pil_to_tensor
-    clip_path = Path("/autodl-tmp/openai_clip-vit-base-patch32")
+
+    n = gen_images.shape[0]
+    if len(texts) == 1 and n > 1:
+        cap_list = list(texts) * n
+    elif len(texts) == n:
+        cap_list = list(texts)
+    else:
+        raise ValueError(
+            f"texts length ({len(texts)}) must be 1 or match number of images ({n})"
+        )
+
+    root = clip_model_dir or os.environ.get("CLIP_MODEL_DIR", "/autodl-tmp/openai_clip-vit-base-patch32")
+    clip_path = Path(root).expanduser().resolve()
     if not clip_path.is_dir():
-        raise FileNotFoundError(f"Missing {clip_path}; place the CLIP checkpoint under {clip_path} (e.g. huggingface-cli download).")
-    metrics = CLIPScore(model_name_or_path=clip_path)
-    metrics.update(gen_images, texts)
-    return float(metrics.compute().item())
+        raise FileNotFoundError(
+            f"Missing CLIP dir {clip_path}; set CLIP_MODEL_DIR or huggingface-cli download."
+        )
+    model_id = str(clip_path)
+    if "openai" not in model_id:
+        raise ValueError(
+            "torchmetrics CLIPScore only accepts local paths whose string contains 'openai'; "
+            f"got {model_id!r}. Use e.g. openai_clip-vit-base-patch32 or pass HF id via a symlink name."
+        )
+
+    dev = device or str(set_device())
+    metric = CLIPScore(model_name_or_path=model_id).to(dev)
+    gen_images = gen_images.to(dev)
+    metric.update(gen_images, cap_list)
+    return float(metric.compute().item())
 
 
 
