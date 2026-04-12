@@ -1,6 +1,6 @@
 """
 example:
-CUDA_VISIBLE_DEVICES=2 python /root/diffusion_ranker/dit_scaling_with_different_steps.py \
+CUDA_VISIBLE_DEVICES=0 python /root/diffusion_ranker/dit_scaling_with_different_steps.py \
     --model_name dit-xl-2-256 \
     --cfg 1.0 \
     --batch_size 512 \

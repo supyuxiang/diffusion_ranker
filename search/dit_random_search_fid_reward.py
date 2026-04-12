@@ -8,7 +8,7 @@ DiT Random Search with FID as Verifier (Inference-Time Scaling)
 - 初始化：前 ``init_random_samples`` 张图随机生成，用于初始化 μ̂, Σ̂
 - 迭代：每轮生成 K 批候选（不同 seed），选使 FID（解析式）相对 μ_ref, Σ_ref 下降最多的一批加入已选集
 
-**最终** FID / IS 由 ``utils.compute_metrics``（torchmetrics）在生成目录与真实目录上计算。
+**最终** FID / IS 由 ``utils.compute_fid_is_from_dirs``（``torch_fidelity``）在生成目录与真实目录上计算。
 
 **权重精度**：``--dtype bf16|fp16|fp32``（见 ``utils.model_loader``），可选 ``--compile`` 加速 transformer。
 
@@ -63,7 +63,7 @@ def extract_features_from_images(
     images: list[Image.Image],
     feat_extractor,
     device: str,
-    batch_size: int = 64,
+    batch_size: int = 512,
 ) -> np.ndarray:
     from torch_fidelity.datasets import TransformPILtoRGBTensor
 
@@ -99,7 +99,7 @@ def compute_ref_statistics(real_dir: Path, device: str, cache_name: str = "image
         samples_find_ext="png,jpg,jpeg,JPEG,JPG",
         samples_resize_and_crop=256,
         cuda=(device == "cuda"),
-        batch_size=64,
+        batch_size=512,
         verbose=True,
         cache=True,
         feature_extractor_weights_path=INCEPTION_WEIGHTS_PATH,
@@ -333,14 +333,12 @@ def main() -> None:
         )
     print(f"\ncompleted. images saved to {output_dir}, config: {log_path}")
 
-    print("\nfinal FID / IS (torchmetrics, same as rollout eval)")
-    metrics = compute_metrics(
+    print("\nfinal FID / IS (torch_fidelity)")
+    metrics = compute_fid_is_from_dirs(
         output_dir,
         imagenet_val,
         device,
-        real_cache_name=args.ref_cache_name,
-        fid=True,
-        isc=True,
+        batch_size=64,
     )
     fid_val = metrics.get("FID", float("nan"))
     is_val = metrics.get("IS", float("nan"))

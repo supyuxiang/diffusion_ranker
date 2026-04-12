@@ -30,20 +30,6 @@ def get_inception_feature_extractor(device: str):
     
 
 
-def _torchmetrics_inception_module_for_layer(weights_path: str | None, layer: str | int):
-    """Return ``NoTrainInceptionV3`` with local weights, or the string/int layer id for default download."""
-    from torchmetrics.image.fid import NoTrainInceptionV3
-
-    if weights_path:
-        return NoTrainInceptionV3(
-            "inception-v3-compat",
-            [str(layer)],
-            feature_extractor_weights_path=weights_path,
-        )
-    return layer
-
-
-
 from PIL import Image
 from tqdm import tqdm
 import torch
@@ -94,26 +80,6 @@ Constants_ls = {
 }
 
 
-
-def image_reward_repo_root() -> Path:
-    """Directory that contains the ``ImageReward`` package (for ``import ImageReward``).
-
-    Order: ``IMAGEREWARD_ROOT`` env → ``/root/ImageReward-main`` if it exists →
-    ``<diffusion_ranker_repo>/../ImageReward-main`` (sibling of this package).
-    """
-    if os.environ.get("IMAGEREWARD_ROOT"):
-        return Path(os.environ["IMAGEREWARD_ROOT"]).expanduser().resolve()
-    preferred = Path("/root/ImageReward-main")
-    if preferred.is_dir():
-        return preferred
-    return (Path(__file__).resolve().parent.parent / "ImageReward-main").resolve()
-
-
-def ensure_image_reward_on_path() -> None:
-    """Prepend :func:`image_reward_repo_root` to ``sys.path`` when that directory exists."""
-    root = image_reward_repo_root()
-    if root.is_dir() and str(root) not in sys.path:
-        sys.path.insert(0, str(root))
 
 
 Constants_default = {
@@ -205,6 +171,8 @@ def _dtype_str_to_torch(dtype: str) -> torch.dtype:
     raise ValueError(f"Unknown dtype {dtype!r}; use fp32|fp16|bf16")
 
 
+
+### model loader ########################################################
 def dit_loader(
     model_name: str | Path,
     device: torch.device,
@@ -306,29 +274,59 @@ def _remove_corrupted_images(gen_dir: str | Path) -> int:
     return removed
 
 
-def compute_metrics(
+def _fidelity_images_dataset(
+    directory: Path,
+    *,
+    resize_crop: int,
+    find_deep: bool,
+    exts: str,
+    max_samples: int | None,
+    subset_seed: int,
+):
+    """``torch_fidelity`` 风格：glob → 可选子采样 → Resize/CenterCrop → uint8 RGB tensor。"""
+    import random as _random
+
+    import torchvision.transforms as T
+    from torch_fidelity.datasets import ImagesPathDataset, TransformPILtoRGBTensor
+    from torch_fidelity.utils import glob_samples_paths
+
+    directory = directory.expanduser().resolve()
+    paths = glob_samples_paths(str(directory), find_deep, exts, None, verbose=False)
+    if not paths:
+        raise FileNotFoundError(f"No images in {directory} (exts={exts!r}, deep={find_deep})")
+    if max_samples is not None and len(paths) > max_samples:
+        rng = _random.Random(subset_seed)
+        paths = paths.copy()
+        rng.shuffle(paths)
+        paths = paths[:max_samples]
+    tfms: list = []
+    if resize_crop > 0:
+        tfms += [T.Resize(resize_crop), T.CenterCrop(resize_crop)]
+    tfms.append(TransformPILtoRGBTensor())
+    return ImagesPathDataset(paths, T.Compose(tfms))
+
+
+def compute_fid_is_from_dirs(
     gen_dir: str | Path,
     real_dir: str | Path,
     device: str | torch.device,
     *,
-    real_cache_name: str = "ref",
-    fid: bool = True,
-    isc: bool = True,
-    kid: bool = False,
-    prc: bool = False,
-    real_max_samples: int | None = None,
-    real_subset_seed: int = 0,
-    gen_max_samples: int | None = None,
-    gen_subset_seed: int = 0,
     batch_size: int = 64,
-) -> dict[str, float | None]:
-    """目录级 FID / IS /（可选）KID：``rglob`` 读图，分批 ``update`` 进 torchmetrics。
+    samples_resize_and_crop: int = 256,
+    samples_find_deep: bool = True,
+    samples_find_ext: str = "png,jpg,jpeg,JPEG,JPG",
+    real_max_samples: int | None = None,
+    gen_max_samples: int | None = None,
+    real_subset_seed: int = 0,
+    gen_subset_seed: int = 0,
+    isc_splits: int = 5,
+    verbose: bool = False,
+    cache: bool = False,
+) -> dict[str, float]:
+    """目录级 FID / IS（``torch_fidelity.calculate_metrics``）。``input1``=生成集，``input2``=真实集。"""
+    from torch_fidelity import KEY_METRIC_FID, KEY_METRIC_ISC_MEAN, KEY_METRIC_ISC_STD
+    from torch_fidelity.metrics import calculate_metrics
 
-    ``real_cache_name`` 仅兼容旧参数，此处不使用磁盘 cache。
-
-    返回键 ``FID``、``IS``、``KID``（大写），与 ``unet_scaling_with_different_steps`` 等一致。
-    """
-    _ = real_cache_name
     gen_dir = Path(gen_dir).expanduser().resolve()
     real_dir = Path(real_dir).expanduser().resolve()
     if not gen_dir.is_dir():
@@ -337,82 +335,73 @@ def compute_metrics(
         raise FileNotFoundError(f"real_dir is not a directory: {real_dir}")
 
     dev = torch.device(device) if isinstance(device, str) else device
-    dev_s = str(dev)
-    inc_p = Path(INCEPTION_WEIGHTS_PATH)
-    fid_kw = (
-        dict(feature_extractor_weights_path=str(inc_p.resolve()))
-        if inc_p.is_file()
-        else {}
+    inc_p = Path(INCEPTION_WEIGHTS_PATH).resolve()
+
+    ds_gen = _fidelity_images_dataset(
+        gen_dir,
+        resize_crop=samples_resize_and_crop,
+        find_deep=samples_find_deep,
+        exts=samples_find_ext,
+        max_samples=gen_max_samples,
+        subset_seed=gen_subset_seed,
+    )
+    ds_real = _fidelity_images_dataset(
+        real_dir,
+        resize_crop=samples_resize_and_crop,
+        find_deep=samples_find_deep,
+        exts=samples_find_ext,
+        max_samples=real_max_samples,
+        subset_seed=real_subset_seed,
     )
 
-    out: dict[str, float | None] = {}
+    raw = calculate_metrics(
+        input1=ds_gen,
+        input2=ds_real,
+        cuda=(dev.type == "cuda"),
+        batch_size=batch_size,
+        fid=True,
+        isc=True,
+        kid=False,
+        prc=False,
+        verbose=verbose,
+        cache=cache,
+        feature_extractor_weights_path=str(inc_p),
+        isc_splits=isc_splits,
+        rng_seed=2020,
+        samples_shuffle=True,
+    )
+    return {
+        "FID": float(raw[KEY_METRIC_FID]),
+        "IS": float(raw[KEY_METRIC_ISC_MEAN]),
+        "IS_STD": float(raw[KEY_METRIC_ISC_STD]),
+    }
 
-    if fid:
-        from torchmetrics.image.fid import FrechetInceptionDistance
 
-        fid_m = FrechetInceptionDistance(feature=2048, normalize=False, **fid_kw).to(dev_s)
-        fid_m.set_dtype(torch.float64)
-        n_real = 0
-        n_gen = 0
-        for batch in _iter_image_tensor_batches(
-            real_dir, batch_size, real_max_samples, real_subset_seed, dev
-        ):
-            fid_m.update(batch, real=True)
-            n_real += batch.shape[0]
-        for batch in _iter_image_tensor_batches(
-            gen_dir, batch_size, gen_max_samples, gen_subset_seed, dev
-        ):
-            fid_m.update(batch, real=False)
-            n_gen += batch.shape[0]
-        if n_real == 0 or n_gen == 0:
-            raise RuntimeError(
-                f"FID: no images loaded (real={n_real}, gen={n_gen}); check dirs and extensions."
-            )
-        out["FID"] = float(fid_m.compute().item())
+def _inception_weights_kw() -> dict[str, str]:
+    p = Path(INCEPTION_WEIGHTS_PATH)
+    return dict(feature_extractor_weights_path=str(p.resolve())) if p.is_file() else {}
 
-    if isc:
-        from torchmetrics.image.inception import InceptionScore
 
-        w_path = str(inc_p.resolve()) if inc_p.is_file() else None
-        is_feat = _torchmetrics_inception_module_for_layer(w_path, "logits_unbiased")
-        is_m = InceptionScore(feature=is_feat, normalize=False, splits=5).to(dev_s)
-        n_gen = 0
-        for batch in _iter_image_tensor_batches(
-            gen_dir, batch_size, gen_max_samples, gen_subset_seed, dev
-        ):
-            is_m.update(batch)
-            n_gen += batch.shape[0]
-        if n_gen == 0:
-            raise RuntimeError("IS: no generated images loaded.")
-        is_mean, _is_std = is_m.compute()
-        out["IS"] = float(is_mean)
-
-    if kid:
-        from torchmetrics.image.kid import KernelInceptionDistance
-
-        kid_m = KernelInceptionDistance(
-            feature=2048,
-            subsets=100,
-            subset_size=1000,
-            normalize=False,
-            **fid_kw,
-        ).to(dev_s)
-        for batch in _iter_image_tensor_batches(
-            real_dir, batch_size, real_max_samples, real_subset_seed, dev
-        ):
-            kid_m.update(batch, real=True)
-        for batch in _iter_image_tensor_batches(
-            gen_dir, batch_size, gen_max_samples, gen_subset_seed, dev
-        ):
-            kid_m.update(batch, real=False)
-        out["KID"] = float(kid_m.compute()[0].item())
-
-    if prc:
-        raise NotImplementedError(
-            "Precision/Recall in compute_metrics is not implemented; pass prc=False."
-        )
-
-    return out
+def _batched_inception_features(
+    images: torch.Tensor,
+    feat_extractor,
+    device: torch.device,
+    batch_size: int,
+) -> torch.Tensor:
+    """``images``: uint8 ``N×3×H×W``；返回 float32 CPU 特征矩阵。"""
+    cuda = device.type == "cuda"
+    feat_extractor.eval()
+    chunks: list[torch.Tensor] = []
+    with torch.no_grad():
+        for i in range(0, images.shape[0], batch_size):
+            b = images[i : i + batch_size]
+            if cuda:
+                b = b.cuda(non_blocking=True)
+            out = feat_extractor(b)
+            if isinstance(out, tuple):
+                out = out[0]
+            chunks.append(out.detach().float().cpu())
+    return torch.cat(chunks, dim=0)
 
 
 def compute_fid_is_clipscore(
@@ -439,9 +428,10 @@ def compute_fid_is_clipscore(
         raise ValueError(
             f"image count mismatch: tensors {gen_images.shape[0]} vs parsed labels {len(labels_ls)}"
         )
+    dev = device or set_device()
     metrics: dict[str, float] = {}
-    metrics["fid"] = float(compute_fid(real_images, gen_images))
-    is_mean, _is_std = compute_is(gen_images)
+    metrics["fid"] = float(compute_fid(real_images, gen_images, device=dev))
+    is_mean, _is_std = compute_is(gen_images, device=dev)
     metrics["is"] = float(is_mean)
     metrics["is_std"] = float(_is_std)
     prompts = imagenet_label2text_for_clipscore(labels_ls)
@@ -449,21 +439,57 @@ def compute_fid_is_clipscore(
     return metrics
 
 
-def compute_fid(real_images:torch.Tensor, gen_images:torch.Tensor) -> float:
-    from torchmetrics.image.fid import FrechetInceptionDistance
-    fid = FrechetInceptionDistance(feature=2048, normalize=False) # 2048是默认的feature维度
-    fid.set_dtype(torch.float64)
-    fid.update(real_images,real=True)
-    fid.update(gen_images,real=False)
-    return float(fid.compute().item())
+def compute_fid(
+    real_images: torch.Tensor,
+    gen_images: torch.Tensor,
+    *,
+    device: torch.device | None = None,
+    batch_size: int = 64,
+) -> float:
+    """FID（``torch_fidelity``）：两批 uint8 ``N×3×H×W`` 图像，与 ``create_feature_extractor`` Inception 一致。"""
+    from torch_fidelity import KEY_METRIC_FID
+    from torch_fidelity.metric_fid import fid_features_to_statistics, fid_statistics_to_metric
+    from torch_fidelity.utils import create_feature_extractor
+
+    dev = device or set_device()
+    fe = create_feature_extractor(
+        "inception-v3-compat",
+        ["2048"],
+        cuda=(dev.type == "cuda"),
+        verbose=False,
+        **_inception_weights_kw(),
+    )
+    r = _batched_inception_features(real_images, fe, dev, batch_size)
+    g = _batched_inception_features(gen_images, fe, dev, batch_size)
+    s_r = fid_features_to_statistics(r)
+    s_g = fid_features_to_statistics(g)
+    return float(fid_statistics_to_metric(s_g, s_r, False)[KEY_METRIC_FID])
 
 
-def compute_is(gen_images:torch.Tensor) -> tuple[float, float]:
-    from torchmetrics.image.inception import InceptionScore
-    is_model = InceptionScore(normalize=False, splits=5) # splits=5，得到std然后report在paper中。 mean +- std
-    is_model.update(gen_images)
-    is_mean, is_std = is_model.compute()
-    return float(is_mean), float(is_std)
+def compute_is(
+    gen_images: torch.Tensor,
+    *,
+    device: torch.device | None = None,
+    batch_size: int = 64,
+    isc_splits: int = 5,
+) -> tuple[float, float]:
+    """IS mean / std（``torch_fidelity.metric_isc``，与旧 torchmetrics ``splits=5`` 对齐）。"""
+    from torch_fidelity.metric_isc import KEY_METRIC_ISC_MEAN, KEY_METRIC_ISC_STD, isc_features_to_metric
+    from torch_fidelity.utils import create_feature_extractor
+
+    dev = device or set_device()
+    fe = create_feature_extractor(
+        "inception-v3-compat",
+        ["logits_unbiased"],
+        cuda=(dev.type == "cuda"),
+        verbose=False,
+        **_inception_weights_kw(),
+    )
+    logits = _batched_inception_features(gen_images, fe, dev, batch_size)
+    out = isc_features_to_metric(
+        logits, splits=isc_splits, shuffle=True, rng_seed=2020
+    )
+    return float(out[KEY_METRIC_ISC_MEAN]), float(out[KEY_METRIC_ISC_STD])
 
 
 
@@ -488,7 +514,6 @@ def imagenet_label2text_for_clipscore(label_ls: list[int]) -> list[str]:
         for label in label_ls
     ]
     return formatted_prompts
-
 
 
 def compute_clipscore(
@@ -535,20 +560,19 @@ def compute_clipscore(
     return float(metric.compute().item()) # 0-100, higher is better
 
 
-# do not implement now
-def compute_KID(gen_dir:str | Path, real_dir:str | Path) -> float:
-    from torchmetrics.image.kid import KernelInceptionDistance
-    pass
+# # do not implement now
+# def compute_KID(gen_dir:str | Path, real_dir:str | Path) -> float:
+#     from torchmetrics.image.kid import KernelInceptionDistance
+#     pass
 
-def compute_Precision(gen_dir:str | Path, real_dir:str | Path) -> float:
-    from torchmetrics.image.precision import Precision
-    pass
+# def compute_Precision(gen_dir:str | Path, real_dir:str | Path) -> float:
+#     from torchmetrics.image.precision import Precision
+#     pass
 
-def compute_Recall(gen_dir:str | Path, real_dir:str | Path) -> float:
-    from torchmetrics.image.recall import Recall
-    pass
+# def compute_Recall(gen_dir:str | Path, real_dir:str | Path) -> float:
+#     from torchmetrics.image.recall import Recall
+#     pass
 # 
-
 
 
 ###########  my pipeline    ############
@@ -661,7 +685,7 @@ def rollout_ddpm_with_steps(
     png_compress_level: int = 1,
     image_size: int = 256,
 ) -> int:
-    """无条件 DDPM：按 ``num_inference_steps`` 独立采样，保存 ``{idx:05d}.png``（与 ``compute_metrics`` 递归读图兼容）。"""
+    """无条件 DDPM：按 ``num_inference_steps`` 独立采样，保存 ``{idx:05d}.png``（供 ``compute_fid_is_from_dirs`` 等读目录）。"""
     device = device or set_device()
     save_dir.mkdir(parents=True, exist_ok=True)
     img_counter = 0
@@ -810,51 +834,6 @@ def random_search_fid_reward(
 
 
 
-
-
-
-
-
-def _iter_image_tensor_batches(
-    img_dir: Path,
-    batch_size: int = 64,
-    max_samples: int | None = None,
-    subset_seed: int = 0,
-    device: torch.device = torch.device("cpu"),
-):
-    """Yield uint8 [B, 3, 299, 299] tensor batches from a directory of images.
-
-    Images are resized to 299×299 (Inception V3 native resolution) so that the
-    torchmetrics internal resize is a no-op and we can stack variable-size images.
-    """
-    import random as _random
-    from torchvision.transforms.functional import pil_to_tensor, resize
-
-    dev = torch.device(device)
-    exts = {".png", ".jpg", ".jpeg"}
-    paths = sorted(p for p in img_dir.rglob("*") if p.suffix.lower() in exts)
-
-    if max_samples is not None and len(paths) > max_samples:
-        rng = _random.Random(subset_seed)
-        paths = paths.copy()
-        rng.shuffle(paths)
-        paths = paths[:max_samples]
-
-    for i in range(0, len(paths), batch_size):
-        chunk = paths[i : i + batch_size]
-        tensors: list[torch.Tensor] = []
-        for p in chunk:
-            try:
-                with Image.open(p) as img:
-                    img.load()
-                    t = pil_to_tensor(img.convert("RGB"))
-                    if t.shape[-2] != 299 or t.shape[-1] != 299:
-                        t = resize(t, [299, 299], antialias=True)
-                    tensors.append(t)
-            except Exception:
-                continue
-        if tensors:
-            yield torch.stack(tensors).to(dev)
 
 
 

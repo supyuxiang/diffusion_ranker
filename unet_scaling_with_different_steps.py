@@ -1,9 +1,9 @@
 """
 DDPM（UNet，如 ``google_ddpm-celebahq-256``）在不同 ``num_inference_steps`` 下生成样本，
-对每个步数目录用 ``utils.compute_metrics`` 算 FID / IS（需本地真实人脸参考图目录）。
+对每个步数目录用 ``utils.compute_fid_is_from_dirs``（``torch_fidelity``）算 FID / IS（需本地真实人脸参考图目录）。
 
 与 ``dit_scaling_with_different_steps.py`` 不同：DiT 用 ImageNet val + CLIP 类名；此处为**无条件**
-256×256，应对齐人脸真实集（CelebA-HQ、CelebA 对齐图等；``compute_metrics`` 递归读 ``.png`` / ``.jpg``）。
+256×256，应对齐人脸真实集（CelebA-HQ、CelebA 对齐图等；递归读 ``.png`` / ``.jpg``）。
 
 CelebA 对齐图可从机内镜像解压到数据盘（示例）::
 
@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import torch
 
 from utils import (
-    compute_metrics,
+    compute_fid_is_from_dirs,
     model_loader,
     rollout_ddpm_with_steps,
     set_device,
@@ -117,15 +117,11 @@ def main() -> None:
             seed=args.seed,
         )
 
-        metrics = compute_metrics(
+        metrics = compute_fid_is_from_dirs(
             out_dir,
             real_dir,
             device,
-            real_cache_name="celebahq_hq256_ref",
-            fid=True,
-            isc=True,
-            kid=False,
-            prc=False,
+            batch_size=64,
             real_max_samples=args.fid_real_max_samples,
             real_subset_seed=args.fid_real_subset_seed,
         )
