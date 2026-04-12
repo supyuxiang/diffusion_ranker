@@ -474,15 +474,8 @@ def _imagenet_simple_labels_tuple() -> tuple[str, ...]:
     _DEFAULT_IMAGENET_LABELS_JSON = Path("/root/diffusion_ranker/imagenet-simple-labels.json")
 
     path = _DEFAULT_IMAGENET_LABELS_JSON.expanduser().resolve()
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"ImageNet labels json not found: {path}. "
-            "Run once (offline): python3 scripts/build_imagenet_simple_labels.py"
-        )
     with open(path, "r", encoding="utf-8") as f:
         labels = json.load(f)
-    if not isinstance(labels, list) or len(labels) != 1000:
-        raise ValueError(f"expected list of 1000 strings in {path}")
     return tuple(str(x) for x in labels)
 
 

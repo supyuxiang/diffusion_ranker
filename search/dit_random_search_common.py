@@ -40,12 +40,7 @@ def load_imagenet_simple_labels(cache_dir: Path | None = None) -> list[str]:
 
     ``cache_dir`` 已弃用，保留仅为兼容旧调用。
     """
-    _ = cache_dir
-    try:
-        return imagenet_simple_labels_list()
-    except (FileNotFoundError, ValueError) as e:
-        print(f"警告: ImageNet 标签未就绪 ({e})，将使用占位名。请运行 scripts/build_imagenet_simple_labels.py")
-        return [f"imagenet class {i}" for i in range(1000)]
+    return imagenet_simple_labels_list()
 
 
 def prompt_for_class(labels: list[str], class_id: int, template: str) -> str:

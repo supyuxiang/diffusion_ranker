@@ -18,9 +18,9 @@ CelebA 对齐图可从机内镜像解压到数据盘（示例）::
 
 example::
 
-    CUDA_VISIBLE_DEVICES=0 python /root/diffusion_ranker/unet_scaling_with_different_steps.py \
+    CUDA_VISIBLE_DEVICES=2 python /root/diffusion_ranker/unet_scaling_with_different_steps.py \
         --model_name google_ddpm-celebahq-256 \
-        --batch_size 32 \
+        --batch_size 512 \
         --num_gen 50000 \
         --save_dir /root/autodl-tmp/outputs/unet_scaling_with_different_steps \
         --real_dir /root/autodl-tmp/img_align_celeba_fid_ref_50k
