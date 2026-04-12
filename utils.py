@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import json
 import os
 import sys
@@ -220,7 +221,7 @@ def _dtype_str_to_torch(dtype: str) -> torch.dtype:
 
 def dit_loader(
     model_name: str | Path,
-    device: str,
+    device,
     *,
     dtype: str = 'fp16',
 ) -> DiTPipeline:
@@ -232,7 +233,7 @@ def dit_loader(
         str(model_path),
         local_files_only=True,
         torch_dtype=_dtype_str_to_torch(dtype),
-        device=device,
+        device=str(device),
     )
     pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
     pipe = pipe.to(device)
@@ -242,7 +243,7 @@ def dit_loader(
 
 def ddpm_loader(
     model_name: str | Path,
-    device:str,
+    device,
     dtype:str='fp16',
 ) -> DDPMPipeline:
     from diffusers import DDPMPipeline
@@ -251,20 +252,18 @@ def ddpm_loader(
         str(model_path),
         local_files_only=True,
         torch_dtype=_dtype_str_to_torch(dtype),
-        device=device,
+        device=str(device),
     )
     pipe = pipe.to(device)
     return pipe
 
 
-def model_loader(model_name:str, device:str, dtype:str='fp16') -> DiTPipeline | DDPMPipeline:
+def model_loader(model_name:str, device, dtype:str='fp16') -> DiTPipeline | DDPMPipeline:
     if model_name == 'dit-xl-2-256':
-        return dit_loader(model_name, device, dtype=dtype)
+        return dit_loader(model_name, device=device, dtype=dtype)
     if model_name == 'google_ddpm-celebahq-256':
-        return ddpm_loader(model_name, device, dtype=dtype)
+        return ddpm_loader(model_name, device=device, dtype=dtype)
     raise ValueError(f"Unknown model name: {model_name}")
-
-##########################################################
 
 
 ############    compute metrics    ############
@@ -322,17 +321,35 @@ def _remove_corrupted_images(gen_dir: str | Path) -> int:
 
 
 
-def compute_metrics(gen_dir:str | Path, real_dir:str | Path = Path('/root/autodl-tmp/imagenet/val')) -> dict[str, float]:
+def compute_fid_is_clipscore(
+    gen_dir: str | Path,
+    real_dir: str | Path = Path("/root/autodl-tmp/imagenet/val"),
+) -> dict[str, float]:
+    """FID / IS / CLIPScore：与 ``_load_images_from_dir`` 相同排序读图，并从 ``image_*_{label}.png`` 解析类别。"""
+    gen_dir = Path(gen_dir)
+    exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+    paths = sorted(
+        p for p in gen_dir.iterdir() if p.suffix.lower() in exts and p.is_file()
+    )
+    labels_ls: list[int] = []
+    for p in paths:
+        parts = p.stem.split("_")
+        labels_ls.append(int(parts[-1]))
+
     real_images = _load_images_from_dir(real_dir)
     gen_images = _load_images_from_dir(gen_dir)
-    metrics = {}
-    metrics['fid'] = compute_fid(real_images, gen_images)
-    metrics['is'] = compute_is(gen_images)
-    labels_ls = [
-        int(path.split('_')[-1].split('.')[0]) for path in gen_dir.iterdir()
-    ]
+    # check
+    if gen_images.shape[0] != len(labels_ls):
+        raise ValueError(
+            f"image count mismatch: tensors {gen_images.shape[0]} vs parsed labels {len(labels_ls)}"
+        )
+    metrics: dict[str, float] = {}
+    metrics["fid"] = float(compute_fid(real_images, gen_images))
+    is_mean, _is_std = compute_is(gen_images)
+    metrics["is"] = float(is_mean)
+    metrics["is_std"] = float(_is_std)
     prompts = imagenet_label2text_for_clipscore(labels_ls)
-    metrics['clipscore'] = compute_clipscore(gen_images, prompts)
+    metrics["clipscore"] = float(compute_clipscore(gen_images, prompts))
     return metrics
 
 
@@ -386,11 +403,11 @@ def imagenet_label2text_for_clipscore(label_ls: list[int]) -> list[str]:
 
 
 def compute_clipscore(
-    gen_images:torch.Tensor,
-    prompts:list[str],
+    gen_images: torch.Tensor,
+    prompts: list[str],
     *,
     clip_model_dir: str | Path | None = None,
-    device: str = set_device(),
+    device,
 ) -> float:
     """Mean CLIPScore (0–100) between images under ``gen_dir`` and ``texts``.
 
@@ -402,14 +419,9 @@ def compute_clipscore(
     from torchmetrics.multimodal.clip_score import CLIPScore
 
     n = gen_images.shape[0]
-    if len(prompts) == 1 and n > 1:
-        cap_list = list(prompts) * n
-    elif len(prompts) == n:
-        cap_list = list(prompts)
-    else:
-        raise ValueError(
-            f"prompts length ({len(prompts)}) must be 1 or match number of images ({n})"
-        )
+    if n != len(prompts):
+        raise ValueError(f"image count mismatch: tensors {n} vs prompts {len(prompts)}")
+
 
     root = clip_model_dir or os.environ.get("CLIP_MODEL_DIR", "/autodl-tmp/openai_clip-vit-base-patch32")
     clip_path = Path(root).expanduser().resolve()
@@ -424,9 +436,9 @@ def compute_clipscore(
             f"got {model_id!r}. Use e.g. openai_clip-vit-base-patch32 or pass HF id via a symlink name."
         )
 
-    dev = device or str(set_device())
-    metric = CLIPScore(model_name_or_path=model_id).to(dev)
-    gen_images = gen_images.to(dev)
+    device = str(device) or str(set_device())
+    metric = CLIPScore(model_name_or_path=model_id).to(device)
+    gen_images = gen_images.to(device)
     metric.update(gen_images, prompts)
     return float(metric.compute().item()) # 0-100, higher is better
 
@@ -473,7 +485,7 @@ def rollout_dit_with_steps(
     num_steps: int,
     num_samples: int,
     batch_size: int,
-    device: str=set_device(),
+    device=set_device(),
     seed: int=42,
     guidance_scale: float = 1.0,
     *,
@@ -533,7 +545,61 @@ def rollout_dit_with_steps(
     torch.cuda.empty_cache()
 
     return img_counter
-   
+
+
+@torch.inference_mode()
+def rollout_ddpm_with_steps(
+    pipe,
+    save_dir: Path,
+    num_steps: int,
+    num_samples: int,
+    batch_size: int,
+    device: str | None = None,
+    seed: int = 42,
+    *,
+    jpeg_quality: int = 92,
+    png_compress_level: int = 1,
+    image_size: int = 256,
+) -> int:
+    """无条件 DDPM：按 ``num_inference_steps`` 独立采样，保存 ``{idx:05d}.png``（与 ``compute_metrics`` 递归读图兼容）。"""
+    if device is None:
+        device = str(set_device())
+    save_dir.mkdir(parents=True, exist_ok=True)
+    img_counter = 0
+    num_batches = (num_samples + batch_size - 1) // batch_size
+    for batch_idx in tqdm(range(num_batches), desc=f"ddpm steps={num_steps}", leave=False):
+        batch_n = min(batch_size, num_samples - batch_idx * batch_size)
+        gen = torch.Generator(device=device).manual_seed(seed + batch_idx)
+        out = pipe(
+            batch_size=batch_n,
+            generator=gen,
+            num_inference_steps=num_steps,
+            output_type="pil",
+        )
+        to_save: list[tuple[Path, Image.Image]] = []
+        for img in out.images:
+            if img_counter >= num_samples:
+                break
+            im = _prepare_pil_for_save(img.convert("RGB"), image_size)
+            to_save.append((save_dir / f"{img_counter:05d}.png", im.copy()))
+            img_counter += 1
+        with ThreadPoolExecutor(max_workers=_ROLLOUT_SAVE_WORKERS) as ex:
+            futures = [
+                ex.submit(
+                    _save_pil_task,
+                    path,
+                    im,
+                    fmt="png",
+                    jpeg_quality=jpeg_quality,
+                    png_compress_level=png_compress_level,
+                )
+                for path, im in to_save
+            ]
+            for fut in as_completed(futures):
+                fut.result()
+    gc.collect()
+    torch.cuda.empty_cache()
+    return img_counter
 
 
 ##########################################################
@@ -572,24 +638,7 @@ def rollout_dit_with_steps(
 
 
 
-def compute_clip_score(images: list[Image.Image], device: str, prompt: str = "a face image") -> float:
-    """Compute mean CLIPScore using torchmetrics (0-100 scale, higher is better)."""
-    from torchmetrics.multimodal.clip_score import CLIPScore
-    from torchvision.transforms.functional import pil_to_tensor
 
-    metric = CLIPScore(model_name_or_path="openai/clip-vit-base-patch32").to(device)
-
-    tensors = []
-    for img in images:
-        if isinstance(img, Image.Image):
-            tensors.append(pil_to_tensor(img.convert("RGB")))
-        else:
-            raise ValueError(f"Invalid image type: {type(img)}")
-
-    batch = torch.stack(tensors).to(device)
-    texts = [prompt] * len(images)
-    metric.update(batch, texts)
-    return float(metric.compute().item())
 
 
 def _iter_image_tensor_batches(
@@ -633,139 +682,10 @@ def _iter_image_tensor_batches(
             yield torch.stack(tensors).to(device)
 
 
-def compute_metrics(
-    gen_dir: str | Path,
-    real_dir: str | Path,
-    device: str,
-    real_cache_name: str | None = None,
-    fid: bool = True,
-    isc: bool = True,
-    kid: bool = False,
-    prc: bool = False,
-    real_max_samples: int | None = None,
-    real_subset_seed: int = 0,
-) -> dict[str, Any]:
-    """
-    计算生成图像质量指标：先从 ``gen_dir`` 读生成图、从 ``real_dir`` 读真实图。FID / IS / KID 使用 torchmetrics；
-    Precision/Recall 仍通过 torch_fidelity（torchmetrics 暂无等效实现）。
-    real_cache_name 保留以兼容旧接口，torchmetrics 路径下不使用缓存。
-    """
-    gen_dir = Path(gen_dir)
-    real_dir = Path(real_dir)
-    n_removed = _remove_corrupted_images(gen_dir)
-    if n_removed > 0:
-        print(f"  已移除 {n_removed} 张损坏图片")
-
-    out: dict[str, Any] = {}
-    _batch = 64
-
-    if fid or isc or kid:
-        from torchmetrics.image.fid import FrechetInceptionDistance
-        from torchmetrics.image.inception import InceptionScore
-        from torchmetrics.image.kid import KernelInceptionDistance
-
-        inc_w = resolve_fidelity_inception_weights_path()
-        fid_kw = (
-            dict(feature_extractor_weights_path=inc_w) if inc_w else {}
-        )
-        fid_m = (
-            FrechetInceptionDistance(feature=2048, normalize=False, **fid_kw).to(device)
-            if fid
-            else None
-        )
-        if fid_m is not None:
-            fid_m.set_dtype(torch.float64)
-        # IS 必须在 ImageNet logits 上算 softmax；用 2048 维 pool 特征会得到接近均匀的假分布，IS≈1。
-        is_feat = _torchmetrics_inception_module_for_layer(inc_w, "logits_unbiased")
-        is_m = (
-            InceptionScore(feature=is_feat, normalize=False).to(device) if isc else None
-        )
-        kid_feat = _torchmetrics_inception_module_for_layer(inc_w, 2048)
-        kid_m = (
-            KernelInceptionDistance(
-                feature=kid_feat, subset_size=100, normalize=False
-            ).to(device)
-            if kid
-            else None
-        )
-
-        if fid_m is not None or kid_m is not None:
-            for batch in _iter_image_tensor_batches(
-                real_dir, _batch, real_max_samples, real_subset_seed, device
-            ):
-                if fid_m is not None:
-                    fid_m.update(batch, real=True)
-                if kid_m is not None:
-                    kid_m.update(batch, real=True)
-
-        for batch in _iter_image_tensor_batches(gen_dir, _batch, device=device):
-            batch = batch.to(device)
-            if fid_m is not None:
-                fid_m.update(batch, real=False)
-            if is_m is not None:
-                is_m.update(batch)
-            if kid_m is not None:
-                kid_m.update(batch, real=False)
-
-        if fid_m is not None:
-            out["FID"] = float(fid_m.compute())
-        if is_m is not None:
-            is_mean, is_std = is_m.compute()
-            out["IS"] = float(is_mean)
-            out["IS_std"] = float(is_std)
-        if kid_m is not None:
-            kid_mean, kid_std = kid_m.compute()
-            out["KID"] = float(kid_mean)
-            out["KID_std"] = float(kid_std)
-
-    if prc:
-        import torch_fidelity
-
-        prc_kw: dict[str, Any] = {
-            "input2": str(real_dir),
-            "input2_cache_name": real_cache_name or "real_ref",
-        }
-        prc_metrics = torch_fidelity.calculate_metrics(
-            input1=str(gen_dir),
-            cuda=(device == "cuda"),
-            fid=False,
-            isc=False,
-            kid=False,
-            prc=True,
-            verbose=False,
-            samples_find_deep=True,
-            samples_resize_and_crop=256,
-            **prc_kw,
-        )
-        out["Precision"] = prc_metrics.get("precision", float("nan"))
-        out["Recall"] = prc_metrics.get("recall", float("nan"))
-        out["F_score"] = prc_metrics.get("f_score", float("nan"))
-
-    return out
 
 
-def compute_fid_and_is(gen_dir: str | Path, real_dir: str | Path, device: str, real_cache_name: str | None = None):
-    '''
-    compute FID and IS of generated images and real images.
-    torch_fidelity 只接受目录路径，不接受 PIL 列表。
-    real_cache_name: 真实集缓存名，不同数据集用不同名避免混淆（如 celeb_hq_real, imagenet_val）
-    计算前会移除无法识别的损坏图片，避免 PIL.UnidentifiedImageError。
-    '''
-    metrics = compute_metrics(gen_dir, real_dir, device, real_cache_name, fid=True, isc=True)
-    return metrics.get("FID", float("nan")), metrics.get("IS", float("nan"))
 
 
-def compute_is_only(gen_dir: str | Path, device: str) -> float:
-    """Compute Inception Score only (no FID, no real images needed)."""
-    from torchmetrics.image.inception import InceptionScore
-
-    inc_w = resolve_fidelity_inception_weights_path()
-    is_feat = _torchmetrics_inception_module_for_layer(inc_w, "logits_unbiased")
-    metric = InceptionScore(feature=is_feat, normalize=False).to(device)
-    for batch in _iter_image_tensor_batches(Path(gen_dir), 64, device=device):
-        metric.update(batch)
-    is_mean, _ = metric.compute()
-    return float(is_mean)
 
 
 def prepare_real_images_dir(dataset_path: str, output_dir: Path, num_samples: int = 50000) -> Path:
