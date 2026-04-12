@@ -221,7 +221,7 @@ def _dtype_str_to_torch(dtype: str) -> torch.dtype:
 
 def dit_loader(
     model_name: str | Path,
-    device,
+    device: torch.device,
     *,
     dtype: str = 'fp16',
 ) -> DiTPipeline:
@@ -243,7 +243,7 @@ def dit_loader(
 
 def ddpm_loader(
     model_name: str | Path,
-    device,
+    device: torch.device,
     dtype:str='fp16',
 ) -> DDPMPipeline:
     from diffusers import DDPMPipeline
@@ -258,7 +258,7 @@ def ddpm_loader(
     return pipe
 
 
-def model_loader(model_name:str, device, dtype:str='fp16') -> DiTPipeline | DDPMPipeline:
+def model_loader(model_name:str, device: torch.device, dtype:str='fp16') -> DiTPipeline | DDPMPipeline:
     if model_name == 'dit-xl-2-256':
         return dit_loader(model_name, device=device, dtype=dtype)
     if model_name == 'google_ddpm-celebahq-256':
@@ -324,6 +324,8 @@ def _remove_corrupted_images(gen_dir: str | Path) -> int:
 def compute_fid_is_clipscore(
     gen_dir: str | Path,
     real_dir: str | Path = Path("/root/autodl-tmp/imagenet/val"),
+    *,
+    device: torch.device | None = None,
 ) -> dict[str, float]:
     """FID / IS / CLIPScore：与 ``_load_images_from_dir`` 相同排序读图，并从 ``image_*_{label}.png`` 解析类别。"""
     gen_dir = Path(gen_dir)
@@ -349,7 +351,7 @@ def compute_fid_is_clipscore(
     metrics["is"] = float(is_mean)
     metrics["is_std"] = float(_is_std)
     prompts = imagenet_label2text_for_clipscore(labels_ls)
-    metrics["clipscore"] = float(compute_clipscore(gen_images, prompts))
+    metrics["clipscore"] = float(compute_clipscore(gen_images, prompts, device=device))
     return metrics
 
 
@@ -407,7 +409,7 @@ def compute_clipscore(
     prompts: list[str],
     *,
     clip_model_dir: str | Path | None = None,
-    device,
+    device: torch.device | None = None,
 ) -> float:
     """Mean CLIPScore (0–100) between images under ``gen_dir`` and ``texts``.
 
@@ -436,7 +438,10 @@ def compute_clipscore(
             f"got {model_id!r}. Use e.g. openai_clip-vit-base-patch32 or pass HF id via a symlink name."
         )
 
-    device = str(device) or str(set_device())
+    if device is None:
+        device = set_device()
+    else:
+        device = torch.device(device)
     metric = CLIPScore(model_name_or_path=model_id).to(device)
     gen_images = gen_images.to(device)
     metric.update(gen_images, prompts)
@@ -485,7 +490,7 @@ def rollout_dit_with_steps(
     num_steps: int,
     num_samples: int,
     batch_size: int,
-    device=set_device(),
+    device: torch.device | None = None,
     seed: int=42,
     guidance_scale: float = 1.0,
     *,
@@ -501,6 +506,10 @@ def rollout_dit_with_steps(
     speed comes from ``torch.compile``, fp16, and batch size. Using the official API keeps parity
     with diffusers and avoids duplicating CFG / sigma-split logic.
     """
+    if device is None:
+        device = set_device()
+    else:
+        device = torch.device(device)
     num_classes = 1000 # for imagenet dataset
     img_counter = 0
     num_batches = (num_samples + batch_size - 1) // batch_size
@@ -554,7 +563,7 @@ def rollout_ddpm_with_steps(
     num_steps: int,
     num_samples: int,
     batch_size: int,
-    device: str | None = None,
+    device: torch.device | None = None,
     seed: int = 42,
     *,
     jpeg_quality: int = 92,
@@ -563,7 +572,9 @@ def rollout_ddpm_with_steps(
 ) -> int:
     """无条件 DDPM：按 ``num_inference_steps`` 独立采样，保存 ``{idx:05d}.png``（与 ``compute_metrics`` 递归读图兼容）。"""
     if device is None:
-        device = str(set_device())
+        device = set_device()
+    else:
+        device = torch.device(device)
     save_dir.mkdir(parents=True, exist_ok=True)
     img_counter = 0
     num_batches = (num_samples + batch_size - 1) // batch_size
@@ -646,7 +657,7 @@ def _iter_image_tensor_batches(
     batch_size: int = 64,
     max_samples: int | None = None,
     subset_seed: int = 0,
-    device: str = "cpu",
+    device: torch.device = torch.device("cpu"),
 ):
     """Yield uint8 [B, 3, 299, 299] tensor batches from a directory of images.
 
@@ -656,6 +667,7 @@ def _iter_image_tensor_batches(
     import random as _random
     from torchvision.transforms.functional import pil_to_tensor, resize
 
+    dev = torch.device(device)
     exts = {".png", ".jpg", ".jpeg"}
     paths = sorted(p for p in img_dir.rglob("*") if p.suffix.lower() in exts)
 
@@ -679,7 +691,7 @@ def _iter_image_tensor_batches(
             except Exception:
                 continue
         if tensors:
-            yield torch.stack(tensors).to(device)
+            yield torch.stack(tensors).to(dev)
 
 
 
@@ -820,7 +832,7 @@ def prepare_real_images_from_hf(
     return output_dir
 
 
-def eval_real_images(args, output_dir: Path, device: str):
+def eval_real_images(args, output_dir: Path, device: torch.device):
     """evaluate FID, CLIPScore, IS of real images (as baseline)"""
     from datasets import load_from_disk
 

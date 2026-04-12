@@ -78,8 +78,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
-    device_t = set_device()
-    device = str(device_t)
+    device = set_device()
 
     real_dir = Path(args.real_dir).expanduser().resolve()
     if not real_dir.is_dir():
@@ -87,7 +86,7 @@ def main() -> None:
 
     pipe = model_loader(args.model_name, device=device, dtype=args.dtype)
     pipe.set_progress_bar_config(disable=True)
-    if args.compile and device == "cuda":
+    if args.compile and device.type == "cuda":
         pipe.unet = torch.compile(pipe.unet, mode="reduce-overhead")
         print("torch.compile enabled (unet)")
 
