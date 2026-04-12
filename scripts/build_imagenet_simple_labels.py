@@ -8,9 +8,9 @@
 用法::
 
     python3 scripts/build_imagenet_simple_labels.py
-    python3 scripts/build_imagenet_simple_labels.py \\
-      --devkit-tar /root/autodl-pub/ImageNet/ILSVRC2012/ILSVRC2012_devkit_t12.tar.gz \\
-      --out /root/autodl-tmp/imagenet-simple-labels.json
+    python3 scripts/build_imagenet_simple_labels.py \
+      --devkit-tar /root/autodl-pub/ImageNet/ILSVRC2012/ILSVRC2012_devkit_t12.tar.gz \
+      --out /root/diffusion_ranker/imagenet-simple-labels.json
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ def main() -> None:
     p.add_argument(
         "--out",
         type=Path,
-        default=Path("/root/autodl-tmp/imagenet-simple-labels.json"),
+        default=Path("/root/diffusion_ranker/imagenet-simple-labels.json"),
     )
     args = p.parse_args()
     tar_path = args.devkit_tar.expanduser().resolve()
