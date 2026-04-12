@@ -322,7 +322,7 @@ def _remove_corrupted_images(gen_dir: str | Path) -> int:
 
 
 
-def compute_metrics(gen_dir:str | Path, real_dir:str | Path) -> dict[str, float]:
+def compute_metrics(gen_dir:str | Path, real_dir:str | Path = Path('/root/autodl-tmp/imagenet/val')) -> dict[str, float]:
     real_images = _load_images_from_dir(real_dir)
     gen_images = _load_images_from_dir(gen_dir)
     metrics = {}
@@ -338,7 +338,7 @@ def compute_metrics(gen_dir:str | Path, real_dir:str | Path) -> dict[str, float]
 
 def compute_fid(real_images:torch.Tensor, gen_images:torch.Tensor) -> float:
     from torchmetrics.image.fid import FrechetInceptionDistance
-    fid = FrechetInceptionDistance(feature=2048, normalize=False)
+    fid = FrechetInceptionDistance(feature=2048, normalize=False) # 2048是默认的feature维度
     fid.set_dtype(torch.float64)
     fid.update(real_images,real=True)
     fid.update(gen_images,real=False)
@@ -347,7 +347,7 @@ def compute_fid(real_images:torch.Tensor, gen_images:torch.Tensor) -> float:
 
 def compute_is(gen_images:torch.Tensor) -> tuple[float, float]:
     from torchmetrics.image.inception import InceptionScore
-    is_model = InceptionScore(normalize=False, splits=5)
+    is_model = InceptionScore(normalize=False, splits=5) # splits=5，得到std然后report在paper中。 mean +- std
     is_model.update(gen_images)
     is_mean, is_std = is_model.compute()
     return float(is_mean), float(is_std)
@@ -390,7 +390,7 @@ def compute_clipscore(
     prompts:list[str],
     *,
     clip_model_dir: str | Path | None = None,
-    device: str | None = None,
+    device: str = set_device(),
 ) -> float:
     """Mean CLIPScore (0–100) between images under ``gen_dir`` and ``texts``.
 
@@ -533,36 +533,7 @@ def rollout_dit_with_steps(
     torch.cuda.empty_cache()
 
     return img_counter
-
-
-
-
-
-def baseline_fid_verifier(model_name:str, cfg:float, denoising_steps:int=10) -> float:
-    from pprint import pprint
-    from tqdm import tqdm
-    parallel_size_ls = Constants_ls['parallel_size_ls']
-    for parallel_size in parallel_size_ls:
-        metrics = run(model_name, cfg, parallel_size)
-        pprint(metrics)
-        print('-'*100)
-    
-    def run(model_name:str,cfg:float, parallel_size:int) -> dict:
-        seed = Constants_default['seed']
-        set_seed(seed)
-        device = set_device()
-        pipe = model_loader(model_name, device, dtype='fp16')
-        pipe.scheduler.set_timesteps(denoising_steps)
-        pbar = tqdm(pipe.scheduler.timesteps, desc=f'{model_name}-{cfg}-{parallel_size}')
-        
-
-def baseline_clipscore_verifier(
-    model_name:str,
-    cfg:float,
-    denoising_steps,
-    parallel_size:int,
-    ):
-    pass      
+   
 
 
 ##########################################################
