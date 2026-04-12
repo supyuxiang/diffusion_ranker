@@ -652,6 +652,16 @@ def rollout_ddpm_with_steps(
 
 
 
+
+
+
+
+
+
+
+
+
+
 def _iter_image_tensor_batches(
     img_dir: Path,
     batch_size: int = 64,
@@ -761,161 +771,9 @@ def _load_hf_image_split(hf_dataset_id: str, split: str):
     ) from last_err
 
 
-def prepare_real_images_from_hf(
-    output_dir: Path,
-    *,
-    hf_dataset_id: str = "nielsr/CelebA-HQ-resized-256",
-    split: str = "train",
-    num_samples: int = 30000,
-    shuffle_seed: int = 0,
-) -> Path:
-    """
-    从 Hugging Face Hub 拉取人脸数据集并导出为 256×256 PNG，供 torch_fidelity 作真实参考集。
-    若目录内已有不少于 num_samples 张 png 则跳过下载。首次拉取体积较大，需网络与 datasets 依赖。
-    """
-    import random
-
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    existing = list(output_dir.glob("*.png"))
-    if len(existing) >= num_samples:
-        print(f"reuse HF-exported real images: {output_dir} ({len(existing)} files)")
-        return output_dir
-
-    for p in output_dir.glob("*.png"):
-        p.unlink()
-
-    print(
-        f"loading HF dataset {hf_dataset_id!r} split={split!r} "
-        f"(first run may download several GB; will try alternates if not found)..."
-    )
-    ds, resolved_id = _load_hf_image_split(hf_dataset_id, split)
-    total = len(ds)
-    n_export = min(num_samples, total)
-    if n_export < num_samples:
-        raise ValueError(
-            f"{resolved_id} split={split} has only {total} samples, need at least {num_samples}"
-        )
-
-    row0 = ds[0]
-    key = None
-    for cand in ("image", "img"):
-        if cand in row0:
-            key = cand
-            break
-    if key is None:
-        raise ValueError(
-            f"could not find an image column in {resolved_id}; first row keys: {list(row0.keys())}"
-        )
-
-    idxs = list(range(total))
-    rng = random.Random(shuffle_seed)
-    rng.shuffle(idxs)
-    idxs = idxs[:n_export]
-
-    for i, ds_idx in enumerate(tqdm(idxs, desc="export HF real images")):
-        raw = ds[ds_idx][key]
-        if isinstance(raw, Image.Image):
-            img = raw
-        elif isinstance(raw, dict) and "bytes" in raw:
-            import io
-
-            img = Image.open(io.BytesIO(raw["bytes"]))
-        else:
-            import numpy as np
-
-            img = Image.fromarray(np.asarray(raw))
-        img = img.convert("RGB").resize((256, 256), Image.LANCZOS)
-        img.save(output_dir / f"{i:06d}.png")
-
-    print(f"exported {n_export} images to {output_dir}")
-    return output_dir
 
 
-def eval_real_images(args, output_dir: Path, device: torch.device):
-    """evaluate FID, CLIPScore, IS of real images (as baseline)"""
-    from datasets import load_from_disk
 
-    real_dataset = Path(args.real_dataset)
-    assert real_dataset.exists(), f"dataset not found: {args.real_dataset}"
-
-    num_samples = args.eval_real_samples
-    real_export = output_dir / "real_images_export"
-    existing = list(real_export.glob("*.png")) if real_export.exists() else []
-    if len(existing) >= num_samples:
-        print(f"reuse exported real images: {real_export} ({len(existing)} images)")
-    else:
-        print(f"exporting {num_samples} real images from {args.real_dataset} (only first time, then reuse)...")
-        prepare_real_images_dir(args.real_dataset, real_export, num_samples=num_samples)
-
-    images = []
-    real_pngs = sorted(real_export.glob("*.png"))[:num_samples] if real_export.exists() else []
-    if len(real_pngs) >= num_samples:
-        for p in real_pngs[:num_samples]:
-            images.append(Image.open(p).convert("RGB"))
-        n = len(images)
-    else:
-        ds = load_from_disk(str(real_dataset))
-        n = min(num_samples, len(ds))
-        for i in range(n):
-            img = ds[i]["image"]
-            if not isinstance(img, Image.Image):
-                img = Image.fromarray(img)
-            img = img.resize((256, 256), Image.LANCZOS)
-            images.append(img)
-
-    print("\n--- real images metrics ---")
-
-    half = n // 2
-    real_a = output_dir / "real_split_a"
-    real_b = output_dir / "real_split_b"
-    real_a.mkdir(exist_ok=True)
-    real_b.mkdir(exist_ok=True)
-    for i in range(half):
-        images[i].save(real_a / f"{i:04d}.png")
-    for i in range(half, min(2 * half, n)):
-        images[i].save(real_b / f"{i:04d}.png")
-
-    fid_val = float("nan")
-    is_val = float("nan")
-    try:
-        from torchmetrics.image.fid import FrechetInceptionDistance
-        from torchmetrics.image.inception import InceptionScore
-
-        inc_w = resolve_fidelity_inception_weights_path()
-        fid_kw = dict(feature_extractor_weights_path=inc_w) if inc_w else {}
-        fid_metric = FrechetInceptionDistance(feature=2048, **fid_kw).to(device)
-        for batch in _iter_image_tensor_batches(real_a, 64, device=device):
-            fid_metric.update(batch, real=True)
-        for batch in _iter_image_tensor_batches(real_b, 64, device=device):
-            fid_metric.update(batch, real=False)
-        fid_val = float(fid_metric.compute())
-
-        is_feat = _torchmetrics_inception_module_for_layer(inc_w, "logits_unbiased")
-        is_metric = InceptionScore(feature=is_feat, normalize=False).to(device)
-        for batch in _iter_image_tensor_batches(real_export, 64, device=device):
-            is_metric.update(batch)
-        is_mean, _ = is_metric.compute()
-        is_val = float(is_mean)
-    except Exception as e:
-        print(f"  torchmetrics 计算失败: {e}")
-
-    clip_val = compute_clip_score(images, device)
-
-    print(f"  FID (self, 两半真实图): {fid_val:.2f}")
-    print(f"  CLIPScore: {clip_val:.4f}")
-    print(f"  IS: {is_val:.4f}")
-    print("\n说明: FID 为同一数据集两半之间的值，应接近 0；CLIPScore/IS 为真实图像 baseline")
-
-# def load_real_images(real_images_dir:Path) -> list[Image.Image]:
-#     '''
-#     load real images from directory
-#     '''
-#     real_images = []
-#     for img_path in real_images_dir.glob("*.png"):
-#         img = Image.open(img_path).convert("RGB")
-#         real_images.append(img)
-#     return real_images
 
 if __name__ == "__main__":
     pass
