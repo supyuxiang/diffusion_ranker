@@ -267,36 +267,6 @@ def model_loader(model_name:str, device:str, dtype:str='fp16') -> DiTPipeline | 
 
 
 ############    compute metrics    ############
-def compute_FID(gen_dir:str | Path, real_dir:str | Path) -> float:
-    from torchmetrics.image.fid import FrechetInceptionDistance
-    pass
-
-def compute_IS(gen_dir:str | Path) -> float:
-    from torchmetrics.image.inception import InceptionScore
-    pass
-
-def compute_CLIPScore(gen_dir:str | Path, real_dir:str | Path) -> float:
-    from torchmetrics.multimodal.clip_score import CLIPScore
-    pass
-
-
-
-def compute_KID(gen_dir:str | Path, real_dir:str | Path) -> float:
-    from torchmetrics.image.kid import KernelInceptionDistance
-    pass
-
-def compute_Precision(gen_dir:str | Path, real_dir:str | Path) -> float:
-    from torchmetrics.image.precision import Precision
-    pass
-
-def compute_Recall(gen_dir:str | Path, real_dir:str | Path) -> float:
-    from torchmetrics.image.recall import Recall
-    pass
-
-
-
-##########################################################
-
 
 def _load_images_from_dir(
     folder: Path | str,
@@ -350,16 +320,6 @@ def _remove_corrupted_images(gen_dir: str | Path) -> int:
     return removed
 
 
-
-# def compute_fid_and_is(gen_dir: str | Path, real_dir: str | Path):
-#     from torchmetrics.image.fid import FrechetInceptionDistance
-#     from torchmetrics.image.inception import InceptionScore
-
-#     real_images = _load_images_from_dir(real_dir)
-#     gen_images = _load_images_from_dir(gen_dir)
-#     fid_value = compute_fid(real_images, gen_images)
-#     is_value, is_std = compute_is(gen_images)
-#     return fid_value, is_value, is_std
 
 def compute_metrics(gen_dir:str | Path, real_dir:str | Path, texts:list[str]) -> dict[str, float]:
     real_images = _load_images_from_dir(real_dir)
@@ -467,6 +427,20 @@ def compute_clipscore(
     metric.update(gen_images, cap_list)
     return float(metric.compute().item())
 
+
+# do not implement now
+def compute_KID(gen_dir:str | Path, real_dir:str | Path) -> float:
+    from torchmetrics.image.kid import KernelInceptionDistance
+    pass
+
+def compute_Precision(gen_dir:str | Path, real_dir:str | Path) -> float:
+    from torchmetrics.image.precision import Precision
+    pass
+
+def compute_Recall(gen_dir:str | Path, real_dir:str | Path) -> float:
+    from torchmetrics.image.recall import Recall
+    pass
+# 
 
 
 
