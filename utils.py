@@ -468,7 +468,7 @@ def compute_is(gen_images:torch.Tensor) -> tuple[float, float]:
 
 
 @lru_cache(maxsize=1)
-def _imagenet_simple_labels_tuple() -> tuple[str, ...]:
+def _imagenet_simple_labels_list() -> list[str]:
     """1000 个类名字符串；下标与 DiT / PyTorch ImageNet（WNID 字典序）一致。仅读 json 文件。"""
     # 离线标签：先运行 ``python3 scripts/build_imagenet_simple_labels.py``（从 autodl-pub devkit 生成 json）
     _DEFAULT_IMAGENET_LABELS_JSON = Path("/root/diffusion_ranker/imagenet-simple-labels.json")
@@ -476,12 +476,7 @@ def _imagenet_simple_labels_tuple() -> tuple[str, ...]:
     path = _DEFAULT_IMAGENET_LABELS_JSON.expanduser().resolve()
     with open(path, "r", encoding="utf-8") as f:
         labels = json.load(f)
-    return tuple(str(x) for x in labels)
-
-
-def imagenet_simple_labels_list() -> list[str]:
-    """1000 个类名（list），下标与 DiT / ImageNet 一致；数据来自仓库 ``imagenet-simple-labels.json``。"""
-    return list(_imagenet_simple_labels_tuple())
+    return list(str(x) for x in labels) # list
 
 
 def imagenet_label2text_for_clipscore(label_ls: list[int]) -> list[str]:
@@ -489,7 +484,7 @@ def imagenet_label2text_for_clipscore(label_ls: list[int]) -> list[str]:
     assert isinstance(label_ls, list) and all(isinstance(label, int) and 0 <= label < 1000 for label in label_ls), f"label_ls must be a list of int in [0, 999], got {label_ls}"
     prompt_template = "a photo of a {label}"
     formatted_prompts = [
-        prompt_template.replace('{label}', _imagenet_simple_labels_tuple()[label])
+        prompt_template.replace('{label}', _imagenet_simple_labels_list()[label])
         for label in label_ls
     ]
     return formatted_prompts

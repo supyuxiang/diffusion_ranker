@@ -23,7 +23,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from utils import _prepare_pil_for_save, imagenet_simple_labels_list, model_loader
+from utils import _prepare_pil_for_save, _imagenet_simple_labels_list, model_loader
 
 ##########################################
 IMAGENET_NUM_CLASSES = 1000
@@ -40,7 +40,7 @@ def load_imagenet_simple_labels(cache_dir: Path | None = None) -> list[str]:
 
     ``cache_dir`` 已弃用，保留仅为兼容旧调用。
     """
-    return imagenet_simple_labels_list()
+    return _imagenet_simple_labels_list()
 
 
 def prompt_for_class(labels: list[str], class_id: int, template: str) -> str:
