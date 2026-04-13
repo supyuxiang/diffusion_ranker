@@ -38,14 +38,22 @@ def _output_dir(guidance_scale: float, deno_steps: int, candidate_idx: int) -> P
 
 def rollout_init_1024(
     pipe: DiTPipeline,
-    init1024_dir: Path,
     guidance_scale: float,
     deno_steps: int,
 ) -> int:
+
+    # save_dir = Path(
+    #     f"/root/autodl-tmp/dit_candidates_50k_cfg{guidance_scale}_deno{deno_steps}/init1024"
+    # )
+
+    init1024_dir: Path=Path("/root/autodl-tmp/dit_candidates_50k_cfg{guidance_scale}_deno{deno_steps}/init1024")
+    init1024_dir.mkdir(parents=True, exist_ok=True)
+
     seed = 521
     num_samples = 1024
     batch_size = 512
     device = set_device()
+
     
     return rollout_dit_with_steps(
         pipe,

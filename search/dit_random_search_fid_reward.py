@@ -68,9 +68,11 @@ def extract_features_from_images(
     return np.concatenate(chunks, axis=0)  # (N, 2048)
 
 
-def compute_ref_statistics(
-    real_dir: Path, cache_name: str
-) -> dict:
+def compute_ref_statistics() -> dict:
+
+    real_dir = Path("/root/autodl-tmp/imagenet/val")
+    cache_name = "imagenet_val"
+
     from torch_fidelity.metric_fid import fid_input_id_to_statistics_cached
     from torch_fidelity.utils import create_feature_extractor
 
@@ -87,28 +89,21 @@ def compute_ref_statistics(
         feature_extractor_weights_path=INCEPTION_WEIGHTS_PATH,
     )
     feat_extractor = create_feature_extractor("inception-v3-compat", ["2048"], **kwargs)
-    return fid_input_id_to_statistics_cached(2, feat_extractor, "2048", **kwargs) # 
+    # 已是 {"mu","sigma"}；勿对返回值再调 fid_features_to_statistics（后者输入须为 (N,2048) 特征）
+    return fid_input_id_to_statistics_cached(2, feat_extractor, "2048", **kwargs)
 
 
-def init_from_precomputed(
+def init_stats_loader(
     feat_extractor,
-    output_dir: Path,
-    init_paths: list[Path],
+    init_dir:Path,
     device: torch.device,
 ) -> tuple[dict, int]:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    init_images = [Image.open(path).convert("RGB").copy() for path in init_paths]
-    for i, image in enumerate(init_images):
-        image.save(output_dir / f"{i:06d}.png")
-    return (
-        fid_features_to_statistics(
-            extract_features_from_images(init_images, feat_extractor, device)
-        ), len(init_images)
+    init_path_ls = sorted(init_dir.glob("image_*_*.png"), key=lambda p: int(p.stem.split("_")[1]))
+    init_image_ls = [Image.open(path).convert("RGB").copy() for path in init_path_ls]
+    init_stats = fid_features_to_statistics(
+        extract_features_from_images(init_image_ls, feat_extractor, device)
     )
-
-
-from reward import fid_reward
-
+    return init_stats, len(init_image_ls)
 
 
 
@@ -125,12 +120,9 @@ def run_random_search_fid(
     init_stats: dict,
     n_init: int,
 ) -> None:
+    from reward import fid_reward, merge_fid_statistics, fid_statistics_to_distance, fid_features_to_statistics
+    
     output_dir.mkdir(parents=True, exist_ok=True)
-    for candidate_idx in range(num_candidates):
-        if len(candidate_path_lists[candidate_idx]) < num_samples:
-            raise RuntimeError(
-                f"candidate_{candidate_idx:04d}: need {num_samples} imgs, got {len(candidate_path_lists[candidate_idx])}"
-            )
 
     selected_stats, n_selected = init_stats, n_init
     cursor = img_counter = n_init
@@ -183,7 +175,6 @@ def run_random_search_fid(
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--imagenet_val", default="/root/autodl-tmp/imagenet/val")
     parser.add_argument("--output_dir", default="/root/autodl-tmp/eval_dit_random_search_fid")
     parser.add_argument("--num_samples", type=int, default=50_000)
     parser.add_argument("--batch_size", type=int, default=24)
@@ -191,56 +182,50 @@ def parse_args():
     parser.add_argument("--deno_steps", type=int, default=20)
     parser.add_argument("--guidance_scale", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--ref_cache_name", default="imagenet_val")
     parser.add_argument("--metrics_batch_size", type=int, default=64)
-    parser.add_argument("--candidates_root", default="")
-    parser.add_argument("--init_dir", default="")
     return parser.parse_args()
 
 
-def precompute_ref_statistics(imagenet_val:Path, ref_cache_name:str) -> dict:
-    save_path = Path(f"/root/autodl-tmp/ref_statistics_{ref_cache_name}.json")
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    ref_stats = compute_ref_statistics(imagenet_val, ref_cache_name)
-    with open(save_path, "w") as f:
-        json.dump(ref_stats, f)
-    return ref_stats
-
-
-def ref_statistics_loader() -> dict:
-    path = Path(f"/root/autodl-tmp/ref_statistics_{ref_cache_name}.json")
-    with open(path,'r',encoding='utf-8') as f:
-        ref_stats = json.load(f)
-    return ref_stats
-
-
-def init_stats_loader() -> dict:
-    path = Path(f"/root/autodl-tmp/init_statistics.json")
-    with open(path,'r',encoding='utf-8') as f:
-        init_stats = json.load(f)
-    return init_stats
 
 
 def main() -> None:
+
+    imagenet_val = Path("/root/autodl-tmp/imagenet/val")
+    cache_name = "imagenet_val"
+
     args = parse_args()
     output_dir = Path(args.output_dir).expanduser().resolve()
-    imagenet_val = Path(args.imagenet_val).expanduser().resolve()
+
+    rollout_root = Path(
+        f'/root/autodl-tmp/dit_candidates_50k_cfg{args.guidance_scale}_deno{args.deno_steps}'
+    )
+
+    # candidate_dir = rollout_root / f"candidate_{i:04d}"
+    # init_dir = rollout_root / "init1024"
+    # load candidate dir and init dir
+    candidate_dir_ls = [
+        rollout_root / f'candidate_{i:04d}' for i in range(args.num_candidates)
+    ]
+    init_dir = rollout_root / "init1024"
+    
+    # check 
+    assert all([
+        [len([path for path in candidate_dir.glob("image_*_*.png")])==int(50000-1024)]
+        for candidate_dir in candidate_dir_ls
+    ]
+    ) and len([path for path in init_dir.glob("image_*_*.png")])==1024
+    , f"init_dir or candidate_dir_ls is not correct"
+
 
     set_seed(args.seed)
     device = set_device()
 
     print("ref statistics …")
-    ref_stats = compute_ref_statistics(imagenet_val, args.ref_cache_name)
+    ref_stats = compute_ref_statistics() # dict: {"mu": (2048,), "sigma": (2048, 2048)}
     print(f"   μ {ref_stats['mu'].shape}, Σ {ref_stats['sigma'].shape}")
-    feat_extractor = get_inception_feature_extractor(device)
-
-    candidates_root = (
-        Path(args.candidates_root).expanduser().resolve()
-        if args.candidates_root
-        else Path(
-            f"/root/autodl-tmp/dit_candidates_50k_cfg{args.guidance_scale}_deno{args.deno_steps}"
-        )
-    )
+    feat_extractor = get_inception_feature_extractor(
+        "cuda" if device.type == "cuda" else "cpu"
+    ) # built inception_feature_extractor
 
     # prepare candidate pathes list : list[list[Path]] : [[path1, path2, ...], [path1, path2, ...], ...]
     candidate_pathes_ls: list[list[Path]] = []
@@ -262,10 +247,9 @@ def main() -> None:
     )
     assert len(init_path_ls) ==  1024
 
-    # init_stats, n_init = init_from_precomputed(
-    #     feat_extractor, output_dir, init_path_ls, device
-    # )
-    init_stats, n_init = init_stats_loader()
+    init_stats, n_init = init_stats_loader(
+        feat_extractor, output_dir, init_path_ls, device
+    )
 
     run_random_search_fid(
         feat_extractor,
