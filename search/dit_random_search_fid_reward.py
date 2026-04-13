@@ -38,13 +38,16 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 from utils import (
     INCEPTION_WEIGHTS_PATH,
+    compute_clipscore,
     compute_fid_is_from_dirs,
     fid_features_to_statistics,
     fid_statistics_to_distance,
     get_inception_feature_extractor,
+    imagenet_label2text_for_clipscore,
     merge_fid_statistics,
     set_device,
     set_seed,
+    _load_images_from_dir,
 )
 
 from reward import fid_reward, merge_fid_statistics, fid_statistics_to_distance, fid_features_to_statistics, extract_features_from_images
@@ -185,6 +188,13 @@ def parse_args():
     parser.add_argument("--guidance_scale", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--metrics_batch_size", type=int, default=64)
+    parser.add_argument(
+        "--clip_model_dir",
+        type=Path,
+        default=None,
+        help="覆盖默认 utils.CLIP_HF_LOCAL_DIR",
+    )
+    parser.add_argument("--clip_batch_size", type=int, default=64)
     return parser.parse_args()
 
 
@@ -276,6 +286,10 @@ def main() -> None:
                 "guidance_scale": args.guidance_scale,
                 "seed": args.seed,
                 "ref_cache_name": cache_name,
+                "clip_model_dir": str(args.clip_model_dir)
+                if args.clip_model_dir is not None
+                else None,
+                "clip_batch_size": args.clip_batch_size,
             },
             indent=2,
             ensure_ascii=False,
@@ -286,15 +300,50 @@ def main() -> None:
     best_dir = output_dir / 'best_images'
     save_best_images(best_path_ls, best_dir)
     # compute metrics
-    metrics = compute_fid_is_from_dirs(
-        best_dir, imagenet_val, device, batch_size=args.metrics_batch_size
+    dev_str = "cuda" if device.type == "cuda" else "cpu"
+    metrics: dict[str, float] = {
+        k: float(v)
+        for k, v in compute_fid_is_from_dirs(
+            best_dir,
+            imagenet_val,
+            dev_str,
+            batch_size=args.metrics_batch_size,
+        ).items()
+    }
+    exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+    paths = sorted(
+        p for p in best_dir.iterdir() if p.suffix.lower() in exts and p.is_file()
     )
-    print(f"FID {metrics['FID']:.2f}, IS {metrics['IS']:.4f} ± {metrics['IS_STD']:.4f}")
-    # save metrics json
+    labels_ls = [int(p.stem.split("_")[-1]) for p in paths]
+    gen_images = _load_images_from_dir(best_dir)
+    if gen_images.shape[0] != len(labels_ls):
+        raise ValueError(
+            f"best_dir image count {gen_images.shape[0]} vs labels {len(labels_ls)}"
+        )
+    prompts = imagenet_label2text_for_clipscore(labels_ls)
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    metrics["CLIPScore"] = float(
+        compute_clipscore(
+            gen_images,
+            prompts,
+            device=device,
+            clip_model_dir=args.clip_model_dir,
+            clip_batch_size=args.clip_batch_size,
+        )
+    )
+    del gen_images, prompts
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    print(
+        f"FID {metrics['FID']:.2f}, IS {metrics['IS']:.4f} ± {metrics['IS_STD']:.4f}, "
+        f"CLIPScore {metrics['CLIPScore']:.4f}"
+    )
     (best_dir / "final_metrics.json").write_text(
-        json.dumps(
-            {k: float(v) for k, v in metrics.items()}, indent=2, ensure_ascii=False
-        ),
+        json.dumps(metrics, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
 
