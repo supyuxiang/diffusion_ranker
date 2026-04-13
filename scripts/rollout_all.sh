@@ -13,7 +13,8 @@ for idx in "${idx_ls[@]}"; do
     --guidance_scale 1.0 \
     --num_samples 50000 \
     --batch_size 512 \
-    --dtype bf16
+    --dtype bf16 \
+    --repr_pt "/root/autodl-tmp/repr_candidate_${idx}_deno${DENO_STEPS}.pt"
 done
 
 # compute metrics: fid, is, clipscore
