@@ -141,13 +141,14 @@ def run_random_search_fid(
                 best_candidate_idx = candidate_idx
                 best_batch_images = batch_images
                 best_batch_stats = batch_stats
-            
-        best_path_ls.append(
-            candidate_path_ls[current_idx: current_idx + n_this_batch][best_candidate_idx]
-        )
-
 
         assert best_batch_images is not None and best_batch_stats is not None and best_candidate_idx != -1
+
+        # 必须用胜出 candidate 的路径列表；循环结束后 candidate_path_ls 只是「最后一个」candidate
+        win_paths = candidate_pathes_dict[best_candidate_idx][
+            current_idx : current_idx + n_this_batch
+        ]
+        best_path_ls.extend(win_paths)
         
         selected_stats, n_selected = merge_fid_statistics(
             selected_stats, n_selected, best_batch_stats, len(best_batch_images)
@@ -204,7 +205,14 @@ def main() -> None:
     init_dir = rollout_root / "init1024"
     
     # check 
-    assert all([[len([path for path in candidate_dir.glob("image_*_*.png")])==int(50000-1024)] for candidate_dir in candidate_dir_ls]) and len([path for path in init_dir.glob("image_*_*.png")])==1024, f"init_dir or candidate_dir_ls is not correct"
+    n_expect = args.num_samples - N_INIT
+    assert all(
+        len(list(candidate_dir.glob("image_*_*.png"))) == n_expect
+        for candidate_dir in candidate_dir_ls
+    ) and len(list(init_dir.glob("image_*_*.png"))) == N_INIT, (
+        f"expected each candidate to have {n_expect} images and init {N_INIT}; "
+        f"check rollout_root={rollout_root}"
+    )
 
 
     set_seed(args.seed)
