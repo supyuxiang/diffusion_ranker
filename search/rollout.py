@@ -14,7 +14,8 @@
   --guidance_scale 1.0 \
   --num_samples 50000 \
   --batch_size 512 \
-  --dtype bf16
+  --dtype bf16 \
+  --repr_pt "/root/autodl-tmp/repr_candidate_0_deno10.pt"
 """
 
 from __future__ import annotations
