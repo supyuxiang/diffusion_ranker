@@ -15,15 +15,12 @@
   --num_samples 50000 \
   --batch_size 512 \
   --dtype bf16
-
-可选：抓取中间步 token 表征（会关闭 ``torch.compile``）::
-
-  python3 search/rollout.py ... --repr_pt /tmp/cand0_repr.pt --repr_max_batches 2
 """
 
 from __future__ import annotations
 
 import argparse
+import gc
 import os
 import sys
 from pathlib import Path
@@ -37,6 +34,13 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 from utils import DitRolloutReprCapture, model_loader, rollout_dit_with_steps, set_device
 
 BASE_SEED = 42
+
+
+def _cuda_mem_trim() -> None:
+    """与 language_ranker sample_hidden 类似：在重 GPU / 大批次表征抓取后回收碎片显存。"""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def _output_dir(guidance_scale: float, deno_steps: int, candidate_idx: int) -> Path:
@@ -56,7 +60,9 @@ def rollout_init_1024(
     #     f"/root/autodl-tmp/dit_candidates_50k_cfg{guidance_scale}_deno{deno_steps}/init1024"
     # )
 
-    init1024_dir: Path=Path("/root/autodl-tmp/dit_candidates_50k_cfg{guidance_scale}_deno{deno_steps}/init1024")
+    init1024_dir = Path(
+        f"/root/autodl-tmp/dit_candidates_50k_cfg{guidance_scale}_deno{deno_steps}/init1024"
+    )
     init1024_dir.mkdir(parents=True, exist_ok=True)
 
     seed = 521
@@ -64,11 +70,10 @@ def rollout_init_1024(
     batch_size = 512
     device = set_device()
 
-    
     return rollout_dit_with_steps(
         pipe,
         init1024_dir,
-        num_steps,
+        deno_steps,
         num_samples,
         batch_size,
         device,
@@ -126,6 +131,12 @@ def main() -> None:
         default=-1,
         help="仅记录前 K 个 batch 的表征；-1 表示每个 batch 都记（占用大）",
     )
+    p.add_argument(
+        "--repr_store_dtype",
+        default="fp16",
+        choices=("fp16", "bf16"),
+        help="表征落盘前的精度（fp16 更省内存；与 sample_hidden 思路一致：尽快缩小 CPU 侧占用）",
+    )
     args = p.parse_args()
 
     device = set_device()
@@ -137,10 +148,14 @@ def main() -> None:
     repr_capture: DitRolloutReprCapture | None = None
     repr_max_batches: int | None = None
     if args.repr_pt:
+        store_dtype = (
+            torch.bfloat16 if args.repr_store_dtype == "bf16" else torch.float16
+        )
         repr_capture = DitRolloutReprCapture(
             pipe,
             num_inference_steps=args.deno_steps,
             guidance_scale=args.guidance_scale,
+            store_dtype=store_dtype,
         )
         repr_capture.install()
         repr_max_batches = None if args.repr_max_batches < 0 else args.repr_max_batches
@@ -166,7 +181,9 @@ def main() -> None:
 
     if repr_capture is not None:
         repr_path = Path(args.repr_pt).expanduser().resolve()
+        _cuda_mem_trim()
         repr_capture.save_pt(repr_path)
+        _cuda_mem_trim()
         print(f"representations saved -> {repr_path}")
     if n != args.num_samples:
         print(f"warning: wrote {n}, expected {args.num_samples}", file=sys.stderr)

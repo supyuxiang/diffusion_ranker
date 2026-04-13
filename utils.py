@@ -610,7 +610,7 @@ class DitRolloutReprCapture:
 
     def __init__(
         self,
-        pipe: "DiTPipeline",
+        pipe: DiTPipeline,
         *,
         num_inference_steps: int,
         guidance_scale: float,
@@ -717,6 +717,7 @@ class DitRolloutReprCapture:
                 "repr": repr_dict,
             }
         )
+        self._current.clear()
 
     def save_pt(self, path: Path) -> None:
         path = Path(path)
@@ -737,6 +738,7 @@ class DitRolloutReprCapture:
             },
             path,
         )
+        self.records.clear()
 
 
 @torch.inference_mode()
@@ -823,8 +825,15 @@ def rollout_dit_with_steps(
             ]
             for fut in as_completed(futures):
                 fut.result()
+
+        del out, gen, batch_images, to_save
+        if repr_capture is not None and device.type == "cuda":
+            torch.cuda.empty_cache()
+            gc.collect()
+
     gc.collect()
-    torch.cuda.empty_cache()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
     return img_counter
 
