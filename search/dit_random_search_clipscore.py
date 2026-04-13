@@ -12,9 +12,9 @@ DiT Random Search + CLIPScore verifier（仅读预生成图）。init 固定 N_I
 
 用法::
 
-  python3 search/dit_random_search_clipscore.py \\
-      --output_dir /root/autodl-tmp/eval_dit_rs_clip \\
-      --deno_steps 10 --guidance_scale 1.0 \\
+  python3 search/dit_random_search_clipscore.py \
+      --output_dir /root/autodl-tmp/eval_dit_rs_clip \
+      --deno_steps 10 --guidance_scale 1.0 \
       --num_candidates 16 --batch_size 32
 """
 
