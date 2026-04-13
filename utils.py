@@ -605,6 +605,140 @@ def _save_pil_task(path: Path, img: Image.Image, *, fmt: str, jpeg_quality: int,
 _ROLLOUT_SAVE_WORKERS = 4
 
 
+class DitRolloutReprCapture:
+    """在 ``DiTPipeline`` 单次 ``__call__`` 内，按去噪步与指定 DiT block 抓取 token 表征（mean / last）。"""
+
+    def __init__(
+        self,
+        pipe: "DiTPipeline",
+        *,
+        num_inference_steps: int,
+        guidance_scale: float,
+        layer_ratios: tuple[float, ...] = (
+            0.1,
+            0.2,
+            0.3,
+            0.4,
+            0.5,
+            0.6,
+            0.7,
+            0.8,
+            0.9,
+            1.0,
+        ),
+        step_fractions: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0),
+        store_dtype: torch.dtype = torch.float16,
+    ) -> None:
+        self.pipe = pipe
+        self.T = num_inference_steps
+        self.guidance_scale = guidance_scale
+        self.store_dtype = store_dtype
+        self.target_steps = sorted(
+            {
+                min(self.T - 1, max(0, round(f * (self.T - 1))))
+                for f in step_fractions
+            }
+        )
+        n_blocks = len(pipe.transformer.transformer_blocks)
+        self.layer_specs: list[tuple[float, int]] = []
+        seen: set[int] = set()
+        for r in layer_ratios:
+            idx = int(round(r * (n_blocks - 1)))
+            idx = max(0, min(n_blocks - 1, idx))
+            if idx in seen:
+                continue
+            seen.add(idx)
+            self.layer_specs.append((float(r), idx))
+        self._handles: list = []
+        self.records: list[dict] = []
+        self._capturing = False
+        self._step_counter = {"v": -1}
+        self._current: dict[tuple[int, float], dict[str, torch.Tensor]] = {}
+        self._batch_labels: list[int] = []
+        self._batch_size = 0
+
+    def _pre_transformer(self, _module, _inputs) -> None:
+        if not self._capturing:
+            return
+        self._step_counter["v"] += 1
+
+    def _make_block_hook(self, ratio: float):
+        def hook(_module, _inp, out: torch.Tensor) -> None:
+            if not self._capturing:
+                return
+            s = self._step_counter["v"]
+            if s not in self.target_steps:
+                return
+            h = out[0] if isinstance(out, tuple) else out
+            if h.dim() != 3:
+                return
+            B = self._batch_size
+            if self.guidance_scale > 1:
+                h = h[:B]
+            mean_p = h.mean(dim=1).cpu().to(self.store_dtype)
+            last_p = h[:, -1, :].cpu().to(self.store_dtype)
+            self._current[(int(s), float(ratio))] = {"mean": mean_p, "last": last_p}
+
+        return hook
+
+    def install(self) -> None:
+        self._handles.append(
+            self.pipe.transformer.register_forward_pre_hook(self._pre_transformer)
+        )
+        for ratio, idx in self.layer_specs:
+            block = self.pipe.transformer.transformer_blocks[idx]
+            self._handles.append(block.register_forward_hook(self._make_block_hook(ratio)))
+
+    def remove(self) -> None:
+        for h in self._handles:
+            h.remove()
+        self._handles.clear()
+
+    def set_capturing(self, active: bool) -> None:
+        self._capturing = active
+
+    def begin_batch(self, batch_labels: list[int]) -> None:
+        self._step_counter["v"] = -1
+        self._current = {}
+        self._batch_labels = list(batch_labels)
+        self._batch_size = len(batch_labels)
+
+    def end_batch(self, batch_idx: int, image_index_start: int) -> None:
+        if not self._capturing:
+            return
+        repr_dict = {
+            f"s{s}_r{r:g}": v for (s, r), v in self._current.items()
+        }
+        self.records.append(
+            {
+                "batch_idx": batch_idx,
+                "image_index_start": image_index_start,
+                "labels": self._batch_labels,
+                "repr": repr_dict,
+            }
+        )
+
+    def save_pt(self, path: Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "meta": {
+                    "num_inference_steps": self.T,
+                    "target_step_indices": self.target_steps,
+                    "layer_ratios": [r for r, _ in self.layer_specs],
+                    "layer_block_indices": [i for _, i in self.layer_specs],
+                    "n_transformer_blocks": len(self.pipe.transformer.transformer_blocks),
+                    "guidance_scale": self.guidance_scale,
+                    "pooling": ("mean_dim1", "last_token_dim1"),
+                    "store_dtype": str(self.store_dtype),
+                },
+                "batches": self.records,
+            },
+            path,
+        )
+
+
 @torch.inference_mode()
 def rollout_dit_with_steps(
     pipe: DiTPipeline,
@@ -619,6 +753,8 @@ def rollout_dit_with_steps(
     jpeg_quality: int = 92,
     png_compress_level: int = 1,
     image_size: int = 256,
+    repr_capture: DitRolloutReprCapture | None = None,
+    repr_max_batches: int | None = None,
 ):
     """
     For each batch: call ``DiTPipeline.__call__`` with ``num_inference_steps=num_steps`` so the
@@ -627,6 +763,9 @@ def rollout_dit_with_steps(
     This is not inherently faster than a hand-written loop (both step over timesteps in Python);
     speed comes from ``torch.compile``, fp16, and batch size. Using the official API keeps parity
     with diffusers and avoids duplicating CFG / sigma-split logic.
+
+    ``repr_capture``: 可选，在每次 ``pipe`` 内按步抓取若干 block 的 token 表征；``repr_max_batches``
+    非空时只记录前若干 batch（仍生成全部图像）。
     """
     if device is None:
         device = set_device()
@@ -642,12 +781,22 @@ def rollout_dit_with_steps(
         batch_labels_ls = torch.randint(0, num_classes, (batch_num_samples,), device=device).tolist() # [batch_size]
         gen = torch.Generator(device=device).manual_seed(seed + batch_idx) # build a generator for each batch
 
+        img_start = img_counter
+        if repr_capture is not None:
+            take_repr = repr_max_batches is None or batch_idx < repr_max_batches
+            repr_capture.set_capturing(take_repr)
+            if take_repr:
+                repr_capture.begin_batch(batch_labels_ls)
+
         out = pipe(
             class_labels=batch_labels_ls,
             num_inference_steps=num_steps,
             guidance_scale=guidance_scale,
             generator=gen,
         ) # 
+
+        if repr_capture is not None:
+            repr_capture.end_batch(batch_idx, img_start)
         batch_images = out.images # [batch_size, 3, 256, 256]
 
         to_save: list[tuple[Path, Image.Image]] = []

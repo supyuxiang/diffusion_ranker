@@ -8,7 +8,17 @@
 
 示例::
 
-  CUDA_VISIBLE_DEVICES=0 python3 search/rollout.py --candidate_idx 0 --deno_steps 10
+  CUDA_VISIBLE_DEVICES=0 python3 /root/diffusion_ranker/search/rollout.py \
+  --candidate_idx 0 \
+  --deno_steps 10 \
+  --guidance_scale 1.0 \
+  --num_samples 50000 \
+  --batch_size 512 \
+  --dtype bf16
+
+可选：抓取中间步 token 表征（会关闭 ``torch.compile``）::
+
+  python3 search/rollout.py ... --repr_pt /tmp/cand0_repr.pt --repr_max_batches 2
 """
 
 from __future__ import annotations
@@ -24,7 +34,7 @@ from diffusers import DiTPipeline
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
-from utils import model_loader, rollout_dit_with_steps, set_device
+from utils import DitRolloutReprCapture, model_loader, rollout_dit_with_steps, set_device
 
 BASE_SEED = 42
 
@@ -77,6 +87,9 @@ def rollout_candidate(
     device: torch.device,
     candidate_idx: int,
     guidance_scale: float,
+    *,
+    repr_capture: DitRolloutReprCapture | None = None,
+    repr_max_batches: int | None = None,
 ) -> int:
     seed = BASE_SEED + candidate_idx * 520
     return rollout_dit_with_steps(
@@ -88,6 +101,8 @@ def rollout_candidate(
         device,
         seed=seed,
         guidance_scale=guidance_scale,
+        repr_capture=repr_capture,
+        repr_max_batches=repr_max_batches,
     )
 
 
@@ -100,6 +115,17 @@ def main() -> None:
     p.add_argument("--deno_steps", type=int, default=10)
     p.add_argument("--guidance_scale", type=float, default=1.0)
     p.add_argument("--dtype", default="bf16", choices=("fp32", "fp16", "bf16"))
+    p.add_argument(
+        "--repr_pt",
+        default="",
+        help="若非空：抓取去噪步 {0,T/4,T/2,3T/4,T} 上若干层的 token mean/last 并存此 .pt（与 compile 不兼容，将自动关闭 compile）",
+    )
+    p.add_argument(
+        "--repr_max_batches",
+        type=int,
+        default=-1,
+        help="仅记录前 K 个 batch 的表征；-1 表示每个 batch 都记（占用大）",
+    )
     args = p.parse_args()
 
     device = set_device()
@@ -108,19 +134,40 @@ def main() -> None:
 
     pipe = model_loader(args.model_name, device=device, dtype=args.dtype)
     pipe.set_progress_bar_config(disable=True)
-    if device.type == "cuda":
+    repr_capture: DitRolloutReprCapture | None = None
+    repr_max_batches: int | None = None
+    if args.repr_pt:
+        repr_capture = DitRolloutReprCapture(
+            pipe,
+            num_inference_steps=args.deno_steps,
+            guidance_scale=args.guidance_scale,
+        )
+        repr_capture.install()
+        repr_max_batches = None if args.repr_max_batches < 0 else args.repr_max_batches
+    elif device.type == "cuda":
         pipe.transformer = torch.compile(pipe.transformer, mode="reduce-overhead")
 
-    n = rollout_candidate(
-        pipe,
-        out_dir,
-        args.num_samples,
-        args.batch_size,
-        args.deno_steps,
-        device,
-        args.candidate_idx,
-        args.guidance_scale,
-    )
+    try:
+        n = rollout_candidate(
+            pipe,
+            out_dir,
+            args.num_samples,
+            args.batch_size,
+            args.deno_steps,
+            device,
+            args.candidate_idx,
+            args.guidance_scale,
+            repr_capture=repr_capture,
+            repr_max_batches=repr_max_batches,
+        )
+    finally:
+        if repr_capture is not None:
+            repr_capture.remove()
+
+    if repr_capture is not None:
+        repr_path = Path(args.repr_pt).expanduser().resolve()
+        repr_capture.save_pt(repr_path)
+        print(f"representations saved -> {repr_path}")
     if n != args.num_samples:
         print(f"warning: wrote {n}, expected {args.num_samples}", file=sys.stderr)
     print(f"done -> {out_dir} ({n} images)")
