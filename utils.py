@@ -226,10 +226,18 @@ def _load_images_from_dir(
     folder: Path | str,
     max_images: int | None = None,
     subset_seed: int = 0,
+    *,
+    resize_crop: int | None = 256,
 ) -> torch.Tensor:
-    """Return ``(N, 3, H, W)`` uint8 RGB."""
+    """Return ``(N, 3, H, W)`` uint8 RGB.
+
+    ``resize_crop``：若为正整数，先 ``Resize(s)`` + ``CenterCrop(s)`` 再堆叠，避免 ImageNet
+    等目录里原始 JPEG 高宽不一导致 ``torch.stack`` 报错；与 ``compute_fid_is_from_dirs`` 的
+    256 预处理一致。传 ``None`` 或 ``0`` 则保持原分辨率（须彼此尺寸相同才能 stack）。
+    """
     import random as _random
 
+    import torchvision.transforms as T
     from torchvision.transforms import PILToTensor
 
     folder = Path(folder)
@@ -244,12 +252,15 @@ def _load_images_from_dir(
         paths = paths[:max_images]
     if not paths:
         raise FileNotFoundError(f"No images in {folder} (supported: {exts})")
+    if resize_crop is not None and resize_crop > 0:
+        to_tensor = T.Compose(
+            [T.Resize(resize_crop), T.CenterCrop(resize_crop), PILToTensor()]
+        )
+    else:
+        to_tensor = PILToTensor()
     tensors: list[torch.Tensor] = []
-    to_t = PILToTensor()
     for p in paths:
-        im = Image.open(p).convert("RGB")
-        t = to_t(im)
-        tensors.append(t)
+        tensors.append(to_tensor(Image.open(p).convert("RGB")))
     batch = torch.stack(tensors, dim=0)
     if not batch.dtype == torch.uint8:
         batch = batch.to(torch.uint8)
