@@ -46,6 +46,8 @@ from utils import (
     set_seed,
 )
 
+from reward import fid_reward, merge_fid_statistics, fid_statistics_to_distance, fid_features_to_statistics, extract_features_from_images
+
 
 
 
@@ -100,7 +102,6 @@ def run_random_search_fid(
     candidate_pathes_dict: dict[int, list[Path]],
     init_stats: dict,
 ) -> None:
-    from reward import fid_reward, merge_fid_statistics, fid_statistics_to_distance, fid_features_to_statistics, extract_features_from_images
     n_init = 1024
     output_dir.mkdir(parents=True, exist_ok=True)
     selected_stats, n_selected = init_stats, n_init
@@ -203,12 +204,7 @@ def main() -> None:
     init_dir = rollout_root / "init1024"
     
     # check 
-    assert all([
-        [len([path for path in candidate_dir.glob("image_*_*.png")])==int(50000-1024)]
-        for candidate_dir in candidate_dir_ls
-    ]
-    ) and len([path for path in init_dir.glob("image_*_*.png")])==1024
-    , f"init_dir or candidate_dir_ls is not correct"
+    assert all([[len([path for path in candidate_dir.glob("image_*_*.png")])==int(50000-1024)] for candidate_dir in candidate_dir_ls]) and len([path for path in init_dir.glob("image_*_*.png")])==1024, f"init_dir or candidate_dir_ls is not correct"
 
 
     set_seed(args.seed)

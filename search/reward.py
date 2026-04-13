@@ -73,7 +73,7 @@ def fid_statistics_to_distance(stat_gen: dict, stat_ref: dict) -> float:
 
 def fid_reward(batch_stats:dict,n_batch:int,selected_stats:dict,n_selected:int,ref_stats:dict) -> float:
     merged_stats = merge_fid_statistics(selected_stats,n_selected,batch_stats,n_batch)
-    return -fid_statistics_to_distance(merged_stats, imagenet_val_stats) # 越大越好
+    return -fid_statistics_to_distance(merged_stats, ref_stats) # 越大越好
 
 
 ########################     end fid reward     ##############################
