@@ -61,7 +61,7 @@ def extract_features_from_images(
     with torch.no_grad():
         for i in range(0, len(images), batch_size):
             tensors = torch.stack(
-                [transform(img) for img in images[i : i + batch_size]]
+                [transform(img) for img in images[i : i + batch_size]],dim=0
             )
             tensors = tensors.cuda(non_blocking=True)
             chunks.append(feat_extractor(tensors).cpu().numpy())
@@ -87,7 +87,7 @@ def compute_ref_statistics(
         feature_extractor_weights_path=INCEPTION_WEIGHTS_PATH,
     )
     feat_extractor = create_feature_extractor("inception-v3-compat", ["2048"], **kwargs)
-    return fid_input_id_to_statistics_cached(2, feat_extractor, "2048", **kwargs)
+    return fid_input_id_to_statistics_cached(2, feat_extractor, "2048", **kwargs) # 
 
 
 def init_from_precomputed(
@@ -105,6 +105,11 @@ def init_from_precomputed(
             extract_features_from_images(init_images, feat_extractor, device)
         ), len(init_images)
     )
+
+
+from reward import fid_reward
+
+
 
 
 @torch.inference_mode()
@@ -193,6 +198,29 @@ def parse_args():
     return parser.parse_args()
 
 
+def precompute_ref_statistics(imagenet_val:Path, ref_cache_name:str) -> dict:
+    save_path = Path(f"/root/autodl-tmp/ref_statistics_{ref_cache_name}.json")
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    ref_stats = compute_ref_statistics(imagenet_val, ref_cache_name)
+    with open(save_path, "w") as f:
+        json.dump(ref_stats, f)
+    return ref_stats
+
+
+def ref_statistics_loader() -> dict:
+    path = Path(f"/root/autodl-tmp/ref_statistics_{ref_cache_name}.json")
+    with open(path,'r',encoding='utf-8') as f:
+        ref_stats = json.load(f)
+    return ref_stats
+
+
+def init_stats_loader() -> dict:
+    path = Path(f"/root/autodl-tmp/init_statistics.json")
+    with open(path,'r',encoding='utf-8') as f:
+        init_stats = json.load(f)
+    return init_stats
+
+
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir).expanduser().resolve()
@@ -200,12 +228,11 @@ def main() -> None:
 
     set_seed(args.seed)
     device = set_device()
-    device_str = "cuda" if device.type == "cuda" else "cpu"
 
     print("ref statistics …")
-    ref_stats = compute_ref_statistics(imagenet_val, device, args.ref_cache_name)
+    ref_stats = compute_ref_statistics(imagenet_val, args.ref_cache_name)
     print(f"   μ {ref_stats['mu'].shape}, Σ {ref_stats['sigma'].shape}")
-    feat_extractor = get_inception_feature_extractor(device_str)
+    feat_extractor = get_inception_feature_extractor(device)
 
     candidates_root = (
         Path(args.candidates_root).expanduser().resolve()
@@ -215,33 +242,31 @@ def main() -> None:
         )
     )
 
-    candidate_path_lists: list[list[Path]] = []
+    # prepare candidate pathes list : list[list[Path]] : [[path1, path2, ...], [path1, path2, ...], ...]
+    candidate_pathes_ls: list[list[Path]] = []
     for i in range(args.num_candidates):
         candidate_dir = candidates_root / f"candidate_{i:04d}"
         path_list = sorted(
             candidate_dir.glob("image_*_*.png"),
             key=lambda p: int(p.stem.split("_")[1]),
         )
-        candidate_path_lists.append(path_list)
+        candidate_pathes_ls.append(path_list)
 
+    # prepare init pathes list : list[Path] : [path1, path2, ...]
     init_source_dir = Path(args.init_dir).expanduser().resolve() if args.init_dir else None
-    init_path_list = (
+    init_path_ls = (
         sorted(
             init_source_dir.glob("image_*_*.png"),
             key=lambda p: int(p.stem.split("_")[1]),
         )
     )
-    assert len(init_path_list) ==  N_INIT
-    init_paths = init_path_list
+    assert len(init_path_ls) ==  1024
 
-    print(f"init {N_INIT} -> {output_dir}")
-    init_stats, n_init = init_from_precomputed(
-        feat_extractor, output_dir, init_paths, device
-    )
-    print(f"   μ̂ {init_stats['mu'].shape}")
-    print(
-        f"search: {candidates_root}, num_candidates={args.num_candidates}, batch_size={args.batch_size}"
-    )
+    # init_stats, n_init = init_from_precomputed(
+    #     feat_extractor, output_dir, init_path_ls, device
+    # )
+    init_stats, n_init = init_stats_loader()
+
     run_random_search_fid(
         feat_extractor,
         ref_stats,
@@ -250,14 +275,14 @@ def main() -> None:
         args.batch_size,
         args.num_candidates,
         device,
-        candidate_path_lists,
+        candidate_pathes_ls,
         init_stats,
         n_init,
     )
 
     gc.collect()
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
+    torch.cuda.empty_cache()
+    
 
     (output_dir / "config.json").write_text(
         json.dumps(
