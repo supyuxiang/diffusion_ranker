@@ -756,7 +756,7 @@ def rollout_dit_with_steps(
     png_compress_level: int = 1,
     image_size: int = 256,
     repr_capture: DitRolloutReprCapture | None = None,
-    repr_max_batches: int | None = None,
+    repr_max_batches: int | None = None, # default is None, which means record all batches
 ):
     """
     For each batch: call ``DiTPipeline.__call__`` with ``num_inference_steps=num_steps`` so the
