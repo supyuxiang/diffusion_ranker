@@ -20,6 +20,21 @@ INCEPTION_WEIGHTS_PATH = (
 CLIP_HF_LOCAL_DIR = Path("/root/autodl-tmp/openai_clip-vit-large-patch14")
 
 
+def ensure_image_reward_on_path() -> None:
+    """若本地存在 ImageReward 源码目录，将其加入 ``sys.path`` 以便 ``import ImageReward``。"""
+    candidates = [
+        Path("/root/ImageReward-main"),
+        Path(__file__).resolve().parent / "ImageReward-main",
+        Path.home() / "ImageReward-main",
+    ]
+    for p in candidates:
+        if p.is_dir():
+            s = str(p.resolve())
+            if s not in sys.path:
+                sys.path.insert(0, s)
+            break
+
+
 def get_inception_feature_extractor(device: str):
     from torch_fidelity.utils import create_feature_extractor
 

@@ -1,82 +1,687 @@
-import torch
-from torch.utils.data import dataset, DataLoader
-import os
-import sys
+#!/usr/bin/env python3
+r"""
+用预计算的 ``repr.pt`` + 对应 rollout 图像训练 **Diffusion ranker**，教师为 **ImageReward**。
+
+- Prompt 默认 ``a photo of a {name}``（与 ``--prompt_template`` 中 ``{name}`` / ``{id}`` 一致）。
+- 损失与 ``train_ranker_imagenet.py`` 相同：``α·MSE(s, R) + (1-α)·KL(q‖p)``，``q=softmax(R/τ)``，``p=softmax(s/τ)``。
+- 优化器：``adamw`` / ``sgd``；学习率调度：``cosine`` / ``linear``；``--warmup_ratio`` 为 epoch 占比的线性 warmup。
+
+数据：``--repr_pt``（``DitRolloutReprCapture.save_pt`` 格式）与 ``--image_dir``（与 ``image_save_names`` 一致）。
+
+用法::
+
+    cd /root/diffusion_ranker
+    python3 -m ranker.train \
+      --repr_pt /path/to/repr.pt \
+      --image_dir /path/to/rollout_images \
+      --output_dir /path/to/out \
+      --group_size 8 \
+      --optimizer adamw \
+      --lr_scheduler cosine \
+      --warmup_ratio 0.05
+"""
+
+from __future__ import annotations
+
+import argparse
 import json
+import random
+import sys
+import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
-from utils import *
-from model import *
+import torch
+import torch.nn.functional as F
+from PIL import Image
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, LambdaLR, SequentialLR
+from torch.utils.data import Dataset
+from tqdm import tqdm
 
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
-
-
-
-class RankerDataset(dataset):
-    pass
-
-
-
-def train_epoch():
-    pass
-
-
-def train():
-    pass
+from ranker.model import ListwiseDiffusionRanker, PointwiseDiffusionRanker
+from utils import Constants_default, ensure_image_reward_on_path, set_device, set_seed
 
 
-def eval_epoch():
-    pass
+def load_imagenet_simple_labels(cache_dir: Path | None = None) -> list[str]:
+    cache_dir = cache_dir or (Path.home() / ".cache" / "diffusion_ranker")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = cache_dir / "imagenet-simple-labels.json"
+    url = "https://raw.githubusercontent.com/anishathalye/imagenet-simple-labels/master/imagenet-simple-labels.json"
+    if not path.exists():
+        try:
+            urllib.request.urlretrieve(url, path)
+        except Exception as e:
+            print(f"警告: 无法下载 ImageNet 标签 ({e})，将使用占位 prompt。")
+            return [f"imagenet class {i}" for i in range(1000)]
+    with open(path, "r", encoding="utf-8") as f:
+        labels = json.load(f)
+    if len(labels) != 1000:
+        return [f"imagenet class {i}" for i in range(1000)]
+    return labels
 
-def visulize():
-    pass
+
+def prompt_for_class(labels: list[str], class_id: int, template: str) -> str:
+    name = labels[class_id] if 0 <= class_id < len(labels) else f"class {class_id}"
+    return template.format(name=name, id=class_id)
 
 
-def set_argparse():
-    default_settings = Constants_default
-    import argparse
-    p = argparse.ArgumentParser()
-    p.add_argument('--model_name', type=str, default='dit-xl-2-256')
-    p.add_argument('--cfg', type=float, default=1.0)
-    p.add_argument('--num_layers', type=int, default=24)
-    p.add_argument('--proj_dim', type=int, default=64)
-    p.add_argument('--batch_size', type=int, default=16)
-    p.add_argument('--num_epochs', type=int, default=100)
-    p.add_argument('--lr', type=float, default=1e-4)
-    p.add_argument('--weight_decay', type=float, default=1e-4)
-    p.add_argument('--seed', type=int, default=42)
+def kl_reward_ranker_loss(
+    pred_scores: torch.Tensor, teacher_scores: torch.Tensor, tau: float
+) -> torch.Tensor:
+    if tau <= 0:
+        raise ValueError("tau must be positive")
+    q = F.softmax(teacher_scores / tau, dim=0)
+    log_p = F.log_softmax(pred_scores / tau, dim=0)
+    log_q = torch.log(q + 1e-8)
+    return (q * (log_q - log_p)).sum()
 
-    args = p.parse_args()
-    for key, value in default_settings.items():
-        if key not in args:
-            args[key] = value
 
+def mse_kl_combined_loss(
+    pred_scores: torch.Tensor,
+    teacher_scores: torch.Tensor,
+    tau: float,
+    alpha: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    mse = F.mse_loss(pred_scores, teacher_scores)
+    kl = kl_reward_ranker_loss(pred_scores, teacher_scores, tau)
+    a = float(alpha)
+    total = a * mse + (1.0 - a) * kl
+    return total, mse, kl
+
+
+def parse_repr_key(k: str) -> tuple[int, float]:
+    a, b = k.split("_", 1)
+    s = int(a[1:])
+    r = float(b[1:])
+    return s, r
+
+
+def _parse_float_list(s: str) -> list[float] | None:
+    s = (s or "").strip()
+    if not s or s.lower() in ("all", "none", ""):
+        return None
+    return [float(x.strip()) for x in s.split(",") if x.strip()]
+
+
+def infer_num_steps(keys: list[str], meta: dict) -> int:
+    if meta and meta.get("num_inference_steps") is not None:
+        return int(meta["num_inference_steps"])
+    if not keys:
+        return 1
+    return max(parse_repr_key(k)[0] for k in keys) + 1
+
+
+def steps_from_ratios(ratios: list[float], num_steps: int) -> set[int]:
+    out: set[int] = set()
+    ns = max(num_steps, 1)
+    for u in ratios:
+        u = max(0.0, min(1.0, float(u)))
+        s_idx = int(round(u * max(ns - 1, 0)))
+        out.add(s_idx)
+    return out
+
+
+def select_repr_keys(
+    all_keys: list[str],
+    *,
+    meta: dict,
+    layer_ratios: list[float] | None,
+    step_ratios: list[float] | None,
+) -> list[str]:
+    num_steps = infer_num_steps(all_keys, meta)
+    parsed = [(k, *parse_repr_key(k)) for k in all_keys]
+    if layer_ratios is not None:
+        lr_tol = 1e-5
+        parsed = [
+            (k, s, r)
+            for k, s, r in parsed
+            if any(abs(r - lr) < lr_tol for lr in layer_ratios)
+        ]
+    if step_ratios is not None:
+        want = steps_from_ratios(step_ratios, num_steps)
+        parsed = [(k, s, r) for k, s, r in parsed if s in want]
+    parsed.sort(key=lambda t: (t[1], t[2]))
+    return [k for k, _, _ in parsed]
+
+
+@dataclass
+class FlatIndex:
+    batch_idx: int
+    idx_in_batch: int
+    label: int
+    image_name: str
+
+
+def build_flat_indices(pt_obj: dict) -> list[FlatIndex]:
+    batches = pt_obj["batches"]
+    out: list[FlatIndex] = []
+    for b, rec in enumerate(batches):
+        labels = rec["labels"]
+        names = rec["image_save_names"]
+        for i in range(len(labels)):
+            out.append(
+                FlatIndex(
+                    batch_idx=b,
+                    idx_in_batch=i,
+                    label=int(labels[i]),
+                    image_name=str(names[i]),
+                )
+            )
+    return out
+
+
+def tokens_for_sample(
+    pt_obj: dict, fi: FlatIndex, selected_keys: list[str]
+) -> torch.Tensor:
+    rec = pt_obj["batches"][fi.batch_idx]
+    rd = rec["repr"]
+    parts: list[torch.Tensor] = []
+    for k in selected_keys:
+        parts.append(rd[k]["mean"][fi.idx_in_batch].float())
+        parts.append(rd[k]["last"][fi.idx_in_batch].float())
+    return torch.stack(parts, dim=0)
+
+
+def bucket_by_class(indices: list[FlatIndex]) -> dict[int, list[FlatIndex]]:
+    buckets: dict[int, list[FlatIndex]] = {}
+    for fi in indices:
+        buckets.setdefault(fi.label, []).append(fi)
+    return buckets
+
+
+class RankerReprGroupDataset(Dataset):
+    """按 ImageNet 类分组；``__getitem__`` 返回同类 ``group_size`` 条的 ``FlatIndex``。"""
+
+    def __init__(
+        self,
+        buckets: dict[int, list[FlatIndex]],
+        group_size: int,
+        *,
+        classes: list[int] | None = None,
+        seed: int = 0,
+    ) -> None:
+        self.group_size = group_size
+        self.classes = sorted(
+            c
+            for c, lst in buckets.items()
+            if len(lst) >= group_size and (classes is None or c in set(classes))
+        )
+        self.buckets = buckets
+        self.seed = seed
+        self._epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self._epoch = epoch
+
+    def __len__(self) -> int:
+        return len(self.classes)
+
+    def __getitem__(self, idx: int) -> list[FlatIndex]:
+        c = self.classes[idx]
+        rng = random.Random(self.seed + self._epoch * 100_003 + idx)
+        lst = list(self.buckets[c])
+        rng.shuffle(lst)
+        return lst[: self.group_size]
+
+
+def build_optimizer(
+    model: torch.nn.Module,
+    name: str,
+    lr: float,
+    weight_decay: float,
+    sgd_momentum: float,
+) -> torch.optim.Optimizer:
+    name = name.lower()
+    if name == "adamw":
+        return torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    if name == "sgd":
+        return torch.optim.SGD(
+            model.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+            momentum=sgd_momentum,
+            nesterov=sgd_momentum > 0,
+        )
+    raise ValueError(f"unknown optimizer: {name}")
+
+
+def build_lr_scheduler(
+    name: str,
+    optimizer: torch.optim.Optimizer,
+    num_epochs: int,
+    warmup_ratio: float,
+    base_lr: float,
+    lr_min_ratio: float,
+):
+    name = (name or "none").lower()
+    warmup_epochs = max(0, int(round(num_epochs * float(warmup_ratio))))
+    eta_min = max(0.0, float(base_lr) * float(lr_min_ratio))
+    end_factor = eta_min / base_lr if base_lr > 0 else 1.0
+
+    if name == "none":
+        return None
+
+    if warmup_epochs >= num_epochs:
+        return LinearLR(
+            optimizer, start_factor=1e-8, end_factor=1.0, total_iters=max(num_epochs, 1)
+        )
+
+    if name == "cosine":
+        w = LinearLR(
+            optimizer, start_factor=1e-8, end_factor=1.0, total_iters=warmup_epochs
+        )
+        cosine = CosineAnnealingLR(
+            optimizer, T_max=num_epochs - warmup_epochs, eta_min=eta_min
+        )
+        return SequentialLR(optimizer, [w, cosine], milestones=[warmup_epochs])
+
+    if name == "linear":
+
+        def lr_lambda(epoch: int) -> float:
+            if epoch < warmup_epochs:
+                return max(1e-8, float(epoch + 1) / float(max(warmup_epochs, 1)))
+            e = epoch - warmup_epochs
+            T = num_epochs - warmup_epochs
+            if T <= 1:
+                return float(end_factor)
+            t = e / float(T - 1)
+            return float(1.0 + (end_factor - 1.0) * t)
+
+        return LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+    raise ValueError(f"unknown lr_scheduler: {name}")
+
+
+def teacher_scores_for_group(
+    teacher,
+    labels: list[str],
+    prompt_template: str,
+    image_paths: list[Path],
+    class_ids: list[int],
+    ir_device: str,
+) -> torch.Tensor:
+    scores: list[float] = []
+    for p, lab in zip(image_paths, class_ids):
+        img = Image.open(p).convert("RGB")
+        prompt = prompt_for_class(labels, lab, prompt_template)
+        scores.append(float(teacher.score(prompt, img)))
+    return torch.tensor(scores, dtype=torch.float32, device=ir_device)
+
+
+def iter_training_groups(
+    dataset: RankerReprGroupDataset,
+    pt_obj: dict,
+    selected_keys: list[str],
+    image_root: Path,
+    teacher,
+    labels: list[str],
+    prompt_template: str,
+    ir_device: str,
+    max_groups: int | None,
+    shuffle_rng: random.Random | None = None,
+) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
+    n = len(dataset)
+    order = list(range(n))
+    rng = shuffle_rng if shuffle_rng is not None else random.Random()
+    rng.shuffle(order)
+    for j, idx in enumerate(order):
+        if max_groups is not None and j >= max_groups:
+            break
+        group_fi: list[FlatIndex] = dataset[idx]
+        paths = [image_root / fi.image_name for fi in group_fi]
+        for p in paths:
+            if not p.is_file():
+                raise FileNotFoundError(f"missing image: {p}")
+        tok = torch.stack(
+            [tokens_for_sample(pt_obj, fi, selected_keys) for fi in group_fi], dim=0
+        )
+        class_ids = [fi.label for fi in group_fi]
+        with torch.inference_mode():
+            t_scores = teacher_scores_for_group(
+                teacher, labels, prompt_template, paths, class_ids, ir_device
+            )
+        yield tok, t_scores
+
+
+def parse_args() -> argparse.Namespace:
+    cd = Constants_default
+    p = argparse.ArgumentParser(description="Diffusion ranker + ImageReward (repr.pt + images)")
+    p.add_argument("--repr_pt", type=str, required=True, help="rollout 保存的 repr.pt")
+    p.add_argument("--image_dir", type=str, required=True, help="与 repr 中 image_save_names 对应的目录")
+    p.add_argument(
+        "--output_dir", type=str, default=str(_ROOT / "outputs" / "diffusion_ranker_train")
+    )
+    p.add_argument("--proj_dim", type=int, default=int(cd.get("proj_dim", 64)))
+    p.add_argument(
+        "--num_list_layers",
+        type=int,
+        default=2,
+        help="ListwiseDiffusionRanker 内 TransformerEncoder 层数",
+    )
+    p.add_argument(
+        "--ranker_type",
+        type=str,
+        default=str(cd.get("ranker_type", "listwise")),
+        choices=("listwise", "pointwise"),
+    )
+    p.add_argument("--group_size", type=int, default=int(cd.get("parallel_size", 8)))
+    p.add_argument("--num_epochs", type=int, default=int(cd.get("num_epochs", 100)))
+    p.add_argument("--lr", type=float, default=float(cd.get("lr", 1e-4)))
+    p.add_argument("--weight_decay", type=float, default=float(cd.get("weight_decay", 1e-4)))
+    p.add_argument(
+        "--optimizer",
+        type=str,
+        default=str(cd.get("optimizer", "adamw")),
+        choices=("adamw", "sgd"),
+    )
+    p.add_argument("--sgd_momentum", type=float, default=0.9)
+    p.add_argument(
+        "--lr_scheduler",
+        type=str,
+        default=str(cd.get("scheduler", "cosine")),
+        choices=("cosine", "linear", "none"),
+    )
+    p.add_argument("--warmup_ratio", type=float, default=0.0)
+    p.add_argument(
+        "--lr_min_ratio",
+        type=float,
+        default=0.01,
+        help="余弦/线性衰减末端 lr / 初始 lr",
+    )
+    p.add_argument("--listwise_tau", type=float, default=1.0)
+    p.add_argument("--alpha", type=float, default=0.3, help="MSE 权重；KL 权重为 1-alpha")
+    p.add_argument(
+        "--layer_ratios",
+        type=str,
+        default="",
+        help="逗号分隔层比例，与 repr key 中 r 对齐；空表示全部",
+    )
+    p.add_argument(
+        "--step_ratios",
+        type=str,
+        default="",
+        help="逗号分隔 0~1，映射到步索引 round(u*(T-1))；空表示全部步",
+    )
+    p.add_argument(
+        "--prompt_template",
+        type=str,
+        default="a photo of a {name}",
+        help="ImageReward 用；可用 {name}、{id}",
+    )
+    p.add_argument("--seed", type=int, default=int(cd.get("seed", 42)))
+    p.add_argument(
+        "--max_groups_per_epoch",
+        type=int,
+        default=0,
+        help="每 epoch 最多多少个同类 group；0 表示遍历 dataset 全部类",
+    )
+    p.add_argument(
+        "--ir_device",
+        type=str,
+        default="",
+        help="ImageReward 所在设备；默认与训练 device 相同",
+    )
+    p.add_argument("--save_every", type=int, default=1, help="每 N 个 epoch 存 checkpoint")
     return p.parse_args()
 
-    
 
-def main():
-    args = set_argparse()
-    device = set_device()
+def train_epoch(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    pt_obj: dict,
+    selected_keys: list[str],
+    image_root: Path,
+    device: torch.device,
+    teacher,
+    labels: list[str],
+    prompt_template: str,
+    ir_device: str,
+    dataset: RankerReprGroupDataset,
+    args: argparse.Namespace,
+    ranker_type: str,
+    epoch: int,
+) -> dict[str, float]:
+    model.train()
+    dataset.set_epoch(epoch)
+    max_g = args.max_groups_per_epoch if args.max_groups_per_epoch > 0 else None
+    total_it = max_g if max_g is not None else len(dataset)
+    shuffle_rng = random.Random(args.seed + epoch * 100_003)
+
+    sum_tot = sum_mse = sum_kl = 0.0
+    n_steps = 0
+    for tok_cpu, t_scores_ir in tqdm(
+        iter_training_groups(
+            dataset,
+            pt_obj,
+            selected_keys,
+            image_root,
+            teacher,
+            labels,
+            prompt_template,
+            ir_device,
+            max_g,
+            shuffle_rng=shuffle_rng,
+        ),
+        desc="train",
+        leave=False,
+        total=total_it,
+    ):
+        tok = tok_cpu.to(device, non_blocking=True)
+        t_scores = t_scores_ir.to(device)
+        if ranker_type == "listwise":
+            logits = model(tok.unsqueeze(0)).squeeze(0)
+        else:
+            logits = model(tok)
+        loss, mse_v, kl_v = mse_kl_combined_loss(
+            logits, t_scores, args.listwise_tau, args.alpha
+        )
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+        sum_tot += float(loss.detach())
+        sum_mse += float(mse_v.detach())
+        sum_kl += float(kl_v.detach())
+        n_steps += 1
+
+    if n_steps == 0:
+        return {"loss": 0.0, "mse": 0.0, "kl": 0.0}
+    return {
+        "loss": sum_tot / n_steps,
+        "mse": sum_mse / n_steps,
+        "kl": sum_kl / n_steps,
+    }
+
+
+@torch.inference_mode()
+def eval_epoch(
+    model: torch.nn.Module,
+    pt_obj: dict,
+    selected_keys: list[str],
+    image_root: Path,
+    device: torch.device,
+    teacher,
+    labels: list[str],
+    prompt_template: str,
+    ir_device: str,
+    dataset: RankerReprGroupDataset,
+    args: argparse.Namespace,
+    ranker_type: str,
+    max_groups: int = 32,
+    epoch: int = 0,
+) -> dict[str, float]:
+    model.eval()
+    dataset.set_epoch(epoch)
+    sum_tot = sum_mse = sum_kl = 0.0
+    n_steps = 0
+    eval_rng = random.Random(args.seed + 17_971 + epoch)
+    for tok_cpu, t_scores_ir in iter_training_groups(
+        dataset,
+        pt_obj,
+        selected_keys,
+        image_root,
+        teacher,
+        labels,
+        prompt_template,
+        ir_device,
+        max_groups,
+        shuffle_rng=eval_rng,
+    ):
+        tok = tok_cpu.to(device, non_blocking=True)
+        t_scores = t_scores_ir.to(device)
+        if ranker_type == "listwise":
+            logits = model(tok.unsqueeze(0)).squeeze(0)
+        else:
+            logits = model(tok)
+        loss, mse_v, kl_v = mse_kl_combined_loss(
+            logits, t_scores, args.listwise_tau, args.alpha
+        )
+        sum_tot += float(loss)
+        sum_mse += float(mse_v)
+        sum_kl += float(kl_v)
+        n_steps += 1
+        if n_steps >= max_groups:
+            break
+    if n_steps == 0:
+        return {"loss": 0.0, "mse": 0.0, "kl": 0.0}
+    return {
+        "loss": sum_tot / n_steps,
+        "mse": sum_mse / n_steps,
+        "kl": sum_kl / n_steps,
+    }
+
+
+def main() -> None:
+    args = parse_args()
     set_seed(args.seed)
-    pass
+    device = set_device()
+    ir_device = args.ir_device.strip() or str(device)
+
+    ensure_image_reward_on_path()
+    import ImageReward as RM
+
+    repr_path = Path(args.repr_pt).expanduser().resolve()
+    image_root = Path(args.image_dir).expanduser().resolve()
+    out_dir = Path(args.output_dir).expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        pt_obj = torch.load(repr_path, map_location="cpu", weights_only=False)
+    except TypeError:
+        pt_obj = torch.load(repr_path, map_location="cpu")
+    meta = pt_obj.get("meta") or {}
+    all_keys = sorted(pt_obj["batches"][0]["repr"].keys())
+    layer_f = _parse_float_list(args.layer_ratios)
+    step_f = _parse_float_list(args.step_ratios)
+    selected_keys = select_repr_keys(
+        all_keys, meta=meta, layer_ratios=layer_f, step_ratios=step_f
+    )
+    if not selected_keys:
+        raise RuntimeError("筛选后 repr key 为空，请检查 --layer_ratios / --step_ratios")
+
+    h0 = pt_obj["batches"][0]["repr"][selected_keys[0]]["mean"][0].shape[-1]
+    hidden_dim = int(h0)
+
+    ranker_type = args.ranker_type.lower()
+    if ranker_type == "listwise":
+        model = ListwiseDiffusionRanker(
+            hidden_dim,
+            proj_dim=args.proj_dim,
+            num_list_layers=args.num_list_layers,
+        ).to(device)
+    else:
+        model = PointwiseDiffusionRanker(hidden_dim, proj_dim=args.proj_dim).to(device)
+
+    labels = load_imagenet_simple_labels()
+    flat = build_flat_indices(pt_obj)
+    buckets = bucket_by_class(flat)
+    dataset_tr = RankerReprGroupDataset(buckets, args.group_size, seed=args.seed)
+
+    teacher = RM.load("ImageReward-v1.0", device=ir_device)
+    teacher.eval()
+
+    optimizer = build_optimizer(
+        model,
+        args.optimizer,
+        args.lr,
+        args.weight_decay,
+        args.sgd_momentum,
+    )
+    scheduler = build_lr_scheduler(
+        args.lr_scheduler,
+        optimizer,
+        args.num_epochs,
+        args.warmup_ratio,
+        args.lr,
+        args.lr_min_ratio,
+    )
+
+    for epoch in range(args.num_epochs):
+        stats = train_epoch(
+            model,
+            optimizer,
+            pt_obj,
+            selected_keys,
+            image_root,
+            device,
+            teacher,
+            labels,
+            args.prompt_template,
+            ir_device,
+            dataset_tr,
+            args,
+            ranker_type,
+            epoch,
+        )
+        if scheduler is not None:
+            scheduler.step()
+        lr_s = optimizer.param_groups[0]["lr"]
+        print(
+            f"epoch {epoch + 1}/{args.num_epochs}  lr={lr_s:.2e}  "
+            f"loss={stats['loss']:.6f}  mse={stats['mse']:.6f}  kl={stats['kl']:.6f}"
+        )
+        if (epoch + 1) % max(args.save_every, 1) == 0:
+            ckpt = {
+                "epoch": epoch + 1,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "args": vars(args),
+                "selected_repr_keys": selected_keys,
+                "meta": meta,
+            }
+            torch.save(ckpt, out_dir / f"ranker_epoch{epoch + 1}.pt")
+
+    ev = eval_epoch(
+        model,
+        pt_obj,
+        selected_keys,
+        image_root,
+        device,
+        teacher,
+        labels,
+        args.prompt_template,
+        ir_device,
+        dataset_tr,
+        args,
+        ranker_type,
+        max_groups=32,
+        epoch=args.num_epochs,
+    )
+    print(f"eval(32 groups): loss={ev['loss']:.6f} mse={ev['mse']:.6f} kl={ev['kl']:.6f}")
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "args": vars(args),
+            "selected_repr_keys": selected_keys,
+            "meta": meta,
+        },
+        out_dir / "ranker_final.pt",
+    )
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+if __name__ == "__main__":
+    main()
