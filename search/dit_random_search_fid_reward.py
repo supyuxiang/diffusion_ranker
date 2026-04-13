@@ -116,41 +116,38 @@ def run_random_search_fid(
     batch_size: int,
     num_candidates: int,
     device: torch.device,
-    candidate_path_lists: list[list[Path]],
+    candidate_pathes_dict: dict[int, list[Path]],
     init_stats: dict,
-    n_init: int,
 ) -> None:
     from reward import fid_reward, merge_fid_statistics, fid_statistics_to_distance, fid_features_to_statistics
-    
+    n_init = 1024
     output_dir.mkdir(parents=True, exist_ok=True)
-
     selected_stats, n_selected = init_stats, n_init
-    cursor = img_counter = n_init
+    
+    current_idx = img_counter = n_init
     num_rounds = (num_samples - n_init + batch_size - 1) // batch_size
 
     for _ in tqdm(range(num_rounds), desc="random search fid"):
-        n_this_batch = min(batch_size, num_samples - cursor)
+        n_this_batch = min(batch_size, num_samples - current_idx)
         if n_this_batch <= 0:
             break
+        # predefine best_fid, best_batch_images, best_batch_stats
         best_fid = float("inf")
         best_batch_images: list[Image.Image] | None = None
         best_batch_stats: dict | None = None
 
-        for candidate_idx in range(num_candidates):
+        # iterate over all candidates
+        for candidate_idx,candidate_path_ls in candidate_pathes_dict.items():
             batch_images = [
-                Image.open(p).convert("RGB").copy()
-                for p in candidate_path_lists[candidate_idx][
-                    cursor : cursor + n_this_batch
-                ]
-            ]
+                Image.open(path).convert('RGB').copy()
+                for path in candidate_path_ls[current_idx: current_idx + n_this_batch]
+            ] # list[Image.Image] this candidate's batch images
+
             batch_stats = fid_features_to_statistics(
-                extract_features_from_images(
-                    batch_images,
-                    feat_extractor,
-                    device,
-                    min(64, n_this_batch),
-                )
-            )
+                extract_features_from_images(batch_images, feat_extractor, device, min(64, n_this_batch))
+            ) # dict: {"mu": (2048,), "sigma": (2048, 2048)}
+
+            # compute reward and select best candidate this round
             merged_stats = merge_fid_statistics(
                 selected_stats, n_selected, batch_stats, len(batch_images)
             )
@@ -170,7 +167,7 @@ def run_random_search_fid(
             selected_stats, n_selected, best_batch_stats, len(best_batch_images)
         )
         n_selected += len(best_batch_images)
-        cursor += n_this_batch
+        current_idx += n_this_batch
 
 
 def parse_args():
@@ -228,28 +225,20 @@ def main() -> None:
     ) # built inception_feature_extractor
 
     # prepare candidate pathes list : list[list[Path]] : [[path1, path2, ...], [path1, path2, ...], ...]
-    candidate_pathes_ls: list[list[Path]] = []
+    candidate_pathes_dict = {}
     for i in range(args.num_candidates):
-        candidate_dir = candidates_root / f"candidate_{i:04d}"
-        path_list = sorted(
+        candidate_dir = candidate_dir_ls[i]
+        candidate_pathes_dict[i] = sorted(
             candidate_dir.glob("image_*_*.png"),
             key=lambda p: int(p.stem.split("_")[1]),
         )
-        candidate_pathes_ls.append(path_list)
-
     # prepare init pathes list : list[Path] : [path1, path2, ...]
-    init_source_dir = Path(args.init_dir).expanduser().resolve() if args.init_dir else None
-    init_path_ls = (
-        sorted(
-            init_source_dir.glob("image_*_*.png"),
-            key=lambda p: int(p.stem.split("_")[1]),
-        )
-    )
-    assert len(init_path_ls) ==  1024
+    init_path_ls = sorted(init_dir.glob("image_*_*.png"), key=lambda p: int(p.stem.split("_")[1]))
 
     init_stats, n_init = init_stats_loader(
-        feat_extractor, output_dir, init_path_ls, device
+        feat_extractor, init_dir, device
     )
+    
 
     run_random_search_fid(
         feat_extractor,
@@ -259,15 +248,13 @@ def main() -> None:
         args.batch_size,
         args.num_candidates,
         device,
-        candidate_pathes_ls,
+        candidate_pathes_dict,
         init_stats,
-        n_init,
     )
-
     gc.collect()
     torch.cuda.empty_cache()
     
-
+    # save cinfig json
     (output_dir / "config.json").write_text(
         json.dumps(
             {
@@ -288,10 +275,12 @@ def main() -> None:
         ),
         encoding="utf-8",
     )
+    # compute metrics
     metrics = compute_fid_is_from_dirs(
         output_dir, imagenet_val, device, batch_size=args.metrics_batch_size
     )
     print(f"FID {metrics['FID']:.2f}, IS {metrics['IS']:.4f} ± {metrics['IS_STD']:.4f}")
+    # save metrics json
     (output_dir / "final_metrics.json").write_text(
         json.dumps(
             {k: float(v) for k, v in metrics.items()}, indent=2, ensure_ascii=False
