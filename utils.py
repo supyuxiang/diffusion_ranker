@@ -540,12 +540,14 @@ def imagenet_label2text_for_clipscore(label_ls: list[int]) -> list[str]:
     return formatted_prompts
 
 
+
+@torch.inference_mode()
 def compute_clipscore(
     gen_images: torch.Tensor,
     prompts: list[str],
     *,
     clip_model_dir: str | Path | None = None,
-    device: torch.device | None = None,
+    device: torch.device | str | None = None,
     clip_batch_size: int = 64,
 ) -> float:
     """Mean CLIPScore (0–100)，与 torchmetrics 定义一致：``max(100 * cos(E_img, E_text), 0)`` 再对样本平均。
@@ -557,51 +559,42 @@ def compute_clipscore(
     from torchvision.transforms.functional import to_pil_image
 
     n = gen_images.shape[0]
-    if n != len(prompts):
-        raise ValueError(f"image count mismatch: tensors {n} vs prompts {len(prompts)}")
+    assert gen_images.shape[0] == len(prompts)
 
     clip_path = (
         Path(clip_model_dir).expanduser().resolve()
         if clip_model_dir is not None
         else CLIP_HF_LOCAL_DIR.resolve()
     )
-    if not clip_path.is_dir() or not (clip_path / "config.json").is_file():
-        raise FileNotFoundError(
-            f"CLIP 目录无效或缺少 config.json: {clip_path}；可传 clip_model_dir 覆盖默认 CLIP_HF_LOCAL_DIR"
-        )
-    if device is None:
-        device = set_device()
-    else:
-        device = torch.device(device)
-
+    
+    device = set_device() if not device else torch.device(device)
     model = CLIPModel.from_pretrained(str(clip_path), local_files_only=True)
     processor = CLIPProcessor.from_pretrained(str(clip_path), local_files_only=True)
     model = model.to(device).float().eval()
 
     total_score = 0.0
     total_n = 0
-    with torch.inference_mode():
-        for start in range(0, n, clip_batch_size):
-            end = min(start + clip_batch_size, n)
-            batch_imgs = gen_images[start:end]
-            batch_prompts = prompts[start:end]
-            pil_list = []
-            for i in range(batch_imgs.shape[0]):
-                t = batch_imgs[i]
-                if t.device.type != "cpu":
-                    t = t.cpu()
-                pil_list.append(to_pil_image(t))
-            inputs = processor(
-                text=batch_prompts, images=pil_list, return_tensors="pt", padding=True
-            )
-            inputs = {k: v.to(device) for k, v in inputs.items()}
-            out = model(**inputs)
-            ie = out.image_embeds / out.image_embeds.norm(dim=-1, keepdim=True)
-            te = out.text_embeds / out.text_embeds.norm(dim=-1, keepdim=True)
-            sim = (ie * te).sum(dim=-1)
-            score = torch.clamp(sim * 100.0, min=0.0)
-            total_score += float(score.sum().item())
-            total_n += int(score.numel())
+    for start in range(0, n, clip_batch_size):
+        end = min(start + clip_batch_size, n)
+        batch_imgs = gen_images[start:end]
+        batch_prompts = prompts[start:end]
+        pil_list = []
+        for i in range(batch_imgs.shape[0]):
+            t = batch_imgs[i]
+            if t.device.type != "cpu":
+                t = t.cpu()
+            pil_list.append(to_pil_image(t))
+        inputs = processor(
+            text=batch_prompts, images=pil_list, return_tensors="pt", padding=True
+        )
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        out = model(**inputs)
+        image_embeds = out.image_embeds / out.image_embeds.norm(dim=-1, keepdim=True)
+        text_embeds = out.text_embeds / out.text_embeds.norm(dim=-1, keepdim=True)
+        sim = (image_embeds * text_embeds).sum(dim=-1)
+        score = torch.clamp(sim * 100.0, min=0.0)
+        total_score += float(score.sum().item())
+        total_n += int(score.numel())
 
     return total_score / max(total_n, 1)
 
