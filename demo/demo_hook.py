@@ -11,16 +11,21 @@ import torch
 import torch.nn as nn
 
 
+model = nn.Sequential(
+    nn.Linear(2, 4),
+    nn.ReLU(),
+    nn.Linear(4, 1),
+)
+model.to('cuda')
+model.eval()
+
+
+
 def main() -> None:
-    # 简单 MLP：2 -> 4 -> 1
-    model = nn.Sequential(
-        nn.Linear(2, 4),
-        nn.ReLU(),
-        nn.Linear(4, 1),
-    )
 
     # 目标：hook 在第一层 Linear 上，观察「输入 / 输出」
     first_linear: nn.Linear = model[0]
+    breakpoint()
 
     def forward_pre_hook(module, inputs):
         x, = inputs
@@ -34,7 +39,7 @@ def main() -> None:
     h_pre = first_linear.register_forward_pre_hook(forward_pre_hook)
     h_fwd = first_linear.register_forward_hook(forward_hook)
 
-    x = torch.randn(3, 2)  # batch=3
+    x = torch.randn(3, 2).to('cuda')  # batch=3
     y = model(x)
     print(f"最终输出 shape={tuple(y.shape)}")
 
@@ -52,7 +57,7 @@ def main() -> None:
 
     lin = model[2]
     h_b = lin.register_full_backward_hook(backward_hook)
-    x2 = torch.randn(2, 2, requires_grad=True)
+    x2 = torch.randn(2, 2, requires_grad=True).to('cuda')
     out = model(x2).sum()
     out.backward()
     h_b.remove()
