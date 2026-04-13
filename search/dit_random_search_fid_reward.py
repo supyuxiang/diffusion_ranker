@@ -136,15 +136,15 @@ def run_random_search_fid(
                 batch_stats, len(batch_images),selected_stats, n_selected, ref_stats
             )
 
-            if reward_this < best_reward:
+            if reward_this > best_reward:
                 best_reward = reward_this
                 best_candidate_idx = candidate_idx
                 best_batch_images = batch_images
                 best_batch_stats = batch_stats
             
-            best_path_ls.extend(
-                candidate_path_ls[current_idx: current_idx + n_this_batch][best_candidate_idx]
-            )
+        best_path_ls.append(
+            candidate_path_ls[current_idx: current_idx + n_this_batch][best_candidate_idx]
+        )
 
 
         assert best_batch_images is not None and best_batch_stats is not None and best_candidate_idx != -1
