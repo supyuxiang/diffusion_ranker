@@ -104,8 +104,9 @@ def run_random_search_fid(
     n_init = 1024
     output_dir.mkdir(parents=True, exist_ok=True)
     selected_stats, n_selected = init_stats, n_init
+    best_path_ls: list[Path] = []
     
-    current_idx = img_counter = n_init
+    current_idx = n_init
     num_rounds = (num_samples - n_init + batch_size - 1) // batch_size
 
     for _ in tqdm(range(num_rounds), desc="random search fid"):
@@ -139,6 +140,10 @@ def run_random_search_fid(
                 best_candidate_idx = candidate_idx
                 best_batch_images = batch_images
                 best_batch_stats = batch_stats
+            
+            best_path_ls.extend(
+                candidate_path_ls[current_idx: current_idx + n_this_batch][best_candidate_idx]
+            )
 
 
         assert best_batch_images is not None and best_batch_stats is not None and best_candidate_idx != -1
@@ -149,7 +154,17 @@ def run_random_search_fid(
         current_idx += n_this_batch
         if current_idx >= num_samples:
             break
-    return selected_stats, n_selected
+    return selected_stats, best_path_ls
+
+
+def save_best_images(best_path_ls: list[Path], output_dir:Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    import shutil
+    for i,path in enumerate(best_path_ls):
+        label = path.stem.split("_")[1]
+        shutil.copy(path, output_dir / f"best_image_{label}_{i:06d}.png")
+    return 
+
 
 
 def parse_args():
@@ -222,7 +237,7 @@ def main() -> None:
     )
     
 
-    run_random_search_fid(
+    selected_stats, best_path_ls = run_random_search_fid(
         feat_extractor,
         ref_stats,
         output_dir,
@@ -241,8 +256,8 @@ def main() -> None:
         json.dumps(
             {
                 "imagenet_val": str(imagenet_val),
-                "candidates_root": str(candidates_root),
-                "init_dir": str(init_source_dir) if init_source_dir else "",
+                "candidates_root": str(rollout_root),
+                "init_dir": str(init_dir),
                 "num_samples": args.num_samples,
                 "batch_size": args.batch_size,
                 "num_candidates": args.num_candidates,
@@ -250,20 +265,23 @@ def main() -> None:
                 "deno_steps": args.deno_steps,
                 "guidance_scale": args.guidance_scale,
                 "seed": args.seed,
-                "ref_cache_name": args.ref_cache_name,
+                "ref_cache_name": cache_name,
             },
             indent=2,
             ensure_ascii=False,
         ),
         encoding="utf-8",
     )
+
+    best_dir = output_dir / 'best_images'
+    save_best_images(best_path_ls, best_dir)
     # compute metrics
     metrics = compute_fid_is_from_dirs(
-        output_dir, imagenet_val, device, batch_size=args.metrics_batch_size
+        best_dir, imagenet_val, device, batch_size=args.metrics_batch_size
     )
     print(f"FID {metrics['FID']:.2f}, IS {metrics['IS']:.4f} ± {metrics['IS_STD']:.4f}")
     # save metrics json
-    (output_dir / "final_metrics.json").write_text(
+    (best_dir / "final_metrics.json").write_text(
         json.dumps(
             {k: float(v) for k, v in metrics.items()}, indent=2, ensure_ascii=False
         ),
