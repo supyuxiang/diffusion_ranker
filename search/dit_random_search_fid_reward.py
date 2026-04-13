@@ -1,34 +1,26 @@
 #!/usr/bin/env python3
 """
-DiT Random Search with FID as Verifier (Inference-Time Scaling)
+DiT Random Search with FID as Verifier（仅预生成图）
 
-论文方法：增量构造 + FID 作为 verifier 信号（对齐 Appendix A.4）
-- 预计算真实集 (ImageNet) 的 μ_ref, Σ_ref（torch_fidelity 缓存）
-- 固定 ``deno_steps``，Random Search 对随机种子（不同噪声/类别）
-- 初始化：前 ``init_random_samples`` 张图随机生成，用于初始化 μ̂, Σ̂
-- 迭代：每轮生成 K 批候选（不同 seed），选使 FID（解析式）相对 μ_ref, Σ_ref 下降最多的一批加入已选集
+对应 *Inference-Time Scaling for Diffusion Models beyond Scaling Denoising Steps*
+(arXiv:2501.09732)。须先用 ``search/rollout.py`` 写好 ``candidate_0000`` … 与可选 ``init_1024``；
+本脚本只读盘 + Inception + FID 搜索，**不加载 DiT**。
 
-**最终** FID / IS 由 ``utils.compute_fid_is_from_dirs``（``torch_fidelity``）在生成目录与真实目录上计算。
+目录（与 ``rollout.py`` 一致）::
 
-**权重精度**：``--dtype bf16|fp16|fp32``（见 ``utils.model_loader``），可选 ``--compile`` 加速 transformer。
+    /root/autodl-tmp/dit_candidates_50k_cfg{guidance_scale}_deno{deno_steps}/
+        init_1024/              # 可选；否则用 candidate_0000 前 N 张
+        candidate_0000/ …
 
-``--imagenet_val`` 必须指向**已解压**的 ILSVRC val 图片根目录（递归搜索常见图片后缀）。
-autodl 镜像里 ``/root/autodl-pub/ImageNet/ILSVRC2012`` 只有 ``ILSVRC2012_img_val.tar`` 等压缩包，**不能**直接当路径用；请先解压（同目录 ``extract_imagenet.py`` 默认解压到 ``/root/autodl-tmp/imagenet/val``）。
+用法::
 
-**Inception 权重**：本脚本写死本地路径（见 ``INCEPTION_WEIGHTS_PATH``）；可运行
-``python3 scripts/download_torch_fidelity_inception_weights.py`` 预下载到同一路径。
-
-用法:
-  CUDA_VISIBLE_DEVICES=0 python3 /root/diffusion_ranker_main/search_algoriths/dit_random_search_fid_reward.py \
-    --model_name dit-xl-2-256 \
-    --imagenet_val /root/autodl-tmp/imagenet/val \
-    --output_dir /root/autodl-tmp/eval_dit_random_search_fid \
-    --num_samples 50000 \
-    --batch_size 24 \
-    --num_candidates 8 \
-    --init_random_samples 1024 \
-    --deno_steps 10 \
-    --dtype bf16 
+  python3 search/dit_random_search_fid_reward.py \
+      --imagenet_val /root/autodl-tmp/imagenet/val \
+      --output_dir /root/autodl-tmp/eval_dit_rs_fid \
+      --deno_steps 10 --guidance_scale 1.0 \
+      --num_candidates 16 --batch_size 24 --init_random_samples 1024 \
+      --model_name dit-xl-2-256 \
+      --dtype bf16
 """
 
 from __future__ import annotations
@@ -42,7 +34,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from diffusers import DiTPipeline
 from PIL import Image
 from torchvision.transforms import CenterCrop, Compose, Resize
 from tqdm import tqdm
@@ -50,19 +41,77 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
-from dit_random_search_common import (
-    CANDIDATE_SEED_HIGH,
-    INIT_BATCH_SEED_STRIDE,
-    rollout_dit_batch_fid_images,
+from utils import (
+    INCEPTION_WEIGHTS_PATH,
+    compute_fid_is_from_dirs,
+    fid_features_to_statistics,
+    fid_statistics_to_distance,
+    get_inception_feature_extractor,
+    merge_fid_statistics,
+    set_device,
+    set_seed,
 )
 
-from utils import *
+
+def default_candidates_root(guidance_scale: float, deno_steps: int) -> Path:
+    return Path(
+        f"/root/autodl-tmp/dit_candidates_50k_cfg{guidance_scale}_deno{deno_steps}"
+    )
+
+
+def sorted_rollout_image_paths(directory: Path) -> list[Path]:
+    return sorted(
+        directory.glob("image_*_*.png"),
+        key=lambda p: int(p.stem.split("_")[1]),
+    )
+
+
+def load_images_from_paths(paths: list[Path]) -> list[Image.Image]:
+    out: list[Image.Image] = []
+    for p in paths:
+        with Image.open(p) as im:
+            out.append(im.convert("RGB").copy())
+    return out
+
+
+def build_candidate_path_lists(root: Path, num_candidates: int) -> list[list[Path]]:
+    path_lists: list[list[Path]] = []
+    for i in range(num_candidates):
+        d = root / f"candidate_{i:04d}"
+        path_ls = sorted_rollout_image_paths(d)
+        path_lists.append(path_ls)
+    return path_lists
+
+
+def resolve_init_paths(
+    candidates_root: Path,
+    init_dir: Path | None,
+    n_init: int,
+    candidate_lists: list[list[Path]],
+) -> list[Path]:
+    if n_init <= 0:
+        return []
+    if init_dir is not None and init_dir.is_dir():
+        pl = sorted_rollout_image_paths(init_dir)
+        if len(pl) < n_init:
+            raise RuntimeError(f"{init_dir}: need >= {n_init} images, got {len(pl)}")
+        return pl[:n_init]
+    pl0 = candidate_lists[0]
+    if len(pl0) < n_init:
+        raise RuntimeError(f"candidate_0000: need >= {n_init} images for init, got {len(pl0)}")
+    return pl0[:n_init]
+
+
+def _device_cuda_str(device: torch.device | str) -> str:
+    if isinstance(device, str):
+        return "cuda" if device == "cuda" else "cpu"
+    return "cuda" if device.type == "cuda" else "cpu"
 
 
 def extract_features_from_images(
     images: list[Image.Image],
     feat_extractor,
-    device: str,
+    device: torch.device | str,
     batch_size: int = 512,
 ) -> np.ndarray:
     from torch_fidelity.datasets import TransformPILtoRGBTensor
@@ -74,6 +123,7 @@ def extract_features_from_images(
             TransformPILtoRGBTensor(),
         ]
     )
+    dstr = _device_cuda_str(device)
 
     feats_list = []
     feat_extractor.eval()
@@ -81,24 +131,25 @@ def extract_features_from_images(
         for i in range(0, len(images), batch_size):
             batch_imgs = images[i : i + batch_size]
             tensors = torch.stack([transform(img) for img in batch_imgs])
-            if device == "cuda":
+            if dstr == "cuda":
                 tensors = tensors.cuda(non_blocking=True)
             out = feat_extractor(tensors)
             feats_list.append(out.cpu().numpy())
-    return np.concatenate(feats_list, axis=0) # [N, 2048]
+    return np.concatenate(feats_list, axis=0)
 
 
-def compute_ref_statistics(real_dir: Path, device: str, cache_name: str = "imagenet_val") -> dict:
+def compute_ref_statistics(real_dir: Path, device: torch.device | str, cache_name: str = "imagenet_val") -> dict:
     from torch_fidelity.metric_fid import fid_input_id_to_statistics_cached
     from torch_fidelity.utils import create_feature_extractor
 
+    cuda = _device_cuda_str(device) == "cuda"
     kwargs = dict(
         input2=str(real_dir),
         input2_cache_name=cache_name,
         samples_find_deep=True,
         samples_find_ext="png,jpg,jpeg,JPEG,JPG",
         samples_resize_and_crop=256,
-        cuda=(device == "cuda"),
+        cuda=cuda,
         batch_size=512,
         verbose=True,
         cache=True,
@@ -109,97 +160,71 @@ def compute_ref_statistics(real_dir: Path, device: str, cache_name: str = "image
     return fid_input_id_to_statistics_cached(2, feat_extractor, feat_layer, **kwargs)
 
 
-@torch.inference_mode()
-def init_random_samples_fid(
-    pipe: DiTPipeline,
+def init_from_precomputed(
     feat_extractor,
     output_dir: Path,
-    init_samples: int,
-    batch_size: int,
-    deno_steps: int,
-    device: str,
-    seed: int,
-    guidance_scale: float = 1.0,
+    init_paths: list[Path],
+    device: torch.device,
 ) -> tuple[dict, int]:
+    """从磁盘读 init，写入 ``output_dir`` 为 ``%06d.png``。"""
     output_dir.mkdir(parents=True, exist_ok=True)
-    all_images: list[Image.Image] = []
-    img_counter = 0
-
-    num_batches = (init_samples + batch_size - 1) // batch_size
-    for batch_idx in tqdm(range(num_batches), desc="random init"):
-        n_this = min(batch_size, init_samples - len(all_images))
-        if n_this <= 0:
-            break
-        batch_images = rollout_dit_batch_fid_images(
-            pipe,
-            deno_steps,
-            n_this,
-            device,
-            seed=seed + batch_idx * INIT_BATCH_SEED_STRIDE,
-            guidance_scale=guidance_scale,
-        )
-        for img in batch_images:
-            if img_counter >= init_samples:
-                break
-            img.save(output_dir / f"{img_counter:06d}.png")
-            img_counter += 1
-            all_images.append(img)
-
-    init_feats = extract_features_from_images(all_images, feat_extractor, device, batch_size=64)
-    init_stats = fid_features_to_statistics(init_feats)
-    return init_stats, img_counter
+    images = load_images_from_paths(init_paths)
+    for i, img in enumerate(images):
+        img.save(output_dir / f"{i:06d}.png")
+    feats = extract_features_from_images(images, feat_extractor, device, batch_size=512)
+    return fid_features_to_statistics(feats), len(images)
 
 
 @torch.inference_mode()
 def run_random_search_fid(
-    pipe: DiTPipeline,
     feat_extractor,
     ref_stats: dict,
     output_dir: Path,
     num_samples: int,
     batch_size: int,
     num_candidates: int,
-    deno_steps: int,
-    device: str,
-    seed: int,
-    guidance_scale: float = 1.0,
+    device: torch.device,
+    candidate_lists: list[list[Path]],
     init_stats: dict | None = None,
     n_init: int = 0,
 ) -> None:
+    """每轮从各 candidate 池同一全局下标切片，选相对 ref FID 最低的一批写入 ``output_dir``。"""
     output_dir.mkdir(parents=True, exist_ok=True)
+    for c in range(num_candidates):
+        if len(candidate_lists[c]) < num_samples:
+            raise RuntimeError(
+                f"candidate_{c:04d} has {len(candidate_lists[c])} images, need >= {num_samples}"
+            )
+
     selected_stats = init_stats
     n_selected = n_init
-    rng = np.random.default_rng(seed)
+    cursor = n_init
     img_counter = n_init
 
     num_rounds = (num_samples - n_init + batch_size - 1) // batch_size
     for _ in tqdm(range(num_rounds), desc="random search fid"):
-        n_this_batch = min(batch_size, num_samples - img_counter)
+        n_this_batch = min(batch_size, num_samples - cursor)
         if n_this_batch <= 0:
             break
 
-        candidate_seeds = rng.integers(0, CANDIDATE_SEED_HIGH, size=num_candidates).tolist()
-
         best_fid = float("inf")
-        best_batch = None
-        best_batch_stats = None
+        best_batch: list[Image.Image] | None = None
+        best_batch_stats: dict | None = None
 
-        for cand_seed in candidate_seeds:
-            batch_images = rollout_dit_batch_fid_images(
-                pipe,
-                deno_steps,
-                n_this_batch,
-                device,
-                seed=cand_seed,
-                guidance_scale=guidance_scale,
+        for c in range(num_candidates):
+            sub = candidate_lists[c][cursor : cursor + n_this_batch]
+            batch_images = load_images_from_paths(sub)
+            batch_feats = extract_features_from_images(
+                batch_images, feat_extractor, device, batch_size=min(64, n_this_batch)
             )
-            batch_feats = extract_features_from_images(batch_images, feat_extractor, device, batch_size=64)
             batch_stats = fid_features_to_statistics(batch_feats)
 
             if selected_stats is None:
                 merged_stats = batch_stats
             else:
-                merged_stats = merge_fid_statistics(selected_stats, n_selected, batch_stats, n_this_batch)
+                merged_stats = merge_fid_statistics(
+                    selected_stats, n_selected, batch_stats, len(batch_images)
+                )
 
             fid = fid_statistics_to_distance(merged_stats, ref_stats)
             if fid < best_fid:
@@ -222,131 +247,142 @@ def run_random_search_fid(
                 selected_stats, n_selected, best_batch_stats, len(best_batch)
             )
         n_selected += len(best_batch)
+        cursor += n_this_batch
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--model_name", default="dit-xl-2-256")
     p.add_argument(
         "--imagenet_val",
         default="/root/autodl-tmp/imagenet/val",
-        help=(
-            "解压后的 ILSVRC val 图片根目录（非 tar）。autodl extract_imagenet.py 默认输出到此路径。"
-        ),
+        help="解压后的 ImageNet val 根目录",
     )
-    p.add_argument("--output_dir", default="/hy-tmp/diffusion_ranker/eval_dit_random_search_fid")
-    p.add_argument("--num_samples", type=int, default=50000)
+    p.add_argument("--output_dir", default="/root/autodl-tmp/eval_dit_random_search_fid")
+    p.add_argument("--num_samples", type=int, default=50_000)
     p.add_argument("--batch_size", type=int, default=24)
-    p.add_argument("--num_candidates", type=int, default=8, help="每轮随机采样的候选 batch 数（不同 seed）")
-    p.add_argument("--deno_steps", type=int, default=20, help="固定 denoising step 数")
+    p.add_argument("--num_candidates", type=int, default=16)
+    p.add_argument("--init_random_samples", type=int, default=1024, help="0 表示无 init")
+    p.add_argument("--deno_steps", type=int, default=20)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--guidance_scale", type=float, default=1.0)
-    p.add_argument(
-        "--dtype",
-        type=str,
-        default="bf16",
-        choices=("fp32", "fp16", "bf16"),
-        help="Pipeline weight dtype (see utils.model_loader). Default bf16.",
-    )
     p.add_argument("--ref_cache_name", default="imagenet_val")
+    p.add_argument("--metrics_batch_size", type=int, default=64)
     p.add_argument(
-        "--init_random_samples",
-        type=int,
-        default=1024,
-        help="论文：前 N 张随机选择以初始化 μ̂, Σ̂，默认 1024",
+        "--candidates_root",
+        default="",
+        help="预生成根目录；空则用 dit_candidates_50k_cfg{gs}_deno{steps}",
+    )
+    p.add_argument(
+        "--init_dir",
+        default="",
+        help="init 目录；空则尝试 candidates_root/init_1024，否则 candidate_0000 前 N 张",
     )
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    output_dir = Path(args.output_dir)
+    output_dir = Path(args.output_dir).expanduser().resolve()
     imagenet_val = Path(args.imagenet_val).expanduser().resolve()
 
-    set_seed(args.seed)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if not imagenet_val.is_dir():
+        raise FileNotFoundError(f"--imagenet_val is not a directory: {imagenet_val}")
 
-    print("precompute real set FID statistics")
+    set_seed(args.seed)
+    device = set_device()
+
+    print("precompute real set FID statistics (torch_fidelity)")
     ref_stats = compute_ref_statistics(imagenet_val, device, args.ref_cache_name)
     print(f"   μ_ref shape: {ref_stats['mu'].shape}, Σ_ref shape: {ref_stats['sigma'].shape}")
 
-    pipe = model_loader(args.model_name, device, dtype=args.dtype)
-    pipe.transformer = torch.compile(pipe.transformer, mode="reduce-overhead") # 加速 transformer
-
     print("create inception feature extractor")
-    feat_extractor = get_inception_feature_extractor(device)
+    feat_extractor = get_inception_feature_extractor(_device_cuda_str(device))
 
-    init_stats = None
+    cr = (
+        Path(args.candidates_root).expanduser().resolve()
+        if args.candidates_root
+        else default_candidates_root(args.guidance_scale, args.deno_steps)
+    )
+    if not cr.is_dir():
+        raise FileNotFoundError(
+            f"candidates root missing: {cr}\nRun search/rollout.py per candidate_idx, or set --candidates_root."
+        )
+
+    init_dir_opt = Path(args.init_dir).expanduser().resolve() if args.init_dir else None
+    auto_init = cr / "init_1024"
+    if init_dir_opt is None and auto_init.is_dir() and sorted_rollout_image_paths(auto_init):
+        init_dir_opt = auto_init
+
+    lists = build_candidate_path_lists(cr, args.num_candidates)
+
+    init_stats: dict | None = None
     n_init = 0
     if args.init_random_samples > 0:
-        print("randomly initialize")
-        init_stats, n_init = init_random_samples_fid(
-            pipe,
-            feat_extractor,
-            output_dir,
-            args.init_random_samples,
-            args.batch_size,
-            args.deno_steps,
-            device,
-            args.seed,
-            guidance_scale=args.guidance_scale,
-        )
-        print(f"initialized {n_init} samples, μ̂ shape={init_stats['mu'].shape}")
+        init_paths = resolve_init_paths(cr, init_dir_opt, args.init_random_samples, lists)
+        print(f"init from disk ({len(init_paths)} images) -> {output_dir}")
+        init_stats, n_init = init_from_precomputed(feat_extractor, output_dir, init_paths, device)
+        print(f"   μ̂ shape={init_stats['mu'].shape}")
 
-    print("run random search (FID verifier)")
-    print(f"   deno_steps={args.deno_steps}, num_candidates={args.num_candidates}")
+    print(
+        f"random search: root={cr}, num_candidates={args.num_candidates}, batch_size={args.batch_size}"
+    )
     run_random_search_fid(
-        pipe,
         feat_extractor,
         ref_stats,
         output_dir,
         args.num_samples,
         args.batch_size,
         args.num_candidates,
-        args.deno_steps,
         device,
-        args.seed,
-        guidance_scale=args.guidance_scale,
+        lists,
         init_stats=init_stats,
         n_init=n_init,
     )
 
     gc.collect()
-    if device == "cuda":
+    if device.type == "cuda":
         torch.cuda.empty_cache()
 
-    log_path = output_dir / "config.json"
-    with open(log_path, "w", encoding="utf-8") as f:
+    resolved_root = (
+        str(Path(args.candidates_root).expanduser().resolve())
+        if args.candidates_root
+        else str(default_candidates_root(args.guidance_scale, args.deno_steps))
+    )
+    cfg_path = output_dir / "config.json"
+    with open(cfg_path, "w", encoding="utf-8") as f:
         json.dump(
             {
-                "model_name": args.model_name,
                 "imagenet_val": str(imagenet_val),
+                "num_samples": args.num_samples,
+                "batch_size": args.batch_size,
+                "num_candidates": args.num_candidates,
                 "init_random_samples": args.init_random_samples,
                 "deno_steps": args.deno_steps,
-                "num_candidates": args.num_candidates,
-                "dtype": args.dtype,
-                "compile": bool(args.compile),
+                "seed": args.seed,
+                "guidance_scale": args.guidance_scale,
+                "ref_cache_name": args.ref_cache_name,
+                "candidates_root": resolved_root,
+                "init_dir": str(Path(args.init_dir).expanduser().resolve()) if args.init_dir else "",
             },
             f,
             indent=2,
             ensure_ascii=False,
         )
-    print(f"\ncompleted. images saved to {output_dir}, config: {log_path}")
+    print(f"config saved to {cfg_path}")
 
-    print("\nfinal FID / IS (torch_fidelity)")
+    print("\nfinal FID / IS (torch_fidelity, compute_fid_is_from_dirs)")
     metrics = compute_fid_is_from_dirs(
         output_dir,
         imagenet_val,
         device,
-        batch_size=64,
+        batch_size=args.metrics_batch_size,
     )
-    fid_val = metrics.get("FID", float("nan"))
-    is_val = metrics.get("IS", float("nan"))
-    print(f"   FID: {fid_val:.2f}, IS: {is_val:.4f}")
+    print(f"   FID: {metrics['FID']:.2f}, IS: {metrics['IS']:.4f} ± {metrics['IS_STD']:.4f}")
 
-    out_metrics = {k: v for k, v in metrics.items() if isinstance(v, (int, float)) or v is None}
-    with open(output_dir / "final_metrics.json", "w", encoding="utf-8") as f:
-        json.dump(out_metrics, f, indent=2, ensure_ascii=False)
+    metrics_path = output_dir / "final_metrics.json"
+    with open(metrics_path, "w", encoding="utf-8") as f:
+        json.dump({k: float(v) for k, v in metrics.items()}, f, indent=2, ensure_ascii=False)
+    print(f"final metrics saved to {metrics_path}")
 
 
 if __name__ == "__main__":

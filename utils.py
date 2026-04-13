@@ -644,7 +644,8 @@ def rollout_dit_with_steps(
             if img_counter >= num_samples:
                 break
             img = _prepare_pil_for_save(img, image_size)
-            to_save.append((save_dir / f'image_{img_counter:05d}_{label:05d}.png', img.copy())) # save as png, save label info for clipscore
+            save_path = save_dir / f'image_{img_counter:05d}_{label:05d}.png'
+            to_save.append((save_path, img.copy())) # save as png, save label info for clipscore
             img_counter += 1
 
         with ThreadPoolExecutor(max_workers=_ROLLOUT_SAVE_WORKERS) as ex:
