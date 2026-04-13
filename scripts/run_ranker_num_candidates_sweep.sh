@@ -14,11 +14,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
 
 export CUDA_VISIBLE_DEVICES=6
 
-RANKER_DIR='/data/home/yxfeng/diffusion_ranker/outputs/ranker_mse_kl/g32_alpha0.3_layer_ratio0.6_lr1e-4_cosine_0328'
+# Diffusion ranker checkpoint（``ranker/train.py`` 的 ``ranker_final.pt`` 或含 ``model_state_dict`` 的 .pt）
+RANKER_CKPT="${RANKER_CKPT:-/data/home/yxfeng/diffusion_ranker/outputs/ranker_repr/ranker_final.pt}"
 DIT_PATH="${DIT_PATH:-/data/yxfeng/models/dit_model}"
 IMAGENET_VAL="${IMAGENET_VAL:-/data/yxfeng/datasets/imagenet/val}"
 BASE_OUT="${BASE_OUT:-/data/yxfeng/eval_dit_random_search_ranker_nc_sweep}"
@@ -32,9 +34,9 @@ SUMMARY="$BASE_OUT/sweep_summary.jsonl"
 for k in 2 4 8 16; do
   out="${BASE_OUT}/num_candidates_${k}_ckpt_0045_cfg1.0"
   echo "========== num_candidates=${k} -> ${out} =========="
-  python3 "${SCRIPT_DIR}/dit_random_search_ranker.py" \
-    --ranker_dir "$RANKER_DIR" \
-    --ckpt_name "ranker_diffusion_epoch_0045.pt" \
+  python3 "${REPO_ROOT}/search/dit_random_search_ranker.py" \
+    --verifier ranker \
+    --ranker_ckpt "$RANKER_CKPT" \
     --dit_path "$DIT_PATH" \
     --imagenet_val "$IMAGENET_VAL" \
     --output_dir "$out" \
