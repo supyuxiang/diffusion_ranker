@@ -159,13 +159,17 @@ def run_random_search_fid(
     return selected_stats, best_path_ls
 
 
-def save_best_images(best_path_ls: list[Path], output_dir:Path) -> None:
+def save_best_images(best_path_ls: list[Path], output_dir: Path) -> None:
+    """写出与 ``rollout_dit_with_steps`` 一致：``image_{序}_{class_id}.png``，供 ``compute_fid_is_clipscore`` 用 ``stem`` 最后一段解析类别。"""
     output_dir.mkdir(parents=True, exist_ok=True)
     import shutil
-    for i,path in enumerate(best_path_ls):
-        label = path.stem.split("_")[1]
-        shutil.copy(path, output_dir / f"best_image_{label}_{i:06d}.png")
-    return 
+
+    for i, path in enumerate(best_path_ls):
+        parts = path.stem.split("_")
+        class_id = int(parts[-1])
+        # 与 utils.rollout 中 ``image_{counter:05d}_{label:05d}.png`` 对齐；CLIP 读 ``parts[-1]``
+        dest = output_dir / f"image_{i:05d}_{class_id:05d}.png"
+        shutil.copy2(path, dest)
 
 
 

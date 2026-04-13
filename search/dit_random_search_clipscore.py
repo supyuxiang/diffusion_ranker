@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-DiT Random Search with CLIPScore Verifier（仅预生成图）
+DiT Random Search + CLIPScore verifier（仅读预生成图）。init 固定 N_INIT=1024（与 FID 脚本一致）。
 
-须先用 ``search/rollout.py`` 生成 ``candidate_0000`` …（``image_{idx}_{label}.png``）与可选 ``init_1024``。
-每轮从 K 个 candidate 池的**同一位置切片**取 ``batch_size`` 张图，算 batch 平均 CLIP 图文余弦相似度，
-选**最高**的一批写入 ``output_dir``。**不加载 DiT**。
+须先用 ``search/rollout.py`` 生成 ``candidate_0000`` …（``image_{idx}_{label}.png``）与 ``init1024/``。
 
-默认 **search batch_size=32**（每轮从每个池取 32 张比 FID 版更小，可按需改 ``--batch_size``）。
+每轮从 K 个 candidate 池的同一位置切片取 ``batch_size`` 张图，算 batch 平均 CLIP 图文余弦相似度，
+选最高的一批；胜出路径记入 ``best_path_ls``，最后 ``shutil.copy2`` 到 ``best_images/``，文件名保留
+``image_{序}_{class_id}.png``，供 ``compute_fid_is_clipscore`` 解析类别。
+
+默认 search ``--batch_size=32``（小于 FID 版）。
 
 用法::
 
   python3 search/dit_random_search_clipscore.py \\
-      --imagenet_val /root/autodl-tmp/imagenet/val \\
       --output_dir /root/autodl-tmp/eval_dit_rs_clip \\
       --deno_steps 10 --guidance_scale 1.0 \\
-      --num_candidates 16 --batch_size 32 --init_random_samples 32
+      --num_candidates 16 --batch_size 32
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import argparse
 import gc
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -30,13 +32,14 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
-_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 from dit_random_search_common import load_imagenet_simple_labels, prompt_for_class
 
-from utils import compute_fid_is_from_dirs, set_device, set_seed
+from utils import compute_fid_is_clipscore, set_device, set_seed
+
+N_INIT = 1024
 
 _DEFAULT_HF_CLIP_ROOT = Path(
     os.environ.get(
@@ -44,12 +47,6 @@ _DEFAULT_HF_CLIP_ROOT = Path(
         "/root/autodl-tmp/models--openai--clip-vit-large-patch14",
     )
 )
-
-
-def default_candidates_root(guidance_scale: float, deno_steps: int) -> Path:
-    return Path(
-        f"/root/autodl-tmp/dit_candidates_50k_cfg{guidance_scale}_deno{deno_steps}"
-    )
 
 
 def sorted_rollout_image_paths(directory: Path) -> list[Path]:
@@ -74,38 +71,6 @@ def load_images_and_class_ids(paths: list[Path]) -> tuple[list[Image.Image], lis
             images.append(im.convert("RGB").copy())
         cids.append(class_id_from_rollout_path(p))
     return images, cids
-
-
-def build_candidate_path_lists(root: Path, num_candidates: int) -> list[list[Path]]:
-    lists: list[list[Path]] = []
-    for i in range(num_candidates):
-        d = root / f"candidate_{i:04d}"
-        if not d.is_dir():
-            raise FileNotFoundError(f"missing candidate dir: {d}")
-        pl = sorted_rollout_image_paths(d)
-        if not pl:
-            raise FileNotFoundError(f"no image_*_*.png under {d}")
-        lists.append(pl)
-    return lists
-
-
-def resolve_init_paths(
-    candidates_root: Path,
-    init_dir: Path | None,
-    n_init: int,
-    candidate_lists: list[list[Path]],
-) -> list[Path]:
-    if n_init <= 0:
-        return []
-    if init_dir is not None and init_dir.is_dir():
-        pl = sorted_rollout_image_paths(init_dir)
-        if len(pl) < n_init:
-            raise RuntimeError(f"{init_dir}: need >= {n_init} images, got {len(pl)}")
-        return pl[:n_init]
-    pl0 = candidate_lists[0]
-    if len(pl0) < n_init:
-        raise RuntimeError(f"candidate_0000: need >= {n_init} images for init, got {len(pl0)}")
-    return pl0[:n_init]
 
 
 def resolve_hf_clip_snapshot_dir(path: Path) -> Path:
@@ -198,12 +163,21 @@ def mean_batch_clipscore_open_clip(
     return float(sim.mean().item()) if sim.numel() else float("-inf")
 
 
-def init_from_precomputed(output_dir: Path, init_paths: list[Path]) -> int:
+def save_init_images(init_paths: list[Path], output_dir: Path) -> None:
+    """``image_{i:05d}_{class_id:05d}.png``，与 rollout / ``compute_fid_is_clipscore`` 一致。"""
     output_dir.mkdir(parents=True, exist_ok=True)
-    for i, p in enumerate(init_paths):
-        with Image.open(p) as im:
-            im.convert("RGB").save(output_dir / f"{i:06d}.png")
-    return len(init_paths)
+    for i, path in enumerate(init_paths):
+        cid = class_id_from_rollout_path(path)
+        dest = output_dir / f"image_{i:05d}_{cid:05d}.png"
+        shutil.copy2(path, dest)
+
+
+def save_best_images(best_path_ls: list[Path], output_dir: Path, *, start_idx: int = 0) -> None:
+    for j, path in enumerate(best_path_ls):
+        i = start_idx + j
+        cid = class_id_from_rollout_path(path)
+        dest = output_dir / f"image_{i:05d}_{cid:05d}.png"
+        shutil.copy2(path, dest)
 
 
 @torch.inference_mode()
@@ -213,41 +187,39 @@ def run_random_search_clipscore(
     clip_aux,
     labels_1k: list[str],
     prompt_template: str,
-    output_dir: Path,
     num_samples: int,
     batch_size: int,
     num_candidates: int,
-    device: str,
-    candidate_lists: list[list[Path]],
-    n_init: int = 0,
-) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    cursor = n_init
-    img_counter = n_init
+    device_str: str,
+    candidate_pathes_dict: dict[int, list[Path]],
+    n_init: int,
+) -> list[Path]:
+    best_path_ls: list[Path] = []
+    current_idx = n_init
     num_rounds = (num_samples - n_init + batch_size - 1) // batch_size
 
     for c in range(num_candidates):
-        if len(candidate_lists[c]) < num_samples:
+        if len(candidate_pathes_dict[c]) < num_samples:
             raise RuntimeError(
-                f"candidate_{c:04d}: need >= {num_samples} images, got {len(candidate_lists[c])}"
+                f"candidate_{c:04d}: need >= {num_samples} images, got {len(candidate_pathes_dict[c])}"
             )
 
     for _ in tqdm(range(num_rounds), desc="random search clipscore"):
-        n_this = min(batch_size, num_samples - cursor)
-        if n_this <= 0:
+        n_this_batch = min(batch_size, num_samples - current_idx)
+        if n_this_batch <= 0:
             break
 
         best_score = float("-inf")
-        best_batch: list[Image.Image] | None = None
+        best_candidate_idx = -1
 
-        for c in range(num_candidates):
-            sub = candidate_lists[c][cursor : cursor + n_this]
+        for candidate_idx, candidate_path_ls in candidate_pathes_dict.items():
+            sub = candidate_path_ls[current_idx : current_idx + n_this_batch]
             batch_images, batch_classes = load_images_and_class_ids(sub)
             if clip_backend == "hf":
                 score = mean_batch_clipscore_hf(
                     clip_model,
                     clip_aux,
-                    device,
+                    device_str,
                     batch_images,
                     batch_classes,
                     labels_1k,
@@ -259,7 +231,7 @@ def run_random_search_clipscore(
                     clip_model,
                     tokenizer,
                     image_transform,
-                    device,
+                    device_str,
                     batch_images,
                     batch_classes,
                     labels_1k,
@@ -267,20 +239,22 @@ def run_random_search_clipscore(
                 )
             if score > best_score:
                 best_score = score
-                best_batch = batch_images
+                best_candidate_idx = candidate_idx
 
-        assert best_batch is not None
-        for img in best_batch:
-            if img_counter >= num_samples:
-                break
-            img.save(output_dir / f"{img_counter:06d}.png")
-            img_counter += 1
-        cursor += n_this
+        assert best_candidate_idx != -1
+        win_paths = candidate_pathes_dict[best_candidate_idx][
+            current_idx : current_idx + n_this_batch
+        ]
+        best_path_ls.extend(win_paths)
+        current_idx += n_this_batch
+        if current_idx >= num_samples:
+            break
+
+    return best_path_ls
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--imagenet_val", default="/root/autodl-tmp/imagenet/val")
     p.add_argument("--output_dir", default="/root/autodl-tmp/eval_dit_random_search_clipscore")
     p.add_argument("--num_samples", type=int, default=50_000)
     p.add_argument(
@@ -290,21 +264,10 @@ def parse_args() -> argparse.Namespace:
         help="每轮每个 candidate 池切片长度（search batch，默认 32）",
     )
     p.add_argument("--num_candidates", type=int, default=16)
-    p.add_argument("--init_random_samples", type=int, default=32)
     p.add_argument("--deno_steps", type=int, default=20, help="与 rollout 目录名一致")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--guidance_scale", type=float, default=1.0)
     p.add_argument("--metrics_batch_size", type=int, default=64)
-    p.add_argument(
-        "--candidates_root",
-        default="",
-        help="预生成根目录；空则用 dit_candidates_50k_cfg{gs}_deno{steps}",
-    )
-    p.add_argument(
-        "--init_dir",
-        default="",
-        help="init 目录；空则尝试 candidates_root/init_1024，否则 candidate_0000 前 N 张",
-    )
     p.add_argument(
         "--prompt_template",
         default="a high-quality picture of a {name}",
@@ -318,11 +281,27 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    imagenet_val = Path("/root/autodl-tmp/imagenet/val")
+    cache_name = "imagenet_val"
+
     args = parse_args()
     output_dir = Path(args.output_dir).expanduser().resolve()
-    imagenet_val = Path(args.imagenet_val).expanduser().resolve()
-    if not imagenet_val.is_dir():
-        raise FileNotFoundError(f"--imagenet_val not a directory: {imagenet_val}")
+
+    rollout_root = Path(
+        f"/root/autodl-tmp/dit_candidates_50k_cfg{args.guidance_scale}_deno{args.deno_steps}"
+    )
+    candidate_dir_ls = [
+        rollout_root / f"candidate_{i:04d}" for i in range(args.num_candidates)
+    ]
+    init_dir = rollout_root / "init1024"
+
+    assert all(
+        len(list(candidate_dir.glob("image_*_*.png"))) == args.num_samples
+        for candidate_dir in candidate_dir_ls
+    ) and len(list(init_dir.glob("image_*_*.png"))) == N_INIT, (
+        f"expected each candidate to have {args.num_samples} images and init {N_INIT}; "
+        f"check rollout_root={rollout_root}"
+    )
 
     set_seed(args.seed)
     device = set_device()
@@ -341,91 +320,90 @@ def main() -> None:
         )
         clip_aux = (clip_tok, clip_tf)
 
-    cr = (
-        Path(args.candidates_root).expanduser().resolve()
-        if args.candidates_root
-        else default_candidates_root(args.guidance_scale, args.deno_steps)
-    )
-    if not cr.is_dir():
-        raise FileNotFoundError(
-            f"candidates root missing: {cr}\nRun search/rollout.py per candidate_idx."
+    candidate_pathes_dict: dict[int, list[Path]] = {}
+    for i in range(args.num_candidates):
+        candidate_pathes_dict[i] = sorted(
+            candidate_dir_ls[i].glob("image_*_*.png"),
+            key=lambda p: int(p.stem.split("_")[1]),
         )
 
-    init_dir_opt = Path(args.init_dir).expanduser().resolve() if args.init_dir else None
-    auto_init = cr / "init_1024"
-    if init_dir_opt is None and auto_init.is_dir() and sorted_rollout_image_paths(auto_init):
-        init_dir_opt = auto_init
+    init_path_ls = sorted(
+        init_dir.glob("image_*_*.png"),
+        key=lambda p: int(p.stem.split("_")[1]),
+    )
 
-    lists = build_candidate_path_lists(cr, args.num_candidates)
-
-    n_init = 0
-    if args.init_random_samples > 0:
-        init_paths = resolve_init_paths(cr, init_dir_opt, args.init_random_samples, lists)
-        print(f"init from disk ({len(init_paths)} images) -> {output_dir}")
-        n_init = init_from_precomputed(output_dir, init_paths)
+    best_dir = output_dir / "best_images"
+    print(f"init {N_INIT} -> {best_dir}")
+    save_init_images(init_path_ls, best_dir)
 
     print(
-        f"random search (clipscore): root={cr}, "
+        f"random search (clipscore): root={rollout_root}, "
         f"num_candidates={args.num_candidates}, batch_size={args.batch_size}"
     )
-    run_random_search_clipscore(
+    best_path_ls = run_random_search_clipscore(
         args.clip_backend,
         clip_model,
         clip_aux,
         labels_1k,
         args.prompt_template,
-        output_dir,
         args.num_samples,
         args.batch_size,
         args.num_candidates,
         dstr,
-        lists,
-        n_init=n_init,
+        candidate_pathes_dict,
+        N_INIT,
     )
+    save_best_images(best_path_ls, best_dir, start_idx=N_INIT)
 
     gc.collect()
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
-    resolved_root = (
-        str(Path(args.candidates_root).expanduser().resolve())
-        if args.candidates_root
-        else str(default_candidates_root(args.guidance_scale, args.deno_steps))
+    (output_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "verifier": "clipscore",
+                "imagenet_val": str(imagenet_val),
+                "candidates_root": str(rollout_root),
+                "init_dir": str(init_dir),
+                "num_samples": args.num_samples,
+                "batch_size": args.batch_size,
+                "num_candidates": args.num_candidates,
+                "n_init": N_INIT,
+                "deno_steps": args.deno_steps,
+                "guidance_scale": args.guidance_scale,
+                "seed": args.seed,
+                "ref_cache_name": cache_name,
+                "prompt_template": args.prompt_template,
+                "clip_backend": args.clip_backend,
+                **(
+                    {
+                        "clip_model_path": args.clip_model_path,
+                        "clip_model_path_resolved": str(clip_dir_resolved),
+                    }
+                    if args.clip_backend == "hf" and clip_dir_resolved is not None
+                    else {
+                        "clip_model": args.clip_model,
+                        "clip_pretrained": args.clip_pretrained,
+                    }
+                ),
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
     )
-    cfg = {
-        "verifier": "clipscore",
-        "clip_backend": args.clip_backend,
-        "init_random_samples": args.init_random_samples,
-        "deno_steps": args.deno_steps,
-        "guidance_scale": args.guidance_scale,
-        "num_candidates": args.num_candidates,
-        "batch_size": args.batch_size,
-        "prompt_template": args.prompt_template,
-        "candidates_root": resolved_root,
-        "init_dir": str(Path(args.init_dir).expanduser().resolve()) if args.init_dir else "",
-    }
-    if args.clip_backend == "hf" and clip_dir_resolved is not None:
-        cfg["clip_model_path"] = args.clip_model_path
-        cfg["clip_model_path_resolved"] = str(clip_dir_resolved)
-    else:
-        cfg["clip_model"] = args.clip_model
-        cfg["clip_pretrained"] = args.clip_pretrained
 
-    log_path = output_dir / "config.json"
-    with open(log_path, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
-    print(f"config saved to {log_path}")
-
-    print("\nfinal FID / IS (torch_fidelity)")
-    metrics = compute_fid_is_from_dirs(
-        output_dir,
-        imagenet_val,
-        device,
-        batch_size=args.metrics_batch_size,
+    print("\nfinal FID / IS / CLIPScore")
+    metrics = compute_fid_is_clipscore(best_dir, imagenet_val, device=device)
+    print(
+        f"   FID: {metrics['fid']:.2f}, IS: {metrics['is']:.4f} ± {metrics['is_std']:.4f}, "
+        f"CLIPScore: {metrics['clipscore']:.4f}"
     )
-    print(f"   FID: {metrics['FID']:.2f}, IS: {metrics['IS']:.4f} ± {metrics['IS_STD']:.4f}")
-    with open(output_dir / "final_metrics.json", "w", encoding="utf-8") as f:
-        json.dump({k: float(v) for k, v in metrics.items()}, f, indent=2)
+    (best_dir / "final_metrics.json").write_text(
+        json.dumps({k: float(v) for k, v in metrics.items()}, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
 if __name__ == "__main__":
