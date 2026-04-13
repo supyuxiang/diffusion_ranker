@@ -61,7 +61,7 @@ def extract_features_from_images(
     with torch.no_grad():
         for i in range(0, len(images), batch_size):
             tensors = torch.stack(
-                [transform(im) for im in images[i : i + batch_size]]
+                [transform(img) for img in images[i : i + batch_size]]
             )
             tensors = tensors.cuda(non_blocking=True)
             chunks.append(feat_extractor(tensors).cpu().numpy())
@@ -69,7 +69,7 @@ def extract_features_from_images(
 
 
 def compute_ref_statistics(
-    real_dir: Path, device: torch.device, cache_name: str
+    real_dir: Path, cache_name: str
 ) -> dict:
     from torch_fidelity.metric_fid import fid_input_id_to_statistics_cached
     from torch_fidelity.utils import create_feature_extractor
@@ -97,14 +97,13 @@ def init_from_precomputed(
     device: torch.device,
 ) -> tuple[dict, int]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    init_images = [Image.open(p).convert("RGB").copy() for p in init_paths]
+    init_images = [Image.open(path).convert("RGB").copy() for path in init_paths]
     for i, image in enumerate(init_images):
         image.save(output_dir / f"{i:06d}.png")
     return (
         fid_features_to_statistics(
             extract_features_from_images(init_images, feat_extractor, device)
-        ),
-        len(init_images),
+        ), len(init_images)
     )
 
 
@@ -198,8 +197,6 @@ def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir).expanduser().resolve()
     imagenet_val = Path(args.imagenet_val).expanduser().resolve()
-    if not imagenet_val.is_dir():
-        raise FileNotFoundError(imagenet_val)
 
     set_seed(args.seed)
     device = set_device()
@@ -217,42 +214,25 @@ def main() -> None:
             f"/root/autodl-tmp/dit_candidates_50k_cfg{args.guidance_scale}_deno{args.deno_steps}"
         )
     )
-    if not candidates_root.is_dir():
-        raise FileNotFoundError(f"candidates root: {candidates_root}")
 
     candidate_path_lists: list[list[Path]] = []
     for i in range(args.num_candidates):
         candidate_dir = candidates_root / f"candidate_{i:04d}"
-        if not candidate_dir.is_dir():
-            raise FileNotFoundError(f"missing {candidate_dir}")
         path_list = sorted(
             candidate_dir.glob("image_*_*.png"),
             key=lambda p: int(p.stem.split("_")[1]),
         )
-        if not path_list:
-            raise FileNotFoundError(f"no png in {candidate_dir}")
         candidate_path_lists.append(path_list)
 
     init_source_dir = Path(args.init_dir).expanduser().resolve() if args.init_dir else None
-    if init_source_dir is None:
-        auto_init_dir = candidates_root / "init_1024"
-        if auto_init_dir.is_dir() and sorted(
-            auto_init_dir.glob("image_*_*.png"),
-            key=lambda p: int(p.stem.split("_")[1]),
-        ):
-            init_source_dir = auto_init_dir
-
     init_path_list = (
         sorted(
             init_source_dir.glob("image_*_*.png"),
             key=lambda p: int(p.stem.split("_")[1]),
         )
-        if init_source_dir is not None and init_source_dir.is_dir()
-        else candidate_path_lists[0]
     )
-    if len(init_path_list) < N_INIT:
-        raise RuntimeError(f"init needs {N_INIT} images, got {len(init_path_list)}")
-    init_paths = init_path_list[:N_INIT]
+    assert len(init_path_list) ==  N_INIT
+    init_paths = init_path_list
 
     print(f"init {N_INIT} -> {output_dir}")
     init_stats, n_init = init_from_precomputed(
