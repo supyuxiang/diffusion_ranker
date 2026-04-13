@@ -960,29 +960,7 @@ def fid_statistics_to_distance(stat_gen: dict, stat_ref: dict) -> float:
     return max(0.0, fid)
 
 
-
-
-def random_search_fid_reward(
-    pipe,
-    save_dir:Path | str,
-    real_dir:str | Path,
-    deno_step:int,
-    num_gen:int=50000,
-    parallel_size:int=4,
-    batch_size:int=512,
-    seed:int=42,
-    cfg:float=1.0,
-    *,
-    init_samples:int=1024, #  paper setting
-):
-    save_dir = Path(save_dir)
-    save_dir.mkdir(parents=True, exist_ok=True)
-    real_dir = Path(real_dir)
-
-    # init samples
     
-
-
 
 ##########################################################
 

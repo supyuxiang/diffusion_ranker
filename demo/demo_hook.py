@@ -1,67 +1,65 @@
-#!/usr/bin/env python3
-"""
-最小示例：PyTorch Module 上的 forward hook / forward pre-hook。
-
-运行: python3 demo/demo_hook.py
-"""
-
-from __future__ import annotations
-
 import torch
-import torch.nn as nn
+from torch import nn
+from torch.nn.functional import relu,linear,sigmoid
+
+# 首先我们定义一个模型
+class Model(nn.Module):
+    def __init__(self):
+        super(Model, self).__init__()
+        self.fc1 = nn.Linear(3, 4)
+        self.relu1 = nn.ReLU()
+        self.fc2 = nn.Linear(4, 1)
+        self.initialize()
+    
+    # 为了方便验证，我们将指定特殊的weight和bias
+    def initialize(self):
+        with torch.no_grad():
+            self.fc1.weight = torch.nn.Parameter(
+                torch.Tensor([[1., 2., 3.],
+                              [-4., -5., -6.],
+                              [7., 8., 9.],
+                              [-10., -11., -12.]])
+                              )
+
+            self.fc1.bias = torch.nn.Parameter(torch.Tensor([1.0, 2.0, 3.0, 4.0]))
+            self.fc2.weight = torch.nn.Parameter(torch.Tensor([[1.0, 2.0, 3.0, 4.0]]))
+            self.fc2.bias = torch.nn.Parameter(torch.Tensor([1.0]))
+
+    def forward(self, x):
+        o = self.fc1(x)
+        o = self.relu1(o)
+        o = self.fc2(o)
+        return o
+
+# 全局变量，用于存储中间层的 feature
+total_feat_out = []
+total_feat_in = []
+
+# 定义 forward hook function
+def hook_fn_forward(module, input, output):
+    print(module) # 用于区分模块
+    print('input', input) # 首先打印出来
+    print('output', output)
+    total_feat_out.append(output) # 然后分别存入全局 list 中
+    total_feat_in.append(input)
+    print(type(input))
+    print(type(output))
 
 
-model = nn.Sequential(
-    nn.Linear(2, 4),
-    nn.ReLU(),
-    nn.Linear(4, 1),
-)
-model.to('cuda')
-model.eval()
+model = Model()
 
+# 只给第一层 Linear（fc1）挂 hook；需要多层时用 named_modules() / named_children() 再筛选
+model.fc1.register_forward_hook(hook_fn_forward)
+# 注意下面代码中 x 的维度，对于linear module，输入一定是大于等于二维的
+# （第一维是 batch size）。在 forward hook 中看不出来，但是 backward hook 中，
+# 得到的梯度完全不对。
+# 有一篇 hook 的教程就是这里出了错，作者还强行解释，遗毒无穷，
 
+x = torch.Tensor([[1.0, 1.0, 1.0]]).requires_grad_() 
+o = model(x)
+o.backward()
 
-def main() -> None:
-
-    # 目标：hook 在第一层 Linear 上，观察「输入 / 输出」
-    first_linear: nn.Linear = model[0]
-    breakpoint()
-
-    def forward_pre_hook(module, inputs):
-        x, = inputs
-        print(f"[pre-hook]  {module.__class__.__name__} 输入 shape={tuple(x.shape)}")
-
-    def forward_hook(module, inputs, output):
-        print(f"[forward-hook] {module.__class__.__name__} 输出 shape={tuple(output.shape)}")
-        # 可原地改输出（一般慎用）；这里只演示可读性
-        return None  # 返回 None 表示不替换 output
-
-    h_pre = first_linear.register_forward_pre_hook(forward_pre_hook)
-    h_fwd = first_linear.register_forward_hook(forward_hook)
-
-    x = torch.randn(3, 2).to('cuda')  # batch=3
-    y = model(x)
-    print(f"最终输出 shape={tuple(y.shape)}")
-
-    # 用完可移除（避免多次 forward 重复注册多份时混乱）
-    h_pre.remove()
-    h_fwd.remove()
-
-    print("\n--- backward hook 示例（可选）---")
-
-    def backward_hook(module, grad_input, grad_output):
-        # grad_output[0]: 对本层输出的梯度 dL/d(out)
-        g = grad_output[0]
-        print(f"[backward-hook] {module.__class__.__name__} grad_output shape={tuple(g.shape)}")
-        return None
-
-    lin = model[2]
-    h_b = lin.register_full_backward_hook(backward_hook)
-    x2 = torch.randn(2, 2, requires_grad=True).to('cuda')
-    out = model(x2).sum()
-    out.backward()
-    h_b.remove()
-
-
-if __name__ == "__main__":
-    main()
+print('==========Saved inputs and outputs==========')
+for idx in range(len(total_feat_in)):
+    print('input: ', total_feat_in[idx])
+    print('output: ', total_feat_out[idx])
