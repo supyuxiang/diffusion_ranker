@@ -4,7 +4,7 @@
 set -euo pipefail
 
 DENO_STEPS=10
-cfg = 1.0
+cfg=1.0
 idx_ls=(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15)
 
 for idx in "${idx_ls[@]}"; do
