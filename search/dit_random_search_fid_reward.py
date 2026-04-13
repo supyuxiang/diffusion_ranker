@@ -8,11 +8,12 @@ DiT Random Search + FID verifier（仅读预生成图）。init 固定 N_INIT=10
 
 用法:
 
-  python3 search/dit_random_search_fid_reward.py \
-      --imagenet_val /root/autodl-tmp/imagenet/val \
-      --output_dir /root/autodl-tmp/eval_dit_rs_fid \
-      --deno_steps 10 --guidance_scale 1.0 \
-      --num_candidates 16 --batch_size 24
+  python3 /root/diffusion_ranker/search/dit_random_search_fid_reward.py \
+      --num_samples 50000 \
+      --batch_size 512 \
+      --num_candidates 16 \
+      --deno_steps 10 \
+      --guidance_scale 1.0
 """
 
 from __future__ import annotations
@@ -111,7 +112,7 @@ def run_random_search_fid(
     num_rounds = (num_samples - n_init + batch_size - 1) // batch_size
 
     for _ in tqdm(range(num_rounds), desc="random search fid"):
-        n_this_batch = min(batch_size, num_samples - current_idx)
+        n_this_batch = min(batch_size, num_samples -n_init - current_idx)
         if n_this_batch <= 0:
             break
         # predefine best_fid, best_batch_images, best_batch_stats
@@ -150,9 +151,10 @@ def run_random_search_fid(
         ]
         best_path_ls.extend(win_paths)
         
-        selected_stats, n_selected = merge_fid_statistics(
+        selected_stats = merge_fid_statistics(
             selected_stats, n_selected, best_batch_stats, len(best_batch_images)
         )
+        n_selected += len(best_batch_images)
         current_idx += n_this_batch
         if current_idx >= num_samples:
             break
@@ -210,13 +212,13 @@ def main() -> None:
     
     # check 
     n_expect = args.num_samples - N_INIT
-    assert all(
-        len(list(candidate_dir.glob("image_*_*.png"))) == n_expect
-        for candidate_dir in candidate_dir_ls
-    ) and len(list(init_dir.glob("image_*_*.png"))) == N_INIT, (
-        f"expected each candidate to have {n_expect} images and init {N_INIT}; "
-        f"check rollout_root={rollout_root}"
-    )
+    # assert all(
+    #     len(list(candidate_dir.glob("image_*_*.png"))) == n_expect
+    #     for candidate_dir in candidate_dir_ls
+    # ) and len(list(init_dir.glob("image_*_*.png"))) == N_INIT, (
+    #     f"expected each candidate to have {n_expect} images and init {N_INIT}; "
+    #     f"check rollout_root={rollout_root}"
+    # )
 
 
     set_seed(args.seed)

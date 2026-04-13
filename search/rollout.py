@@ -184,4 +184,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # device = set_device()
+    # pipe = model_loader("dit-xl-2-256", device=device, dtype="bf16")
+    # pipe.set_progress_bar_config(disable=True)
+    # rollout_init_1024(pipe, guidance_scale=1.0, deno_steps=10)
     main()

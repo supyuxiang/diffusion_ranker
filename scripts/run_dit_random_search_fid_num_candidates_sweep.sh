@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# Sweep num_candidates for dit_random_search_fid_reward.py (init 固定 N_INIT=1024，见脚本内常量).
+# 对 dit_random_search_fid_reward.py 扫 num_candidates：nc ∈ {2, 4, 8, 16}
+# （init 固定 N_INIT=1024，见 Python 脚本内常量）
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT="${ROOT}/search/dit_random_search_fid_reward.py"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
-for nc in 2 4 8 16; do
+NC_VALUES=(2 4 8 16)
+
+for nc in "${NC_VALUES[@]}"; do
   echo "========== num_candidates=${nc} =========="
-  python3 -u "${ROOT}/search/dit_random_search_fid_reward.py" \
+  python3 -u "${SCRIPT}" \
     --imagenet_val /root/autodl-tmp/imagenet/val \
     --output_dir "/root/autodl-tmp/eval_dit_random_search_fid/num_candidates_${nc}_cfg1.0_steps10" \
     --num_samples 50000 \
@@ -17,4 +21,4 @@ for nc in 2 4 8 16; do
     --guidance_scale 1.0
 done
 
-echo "Sweep finished."
+echo "Sweep finished (nc=${NC_VALUES[*]})."

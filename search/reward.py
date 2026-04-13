@@ -21,17 +21,23 @@ def extract_features_from_images(
     batch_size: int = 512,
 ) -> np.ndarray:
     from torch_fidelity.datasets import TransformPILtoRGBTensor
+    import torchvision.transforms as T
 
-    transform = Compose([Resize(256), CenterCrop(256), TransformPILtoRGBTensor()])
+    transform = T.Compose(
+        [T.Resize(256), T.CenterCrop(256), TransformPILtoRGBTensor()]
+    )
     feat_extractor.eval()
     chunks = []
     with torch.no_grad():
         for i in range(0, len(images), batch_size):
             tensors = torch.stack(
-                [transform(img) for img in images[i : i + batch_size]],dim=0
+                [transform(img) for img in images[i : i + batch_size]], dim=0
             )
-            tensors = tensors.cuda(non_blocking=True)
-            chunks.append(feat_extractor(tensors).cpu().numpy())
+            tensors = tensors.to(device, non_blocking=device.type == "cuda")
+            out = feat_extractor(tensors)
+            if isinstance(out, tuple): # tuple
+                out = out[0]
+            chunks.append(out.detach().float().cpu().numpy())
     return np.concatenate(chunks, axis=0)  # (N, 2048)
 
 def fid_features_to_statistics(features: np.ndarray) -> dict:
