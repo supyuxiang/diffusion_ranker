@@ -32,16 +32,10 @@ from diffusers import DiTPipeline
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
-from utils import DitRolloutReprCapture, model_loader, rollout_dit_with_steps, set_device
+from utils import DitRolloutReprCapture, model_loader, rollout_dit_with_steps, set_device,refresh_memory
 
 BASE_SEED = 42
 
-
-def _cuda_mem_trim() -> None:
-    """与 language_ranker sample_hidden 类似：在重 GPU / 大批次表征抓取后回收碎片显存。"""
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
 
 def _output_dir(guidance_scale: float, deno_steps: int, candidate_idx: int) -> Path:
@@ -164,28 +158,25 @@ def main() -> None:
     elif device.type == "cuda":
         pipe.transformer = torch.compile(pipe.transformer, mode="reduce-overhead")
 
-    try:
-        n = rollout_candidate(
-            pipe,
-            out_dir,
-            args.num_samples,
-            args.batch_size,
-            args.deno_steps,
-            device,
-            args.candidate_idx,
-            args.guidance_scale,
-            repr_capture=repr_capture,
-            repr_max_batches=repr_max_batches,
-        )
-    finally:
-        if repr_capture is not None:
-            repr_capture.remove()
+    n = rollout_candidate(
+        pipe,
+        out_dir,
+        args.num_samples,
+        args.batch_size,
+        args.deno_steps,
+        device,
+        args.candidate_idx,
+        args.guidance_scale,
+        repr_capture=repr_capture,
+        repr_max_batches=repr_max_batches,
+    )
 
     if repr_capture is not None:
+        repr_capture.remove()
         repr_path = Path(args.repr_pt).expanduser().resolve()
-        _cuda_mem_trim()
+        refresh_memory()
         repr_capture.save_pt(repr_path)
-        _cuda_mem_trim()
+        refresh_memory()
         print(f"representations saved -> {repr_path}")
     if n != args.num_samples:
         print(f"warning: wrote {n}, expected {args.num_samples}", file=sys.stderr)
