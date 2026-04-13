@@ -19,20 +19,14 @@ INCEPTION_WEIGHTS_PATH = (
 # HuggingFace 格式 CLIP（``compute_clipscore`` 默认 ``local_files_only`` 加载）
 CLIP_HF_LOCAL_DIR = Path("/root/autodl-tmp/openai_clip-vit-large-patch14")
 
+# ImageReward 源码根目录（``git clone`` 目标）；``import ImageReward`` 前需加入 ``sys.path``
+IMAGE_REWARD_REPO_DIR = Path("/root/ImageReward-main")
+
 
 def ensure_image_reward_on_path() -> None:
-    """若本地存在 ImageReward 源码目录，将其加入 ``sys.path`` 以便 ``import ImageReward``。"""
-    candidates = [
-        Path("/root/ImageReward-main"),
-        Path(__file__).resolve().parent / "ImageReward-main",
-        Path.home() / "ImageReward-main",
-    ]
-    for p in candidates:
-        if p.is_dir():
-            s = str(p.resolve())
-            if s not in sys.path:
-                sys.path.insert(0, s)
-            break
+    s = str(IMAGE_REWARD_REPO_DIR.resolve())
+    if s not in sys.path:
+        sys.path.insert(0, s)
 
 
 def get_inception_feature_extractor(device: str):

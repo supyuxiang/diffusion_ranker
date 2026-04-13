@@ -75,7 +75,7 @@ ROLLOUT_GLOBAL_SEED_MULTIPLIER = 9973
 
 
 def _ensure_imagereward_path() -> None:
-    """See ``utils.ensure_image_reward_on_path``（默认识别 ``/root/ImageReward-main``）。"""
+    """将 ``utils.IMAGE_REWARD_REPO_DIR`` 加入 ``sys.path``。"""
     ensure_image_reward_on_path()
 
 
