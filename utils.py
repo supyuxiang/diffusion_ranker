@@ -16,6 +16,9 @@ INCEPTION_WEIGHTS_PATH = (
     "weights-inception-2015-12-05-6726825d.pth"
 )
 
+# HuggingFace 格式 CLIP（``compute_clipscore`` 默认 ``local_files_only`` 加载）
+CLIP_HF_LOCAL_DIR = Path("/root/autodl-tmp/openai_clip-vit-large-patch14")
+
 
 def get_inception_feature_extractor(device: str):
     from torch_fidelity.utils import create_feature_extractor
@@ -420,6 +423,8 @@ def compute_fid_is_clipscore(
     real_dir: str | Path = Path("/root/autodl-tmp/imagenet/val"),
     *,
     device: torch.device | None = None,
+    clip_model_dir: str | Path | None = None,
+    clip_batch_size: int = 64,
 ) -> dict[str, float]:
     """FID / IS / CLIPScore：与 ``_load_images_from_dir`` 相同排序读图，并从 ``image_*_{label}.png`` 解析类别。"""
     gen_dir = Path(gen_dir)
@@ -446,7 +451,15 @@ def compute_fid_is_clipscore(
     metrics["is"] = float(is_mean)
     metrics["is_std"] = float(_is_std)
     prompts = imagenet_label2text_for_clipscore(labels_ls)
-    metrics["clipscore"] = float(compute_clipscore(gen_images, prompts, device=device))
+    metrics["clipscore"] = float(
+        compute_clipscore(
+            gen_images,
+            prompts,
+            device=device,
+            clip_model_dir=clip_model_dir,
+            clip_batch_size=clip_batch_size,
+        )
+    )
     return metrics
 
 
@@ -533,42 +546,64 @@ def compute_clipscore(
     *,
     clip_model_dir: str | Path | None = None,
     device: torch.device | None = None,
+    clip_batch_size: int = 64,
 ) -> float:
-    """Mean CLIPScore (0–100) between images under ``gen_dir`` and ``texts``.
+    """Mean CLIPScore (0–100)，与 torchmetrics 定义一致：``max(100 * cos(E_img, E_text), 0)`` 再对样本平均。
 
-    ``torchmetrics`` 要求 ``model_name_or_path`` 为 **str**（内部用 ``"openai" in path`` 选加载分支）；
-    本地目录名需包含 ``openai``（如 ``.../openai_clip-vit-base-patch32``），否则会报
-    ``Invalid model_name_or_path``。未提供 ``clip_model_dir`` 时用环境变量 ``CLIP_MODEL_DIR`` 或默认
-    ``/autodl-tmp/openai_clip-vit-base-patch32``。
+    使用 **transformers** 从本地目录 ``local_files_only=True`` 加载。未传 ``clip_model_dir`` 时用
+    常量 :data:`CLIP_HF_LOCAL_DIR`。
     """
-    from torchmetrics.multimodal.clip_score import CLIPScore
+    from transformers import CLIPModel, CLIPProcessor
+    from torchvision.transforms.functional import to_pil_image
 
     n = gen_images.shape[0]
     if n != len(prompts):
         raise ValueError(f"image count mismatch: tensors {n} vs prompts {len(prompts)}")
 
-
-    root = clip_model_dir or os.environ.get("CLIP_MODEL_DIR", "/autodl-tmp/openai_clip-vit-base-patch32")
-    clip_path = Path(root).expanduser().resolve()
-    if not clip_path.is_dir():
+    clip_path = (
+        Path(clip_model_dir).expanduser().resolve()
+        if clip_model_dir is not None
+        else CLIP_HF_LOCAL_DIR.resolve()
+    )
+    if not clip_path.is_dir() or not (clip_path / "config.json").is_file():
         raise FileNotFoundError(
-            f"Missing CLIP dir {clip_path}; set CLIP_MODEL_DIR or huggingface-cli download."
+            f"CLIP 目录无效或缺少 config.json: {clip_path}；可传 clip_model_dir 覆盖默认 CLIP_HF_LOCAL_DIR"
         )
-    model_id = str(clip_path)
-    if "openai" not in model_id:
-        raise ValueError(
-            "torchmetrics CLIPScore only accepts local paths whose string contains 'openai'; "
-            f"got {model_id!r}. Use e.g. openai_clip-vit-base-patch32 or pass HF id via a symlink name."
-        )
-
     if device is None:
         device = set_device()
     else:
         device = torch.device(device)
-    metric = CLIPScore(model_name_or_path=model_id).to(device)
-    gen_images = gen_images.to(device)
-    metric.update(gen_images, prompts)
-    return float(metric.compute().item()) # 0-100, higher is better
+
+    model = CLIPModel.from_pretrained(str(clip_path), local_files_only=True)
+    processor = CLIPProcessor.from_pretrained(str(clip_path), local_files_only=True)
+    model = model.to(device).float().eval()
+
+    total_score = 0.0
+    total_n = 0
+    with torch.inference_mode():
+        for start in range(0, n, clip_batch_size):
+            end = min(start + clip_batch_size, n)
+            batch_imgs = gen_images[start:end]
+            batch_prompts = prompts[start:end]
+            pil_list = []
+            for i in range(batch_imgs.shape[0]):
+                t = batch_imgs[i]
+                if t.device.type != "cpu":
+                    t = t.cpu()
+                pil_list.append(to_pil_image(t))
+            inputs = processor(
+                text=batch_prompts, images=pil_list, return_tensors="pt", padding=True
+            )
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            out = model(**inputs)
+            ie = out.image_embeds / out.image_embeds.norm(dim=-1, keepdim=True)
+            te = out.text_embeds / out.text_embeds.norm(dim=-1, keepdim=True)
+            sim = (ie * te).sum(dim=-1)
+            score = torch.clamp(sim * 100.0, min=0.0)
+            total_score += float(score.sum().item())
+            total_n += int(score.numel())
+
+    return total_score / max(total_n, 1)
 
 
 # # do not implement now

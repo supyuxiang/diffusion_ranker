@@ -10,12 +10,19 @@ DiT Random Search + CLIPScore verifier（仅读预生成图）。init 固定 N_I
 
 默认 search ``--batch_size=32``（小于 FID 版）。
 
+**本地 CLIP 目录**：若为 HuggingFace 格式（含 ``config.json`` / ``preprocessor_config.json``），须用
+``--clip_backend hf --clip_model_path <目录>``。OpenCLIP 后端仅支持：内置 ``pretrained`` 标签、
+``.pt/.bin`` 权重文件，或含 ``open_clip_config.json`` 的 OpenCLIP 导出目录（``local-dir:``）。
+
 用法::
 
   python3 search/dit_random_search_clipscore.py \
       --output_dir /root/autodl-tmp/eval_dit_rs_clip \
       --deno_steps 10 --guidance_scale 1.0 \
       --num_candidates 16 --batch_size 32
+
+  # 本地 HF CLIP（如 openai_clip-vit-large-patch14）::
+  #   --clip_backend hf --clip_model_path /root/autodl-tmp/openai_clip-vit-large-patch14
 """
 
 from __future__ import annotations
@@ -44,7 +51,10 @@ N_INIT = 1024
 _DEFAULT_HF_CLIP_ROOT = Path(
     os.environ.get(
         "CLIP_HF_CACHE",
-        "/root/autodl-tmp/models--openai--clip-vit-large-patch14",
+        os.environ.get(
+            "CLIP_MODEL_PATH",
+            "/root/autodl-tmp/openai_clip-vit-large-patch14",
+        ),
     )
 )
 
@@ -98,22 +108,60 @@ def load_hf_clip(model_dir: Path, device: str):
 
 
 def load_open_clip(model_name: str, pretrained: str, device: str):
+    """加载 OpenCLIP。
+
+    ``pretrained`` 可以是：
+
+    - 标签名（如 ``openai``、``laion400m_e32``），与 ``model_name``（如 ``ViT-L-14``）配合；
+    - **文件**：``.pt`` / ``.bin`` 等，``create_model_and_transforms(model_name, pretrained=路径)``；
+    - **目录**：仅当内含 ``open_clip_config.json`` 时为 OpenCLIP 包，使用 ``local-dir:`` 加载。
+
+    HuggingFace Transformers 的 CLIP 目录（只有 ``config.json``、无 ``open_clip_config.json``）
+    **不能**走本函数；请改用 ``load_hf_clip`` / ``--clip_backend hf``。
+    """
     import open_clip
     from torchvision import transforms
 
-    model, _, _ = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
-    tokenizer = open_clip.get_tokenizer(model_name)
-    model = model.to(device).float().eval()
-    transform = transforms.Compose(
-        [
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.48145466, 0.4578275, 0.40821073],
-                std=[0.26862954, 0.26130258, 0.27577711],
-            ),
-        ]
+    p = Path(pretrained).expanduser()
+    model_id: str
+    pretrained_arg: str | None
+
+    if p.is_file():
+        model_id = model_name
+        pretrained_arg = str(p.resolve())
+    elif p.is_dir():
+        root = p.resolve()
+        if (root / "open_clip_config.json").is_file():
+            model_id = f"local-dir:{root}"
+            pretrained_arg = None
+        else:
+            raise ValueError(
+                f"OpenCLIP 无法从该目录加载（需要 open_clip_config.json）: {root}\n"
+                f"若为 HuggingFace CLIP 快照，请使用: --clip_backend hf --clip_model_path {root}"
+            )
+    else:
+        model_id = model_name
+        pretrained_arg = pretrained
+
+    model, _, preprocess = open_clip.create_model_and_transforms(
+        model_id, pretrained=pretrained_arg
     )
+    tokenizer = open_clip.get_tokenizer(model_id)
+    model = model.to(device).float().eval()
+
+    if preprocess is not None:
+        transform = preprocess
+    else:
+        transform = transforms.Compose(
+            [
+                transforms.Resize((224, 224)),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.48145466, 0.4578275, 0.40821073],
+                    std=[0.26862954, 0.26130258, 0.27577711],
+                ),
+            ]
+        )
     return model, tokenizer, transform
 
 
@@ -274,9 +322,22 @@ def parse_args() -> argparse.Namespace:
         help="{name}、{id} 见 prompt_for_class",
     )
     p.add_argument("--clip_backend", choices=("hf", "open_clip"), default="hf")
-    p.add_argument("--clip_model_path", type=str, default=str(_DEFAULT_HF_CLIP_ROOT))
-    p.add_argument("--clip_model", default="ViT-B-32")
-    p.add_argument("--clip_pretrained", default="openai")
+    p.add_argument(
+        "--clip_model_path",
+        type=str,
+        default=str(_DEFAULT_HF_CLIP_ROOT),
+        help="hf：HuggingFace CLIP 目录（含 config.json）。环境变量 CLIP_HF_CACHE / CLIP_MODEL_PATH 可覆盖默认。",
+    )
+    p.add_argument(
+        "--clip_model",
+        default="ViT-L-14",
+        help="open_clip：架构名；hf 时忽略。",
+    )
+    p.add_argument(
+        "--clip_pretrained",
+        default="openai",
+        help="open_clip：标签或 .pt/.bin 路径或 OpenCLIP 包目录；hf 时忽略。",
+    )
     return p.parse_args()
 
 
