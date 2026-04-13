@@ -628,11 +628,13 @@ class DitRolloutReprCapture:
         ),
         step_fractions: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0),
         store_dtype: torch.dtype = torch.float16,
+        rollout_base_seed: int | None = None,
     ) -> None:
         self.pipe = pipe
         self.T = num_inference_steps
         self.guidance_scale = guidance_scale
         self.store_dtype = store_dtype
+        self.rollout_base_seed = rollout_base_seed
         self.target_steps = sorted(
             {
                 min(self.T - 1, max(0, round(f * (self.T - 1))))
@@ -703,20 +705,35 @@ class DitRolloutReprCapture:
         self._batch_labels = list(batch_labels)
         self._batch_size = len(batch_labels)
 
-    def end_batch(self, batch_idx: int, image_index_start: int) -> None:
+    def end_batch(
+        self,
+        batch_idx: int,
+        image_index_start: int,
+        *,
+        generator_seed: int | None = None,
+    ) -> None:
         if not self._capturing:
             return
         repr_dict = {
             f"s{s}_r{r:g}": v for (s, r), v in self._current.items()
         }
-        self.records.append(
-            {
-                "batch_idx": batch_idx,
-                "image_index_start": image_index_start,
-                "labels": self._batch_labels,
-                "repr": repr_dict,
-            }
-        )
+        gseed = generator_seed
+        if gseed is None and self.rollout_base_seed is not None:
+            gseed = self.rollout_base_seed + batch_idx
+        image_save_names = [
+            f"image_{image_index_start + i:05d}_{lab:05d}.png"
+            for i, lab in enumerate(self._batch_labels)
+        ]
+        rec: dict = {
+            "batch_idx": batch_idx,
+            "image_index_start": image_index_start,
+            "labels": self._batch_labels,
+            "image_save_names": image_save_names,
+            "repr": repr_dict,
+        }
+        if gseed is not None:
+            rec["generator_seed"] = gseed
+        self.records.append(rec)
         self._current.clear()
 
     def save_pt(self, path: Path) -> None:
@@ -733,6 +750,9 @@ class DitRolloutReprCapture:
                     "guidance_scale": self.guidance_scale,
                     "pooling": ("mean_dim1", "last_token_dim1"),
                     "store_dtype": str(self.store_dtype),
+                    "rollout_base_seed": self.rollout_base_seed,
+                    "batch_generator_seed_formula": "rollout_base_seed + batch_idx",
+                    "image_filename_pattern": "image_{global_idx:05d}_{imagenet_label:05d}.png",
                 },
                 "batches": self.records,
             },
@@ -798,7 +818,9 @@ def rollout_dit_with_steps(
         ) # 
 
         if repr_capture is not None:
-            repr_capture.end_batch(batch_idx, img_start)
+            repr_capture.end_batch(
+                batch_idx, img_start, generator_seed=seed + batch_idx
+            )
         batch_images = out.images # [batch_size, 3, 256, 256]
 
         to_save: list[tuple[Path, Image.Image]] = []

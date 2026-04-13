@@ -157,6 +157,7 @@ def main() -> None:
             num_inference_steps=args.deno_steps,
             guidance_scale=args.guidance_scale,
             store_dtype=store_dtype,
+            rollout_base_seed=BASE_SEED + args.candidate_idx * 520,
         )
         repr_capture.install()
         repr_max_batches = None if args.repr_max_batches < 0 else args.repr_max_batches
