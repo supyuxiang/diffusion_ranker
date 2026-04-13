@@ -142,7 +142,7 @@ def main() -> None:
     pipe.set_progress_bar_config(disable=True)
     repr_capture: DitRolloutReprCapture | None = None
     repr_max_batches: int | None = None
-    if args.repr_pt:
+    if args.repr_pt: # 带表征提取的rollout
         store_dtype = (
             torch.bfloat16 if args.repr_store_dtype == "bf16" else torch.float16
         )

@@ -626,7 +626,7 @@ class DitRolloutReprCapture:
             0.9,
             1.0,
         ),
-        step_fractions: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0),
+        step_ratio_ls:list[float]=[0.0, 0.25, 0.5, 0.75, 1.0],
         store_dtype: torch.dtype = torch.float16,
         rollout_base_seed: int | None = None,
     ) -> None:
@@ -635,10 +635,11 @@ class DitRolloutReprCapture:
         self.guidance_scale = guidance_scale
         self.store_dtype = store_dtype
         self.rollout_base_seed = rollout_base_seed
+        self.step_ratio_ls = step_ratio_ls
         self.target_steps = sorted(
             {
-                min(self.T - 1, max(0, round(f * (self.T - 1))))
-                for f in step_fractions
+                min(self.T - 1, max(0, round(ratio * (self.T - 1))))
+                for ratio in self.step_ratio_ls
             }
         )
         n_blocks = len(pipe.transformer.transformer_blocks)
