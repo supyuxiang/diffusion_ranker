@@ -47,25 +47,6 @@ from utils import (
 )
 
 
-def extract_features_from_images(
-    images: list[Image.Image],
-    feat_extractor,
-    device: torch.device,
-    batch_size: int = 512,
-) -> np.ndarray:
-    from torch_fidelity.datasets import TransformPILtoRGBTensor
-
-    transform = Compose([Resize(256), CenterCrop(256), TransformPILtoRGBTensor()])
-    feat_extractor.eval()
-    chunks = []
-    with torch.no_grad():
-        for i in range(0, len(images), batch_size):
-            tensors = torch.stack(
-                [transform(img) for img in images[i : i + batch_size]],dim=0
-            )
-            tensors = tensors.cuda(non_blocking=True)
-            chunks.append(feat_extractor(tensors).cpu().numpy())
-    return np.concatenate(chunks, axis=0)  # (N, 2048)
 
 
 def compute_ref_statistics() -> dict:
@@ -119,7 +100,7 @@ def run_random_search_fid(
     candidate_pathes_dict: dict[int, list[Path]],
     init_stats: dict,
 ) -> None:
-    from reward import fid_reward, merge_fid_statistics, fid_statistics_to_distance, fid_features_to_statistics
+    from reward import fid_reward, merge_fid_statistics, fid_statistics_to_distance, fid_features_to_statistics, extract_features_from_images
     n_init = 1024
     output_dir.mkdir(parents=True, exist_ok=True)
     selected_stats, n_selected = init_stats, n_init
@@ -132,7 +113,8 @@ def run_random_search_fid(
         if n_this_batch <= 0:
             break
         # predefine best_fid, best_batch_images, best_batch_stats
-        best_fid = float("inf")
+        best_reward = -float("inf")
+        best_candidate_idx = -1
         best_batch_images: list[Image.Image] | None = None
         best_batch_stats: dict | None = None
 
@@ -144,30 +126,30 @@ def run_random_search_fid(
             ] # list[Image.Image] this candidate's batch images
 
             batch_stats = fid_features_to_statistics(
-                extract_features_from_images(batch_images, feat_extractor, device, min(64, n_this_batch))
+                extract_features_from_images(batch_images, feat_extractor, device, min(512, n_this_batch))
             ) # dict: {"mu": (2048,), "sigma": (2048, 2048)}
 
             # compute reward and select best candidate this round
-            merged_stats = merge_fid_statistics(
-                selected_stats, n_selected, batch_stats, len(batch_images)
+            reward_this = fid_reward(
+                batch_stats, len(batch_images),selected_stats, n_selected, ref_stats
             )
-            fid = fid_statistics_to_distance(merged_stats, ref_stats)
-            if fid < best_fid:
-                best_fid = fid
+
+            if reward_this < best_reward:
+                best_reward = reward_this
+                best_candidate_idx = candidate_idx
                 best_batch_images = batch_images
                 best_batch_stats = batch_stats
 
-        assert best_batch_images is not None and best_batch_stats is not None
-        for image in best_batch_images:
-            if img_counter >= num_samples:
-                break
-            image.save(output_dir / f"{img_counter:06d}.png")
-            img_counter += 1
-        selected_stats = merge_fid_statistics(
+
+        assert best_batch_images is not None and best_batch_stats is not None and best_candidate_idx != -1
+        
+        selected_stats, n_selected = merge_fid_statistics(
             selected_stats, n_selected, best_batch_stats, len(best_batch_images)
         )
-        n_selected += len(best_batch_images)
         current_idx += n_this_batch
+        if current_idx >= num_samples:
+            break
+    return selected_stats, n_selected
 
 
 def parse_args():

@@ -14,6 +14,26 @@ import numpy as np
 
 ############# fid reward ####################
 
+def extract_features_from_images(
+    images: list[Image.Image],
+    feat_extractor,
+    device: torch.device,
+    batch_size: int = 512,
+) -> np.ndarray:
+    from torch_fidelity.datasets import TransformPILtoRGBTensor
+
+    transform = Compose([Resize(256), CenterCrop(256), TransformPILtoRGBTensor()])
+    feat_extractor.eval()
+    chunks = []
+    with torch.no_grad():
+        for i in range(0, len(images), batch_size):
+            tensors = torch.stack(
+                [transform(img) for img in images[i : i + batch_size]],dim=0
+            )
+            tensors = tensors.cuda(non_blocking=True)
+            chunks.append(feat_extractor(tensors).cpu().numpy())
+    return np.concatenate(chunks, axis=0)  # (N, 2048)
+
 def fid_features_to_statistics(features: np.ndarray) -> dict:
     mu = np.mean(features, axis=0)
     sigma = np.cov(features, rowvar=False)
@@ -51,8 +71,8 @@ def fid_statistics_to_distance(stat_gen: dict, stat_ref: dict) -> float:
 
     
 
-def fid_reward(batch_stats:dict,n_batch:int,ref_stats:dict,n_ref:int,imagenet_val_stats:dict) -> float:
-    merged_stats = merge_fid_statistics(batch_stats,n_batch,ref_stats,n_ref)
+def fid_reward(batch_stats:dict,n_batch:int,selected_stats:dict,n_selected:int,ref_stats:dict) -> float:
+    merged_stats = merge_fid_statistics(selected_stats,n_selected,batch_stats,n_batch)
     return -fid_statistics_to_distance(merged_stats, imagenet_val_stats) # 越大越好
 
 
