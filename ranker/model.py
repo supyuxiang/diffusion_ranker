@@ -12,6 +12,7 @@ Diffusion ranker：吃 DiT rollout 抓取的 **中间步 × 层 × pooling** 的
 ``(B, K)``，供 softmax / ListNet / ListMLE 等使用。
 """
 
+
 from __future__ import annotations
 
 import torch
