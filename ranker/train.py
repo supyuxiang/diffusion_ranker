@@ -2,6 +2,12 @@
 r"""
 用预计算的 ``repr.pt`` + 对应 rollout 图像训练 **Diffusion ranker**，教师为 **ImageReward**。
 
+**默认配置（可在命令行覆盖）**：
+
+- ``--ranker_type listwise``
+- ``--layer_ratios 0.6``、``--step_ratios 1.0``（最后去噪步；与 ``round(u*(T-1))`` 一致）
+- ``--pool_mode mean``：每条样本只拼各选中 key 的 **mean** pooling（不再拼 ``last``）
+
 - Prompt 默认 ``a photo of a {name}``（与 ``--prompt_template`` 中 ``{name}`` / ``{id}`` 一致）。
 - 损失与 ``train_ranker_imagenet.py`` 相同：``α·MSE(s, R) + (1-α)·KL(q‖p)``，``q=softmax(R/τ)``，``p=softmax(s/τ)``。
 - 优化器：``adamw`` / ``sgd``；学习率调度：``cosine`` / ``linear``；``--warmup_ratio`` 为 epoch 占比的线性 warmup。
@@ -248,14 +254,33 @@ def build_flat_indices(pt_obj: dict) -> list[FlatIndex]:
 
 
 def tokens_for_sample(
-    pt_obj: dict, fi: FlatIndex, selected_keys: list[str]
+    pt_obj: dict,
+    fi: FlatIndex,
+    selected_keys: list[str],
+    *,
+    pool_mode: str = "mean",
 ) -> torch.Tensor:
+    """
+    按 ``pool_mode`` 从 ``repr[k]`` 取向量，在 token 维拼接（顺序与 ``selected_keys`` 一致）。
+
+    - ``mean``：每 key 仅 ``mean``，形状 ``(N_keys, H)``
+    - ``last``：每 key 仅 ``last``
+    - ``both``：每 key 先 ``mean`` 再 ``last``，形状 ``(2 * N_keys, H)``（与旧版一致）
+    """
+    mode = (pool_mode or "mean").strip().lower()
+    if mode not in ("mean", "last", "both"):
+        raise ValueError(f"pool_mode must be mean|last|both, got {pool_mode!r}")
+
     rec = pt_obj["batches"][fi.batch_idx]
     rd = rec["repr"]
     parts: list[torch.Tensor] = []
     for k in selected_keys:
-        parts.append(rd[k]["mean"][fi.idx_in_batch].float())
-        parts.append(rd[k]["last"][fi.idx_in_batch].float())
+        if mode in ("mean", "both"):
+            parts.append(rd[k]["mean"][fi.idx_in_batch].float())
+        if mode in ("last", "both"):
+            parts.append(rd[k]["last"][fi.idx_in_batch].float())
+    if not parts:
+        raise RuntimeError("tokens_for_sample: empty parts (check pool_mode / selected_keys)")
     return torch.stack(parts, dim=0)
 
 
@@ -410,6 +435,8 @@ def iter_training_groups(
     ir_device: str,
     max_groups: int | None,
     shuffle_rng: random.Random | None = None,
+    *,
+    pool_mode: str = "mean",
 ) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
     n = len(dataset)
     order = list(range(n))
@@ -424,7 +451,11 @@ def iter_training_groups(
             if not p.is_file():
                 raise FileNotFoundError(f"missing image: {p}")
         tok = torch.stack(
-            [tokens_for_sample(pt_obj, fi, selected_keys) for fi in group_fi], dim=0
+            [
+                tokens_for_sample(pt_obj, fi, selected_keys, pool_mode=pool_mode)
+                for fi in group_fi
+            ],
+            dim=0,
         )
         class_ids = [fi.label for fi in group_fi]
         with torch.inference_mode():
@@ -456,8 +487,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--ranker_type",
         type=str,
-        default=str(cd.get("ranker_type", "listwise")),
+        default="listwise",
         choices=("listwise", "pointwise"),
+        help="默认 listwise",
     )
     p.add_argument("--group_size", type=int, default=int(cd.get("parallel_size", 8)))
     p.add_argument("--num_epochs", type=int, default=int(cd.get("num_epochs", 100)))
@@ -497,8 +529,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--step_ratios",
         type=str,
-        default="0.5",
-        help="逗号分隔 0~1，映射到步索引 round(u*(T-1))；``all`` 表示不筛选",
+        default="1.0",
+        help="逗号分隔 0~1，映射到步索引 round(u*(T-1))；默认 1.0 为最后一步；``all`` 表示不筛选",
+    )
+    p.add_argument(
+        "--pool_mode",
+        type=str,
+        default="mean",
+        choices=("mean", "last", "both"),
+        help="repr 拼接：mean / last / both（both=每 key 先 mean 再 last，与旧版 token 数一致）",
     )
     p.add_argument(
         "--prompt_template",
@@ -567,6 +606,7 @@ def train_epoch(
             ir_device,
             max_g,
             shuffle_rng=shuffle_rng,
+            pool_mode=args.pool_mode,
         ),
         desc="train",
         leave=False,
@@ -633,6 +673,7 @@ def eval_epoch(
         ir_device,
         max_groups,
         shuffle_rng=eval_rng,
+        pool_mode=args.pool_mode,
     ):
         tok = tok_cpu.to(device, non_blocking=True)
         t_scores = t_scores_ir.to(device)
@@ -699,8 +740,12 @@ def main() -> None:
     if not selected_keys:
         raise RuntimeError("筛选后 repr key 为空，请检查 --layer_ratios / --step_ratios")
 
-    h0 = pt_obj["batches"][0]["repr"][selected_keys[0]]["mean"][0].shape[-1]
-    hidden_dim = int(h0)
+    flat = build_flat_indices(pt_obj)
+    pool_mode = args.pool_mode.strip().lower()
+    tok0 = tokens_for_sample(
+        pt_obj, flat[0], selected_keys, pool_mode=pool_mode
+    )
+    hidden_dim = int(tok0.shape[-1])
 
     ranker_type = args.ranker_type.lower()
     if ranker_type == "listwise":
@@ -713,7 +758,6 @@ def main() -> None:
         model = PointwiseDiffusionRanker(hidden_dim, proj_dim=args.proj_dim).to(device)
 
     labels = load_imagenet_simple_labels()
-    flat = build_flat_indices(pt_obj)
     buckets = bucket_by_class(flat)
     dataset_tr = RankerReprGroupDataset(buckets, args.group_size, seed=args.seed)
 
@@ -772,6 +816,7 @@ def main() -> None:
                 "optimizer_state_dict": optimizer.state_dict(),
                 "args": vars(args),
                 "selected_repr_keys": selected_keys,
+                "pool_mode": pool_mode,
                 "meta": meta,
             }
             torch.save(ckpt, out_dir / f"ranker_epoch{epoch + 1}.pt")
@@ -799,6 +844,7 @@ def main() -> None:
             "model_state_dict": model.state_dict(),
             "args": vars(args),
             "selected_repr_keys": selected_keys,
+            "pool_mode": pool_mode,
             "meta": meta,
         },
         out_dir / "ranker_final.pt",
