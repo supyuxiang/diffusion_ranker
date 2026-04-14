@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """
-DiT Random Search + FID verifier（仅读预生成图）。init 固定 N_INIT=1024（论文）。
 
-须先用 ``search/rollout.py`` 生成 ``candidate_0000`` …；可选 ``init_1024/``。
+after rollout: /root/diffusion_ranker/search/rollout.py
+ -> /root/autodl-tmp/dit_candidates_50k_cfg{gs}_deno{steps}/candidate_XXXX/image_*_*.png
+    and /root/autodl-tmp/dit_candidates_50k_cfg{gs}_deno{steps}/init1024/image_*_*.png
 
-    /root/autodl-tmp/dit_candidates_50k_cfg{gs}_deno{steps}/candidate_XXXX/image_*_*.png
-
-用法:
-
+run single: 
   python3 /root/diffusion_ranker/search/dit_random_search_fid_reward.py \
       --num_samples 50000 \
-      --batch_size 512 \
       --num_candidates 16 \
       --deno_steps 10 \
       --guidance_scale 1.0
+
+# run all:
+bash /root/diffusion_ranker/scripts/run_fid_search.sh
+
+default: init_num = 1024, num_gen = 50000, search_batch_size=1024
 """
 
 from __future__ import annotations
@@ -76,8 +78,8 @@ def compute_ref_statistics() -> dict:
         feature_extractor_weights_path=INCEPTION_WEIGHTS_PATH,
     )
     feat_extractor = create_feature_extractor("inception-v3-compat", ["2048"], **kwargs)
+    return fid_input_id_to_statistics_cached(2, feat_extractor, "2048", **kwargs) # dict: {"mu": (2048,), "sigma": (2048, 2048)}
     # 已是 {"mu","sigma"}；勿对返回值再调 fid_features_to_statistics（后者输入须为 (N,2048) 特征）
-    return fid_input_id_to_statistics_cached(2, feat_extractor, "2048", **kwargs)
 
 
 def init_stats_loader(
@@ -86,10 +88,11 @@ def init_stats_loader(
     device: torch.device,
 ) -> tuple[dict, int]:
     init_path_ls = sorted(init_dir.glob("image_*_*.png"), key=lambda p: int(p.stem.split("_")[1]))
+    #item example: image_01023_00467.png, image_01024_00468.png, ... list[Path], 00467 is class_id which need to be extracted
     init_image_ls = [Image.open(path).convert("RGB").copy() for path in init_path_ls]
     init_stats = fid_features_to_statistics(
         extract_features_from_images(init_image_ls, feat_extractor, device)
-    )
+    ) # dict: {"mu": (2048,), "sigma": (2048, 2048)}
     return init_stats, len(init_image_ls)
 
 
@@ -100,22 +103,25 @@ def run_random_search_fid(
     ref_stats: dict,
     output_dir: Path,
     num_samples: int,
-    batch_size: int,
     num_candidates: int,
     device: torch.device,
     candidate_pathes_dict: dict[int, list[Path]],
     init_stats: dict,
-) -> None:
+) -> tuple[dict, list[Path]]:
     n_init = 1024
-    output_dir.mkdir(parents=True, exist_ok=True)
-    selected_stats, n_selected = init_stats, n_init
-    best_path_ls: list[Path] = []
-    
-    current_idx = n_init
-    num_rounds = (num_samples - n_init + batch_size - 1) // batch_size
+    n_expected = num_samples - n_init # 50_000 - 1024 = 49876
 
-    for _ in tqdm(range(num_rounds), desc="random search fid"):
-        n_this_batch = min(batch_size, num_samples -n_init - current_idx)
+    _search_batch_size = 1024 # paper中的设定
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    selected_stats, n_selected = init_stats, n_init # 初始化 selected_stats 和 n_selected， 后续每个loop进行update
+    best_path_ls: list[Path] = [] # 以便后续save和计算metrics
+    
+    current_num_samples = n_init
+    num_loops = (n_expected + _search_batch_size - 1) // _search_batch_size # 总的search loop数
+
+    for _ in tqdm(range(num_loops), desc="random search fid"):
+        n_this_batch = min(_search_batch_size, num_samples - current_num_samples) # 当前loop需要生成的样本数
         if n_this_batch <= 0:
             break
         # predefine best_fid, best_batch_images, best_batch_stats
@@ -128,7 +134,7 @@ def run_random_search_fid(
         for candidate_idx,candidate_path_ls in candidate_pathes_dict.items():
             batch_images = [
                 Image.open(path).convert('RGB').copy()
-                for path in candidate_path_ls[current_idx: current_idx + n_this_batch]
+                for path in candidate_path_ls[current_num_samples: current_num_samples + n_this_batch]
             ] # list[Image.Image] this candidate's batch images
 
             batch_stats = fid_features_to_statistics(
@@ -145,12 +151,15 @@ def run_random_search_fid(
                 best_candidate_idx = candidate_idx
                 best_batch_images = batch_images
                 best_batch_stats = batch_stats
+            
+            del batch_images
+            gc.collect()
 
         assert best_batch_images is not None and best_batch_stats is not None and best_candidate_idx != -1
 
         # 必须用胜出 candidate 的路径列表；循环结束后 candidate_path_ls 只是「最后一个」candidate
         win_paths = candidate_pathes_dict[best_candidate_idx][
-            current_idx : current_idx + n_this_batch
+            current_num_samples : current_num_samples + n_this_batch
         ]
         best_path_ls.extend(win_paths)
         
@@ -158,8 +167,8 @@ def run_random_search_fid(
             selected_stats, n_selected, best_batch_stats, len(best_batch_images)
         )
         n_selected += len(best_batch_images)
-        current_idx += n_this_batch
-        if current_idx >= num_samples:
+        current_num_samples += n_this_batch
+        if current_num_samples >= num_samples:
             break
     return selected_stats, best_path_ls
 
@@ -180,9 +189,8 @@ def save_best_images(best_path_ls: list[Path], output_dir: Path) -> None:
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output_dir", default="/root/autodl-tmp/eval_dit_random_search_fid")
+    parser.add_argument("--output_dir", default="/root/autodl-tmp/random_search_fid_reward")
     parser.add_argument("--num_samples", type=int, default=50_000)
-    parser.add_argument("--batch_size", type=int, default=24)
     parser.add_argument("--num_candidates", type=int, default=16)
     parser.add_argument("--deno_steps", type=int, default=20)
     parser.add_argument("--guidance_scale", type=float, default=1.0)
@@ -216,12 +224,13 @@ def main() -> None:
     # init_dir = rollout_root / "init1024"
     # load candidate dir and init dir
     candidate_dir_ls = [
-        rollout_root / f'candidate_{i:04d}' for i in range(args.num_candidates)
+        rollout_root / f'candidate_{i:04d}'
+        for i in range(args.num_candidates) # list[Path]
     ]
-    init_dir = rollout_root / "init1024"
+    init_dir = rollout_root / "init1024" # Path
     
     # check 
-    n_expect = args.num_samples - N_INIT
+    n_expect = args.num_samples - N_INIT # 50000-1024 = 49876
     # assert all(
     #     len(list(candidate_dir.glob("image_*_*.png"))) == n_expect
     #     for candidate_dir in candidate_dir_ls
@@ -253,16 +262,16 @@ def main() -> None:
     init_path_ls = sorted(init_dir.glob("image_*_*.png"), key=lambda p: int(p.stem.split("_")[1]))
 
     init_stats, n_init = init_stats_loader(
-        feat_extractor, init_dir, device
+        feat_extractor, init_dir, device # dict: {"mu": (2048,), "sigma": (2048, 2048)}, int: 1024
     )
     
 
+    #  run random search  , return selected_stats: dict: {"mu": (2048,), "sigma": (2048, 2048)}, best_path_ls: list[Path]
     selected_stats, best_path_ls = run_random_search_fid(
         feat_extractor,
         ref_stats,
         output_dir,
         args.num_samples,
-        args.batch_size,
         args.num_candidates,
         device,
         candidate_pathes_dict,
@@ -279,7 +288,6 @@ def main() -> None:
                 "candidates_root": str(rollout_root),
                 "init_dir": str(init_dir),
                 "num_samples": args.num_samples,
-                "batch_size": args.batch_size,
                 "num_candidates": args.num_candidates,
                 "n_init": N_INIT,
                 "deno_steps": args.deno_steps,

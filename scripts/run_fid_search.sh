@@ -16,7 +16,6 @@ for nc in "${NC_VALUES[@]}"; do
   python3 -u "${SCRIPT}" \
     --output_dir "/root/autodl-tmp/dit_random_search_fid_reward/num_candidates_${nc}_cfg1.0_steps10" \
     --num_samples 50000 \
-    --batch_size 512 \
     --num_candidates "${nc}" \
     --deno_steps 10 \
     --guidance_scale 1.0
