@@ -18,7 +18,7 @@ cd "$SCRIPT_DIR"
 
 export CUDA_VISIBLE_DEVICES=0
 
-for k in 2 4 8 16; do
+for k in 2 4 6 8 10 12 14 16; do
   python /root/diffusion_ranker/search/dit_random_search_clipscore.py \
     --batch_size 512 \
     --num_candidates $k \
@@ -27,5 +27,5 @@ for k in 2 4 8 16; do
     --num_samples 50000 \
     --prompt_template "a photo of a {name}" \
     --seed 42 \
-    --output_dir /root/autodl-tmp/random_search_clipscore_50k_cfg1.0_deno10_reward_nc_$k
+    --output_dir /root/autodl-tmp/random_search_clipscore_50k_cfg1.0_deno10/num_candidates_$k
 done
