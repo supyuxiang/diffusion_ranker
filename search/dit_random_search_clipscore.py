@@ -33,8 +33,6 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 from utils import compute_fid_is_clipscore, set_device, set_seed
 from reward import load_clip, clipscore_reward, labels_1k
 
-N_INIT = 1024
-
 _DEFAULT_CLIP_DIR = Path("/root/autodl-tmp/openai_clip-vit-large-patch14")
 
 
@@ -54,7 +52,7 @@ def run_random_search_clipscore(
     search_batch_size: int,
     candidate_pathes_dict: dict[int, list[Path]],
 ) -> list[Path]:
-    n_expected = num_samples - N_INIT
+    n_expected = num_samples
     start_idx = 0
 
     num_loops = (n_expected + search_batch_size - 1) // search_batch_size
@@ -122,11 +120,9 @@ def main() -> None:
     candidate_dir_ls = [
         rollout_root / f"candidate_{i:04d}" for i in range(args.num_candidates)
     ]
-    init_dir = rollout_root / "init1024"
 
     set_seed(args.seed)
     device = set_device()
-    dstr = "cuda" if device.type == "cuda" else "cpu"
 
     clip, processor = load_clip(device)
 
@@ -136,11 +132,6 @@ def main() -> None:
             candidate_dir_ls[i].glob("image_*_*.png"),
             key=lambda p: int(p.stem.split("_")[1]),
         )
-
-    init_path_ls = sorted(
-        init_dir.glob("image_*_*.png"),
-        key=lambda p: int(p.stem.split("_")[1]),
-    )
 
     best_path_ls = run_random_search_clipscore(
         clip,
@@ -160,9 +151,6 @@ def main() -> None:
         json.dumps(
             {
                 "verifier": "clipscore",
-                "imagenet_val": str(imagenet_val),
-                "candidates_root": str(rollout_root),
-                "init_dir": str(init_dir),
                 "num_samples": args.num_samples,
                 "search_batch_size": args.search_batch_size,
                 "num_candidates": args.num_candidates,
@@ -178,7 +166,7 @@ def main() -> None:
     # compute metrics
     from utils import compute_fid_is_clipscore
     import json
-    metrics = compute_fid_is_clipscore(best_dir, imagenet_val, device=device)
+    metrics = compute_fid_is_clipscore(best_dir, device=device)
     with open(best_dir / "final_metrics.json", "w", encoding='utf-8') as f:
         json.dump(metrics, f, indent=2, ensure_ascii=False)
     print(metrics)
