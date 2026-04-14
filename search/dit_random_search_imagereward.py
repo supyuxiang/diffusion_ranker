@@ -170,7 +170,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--metrics_batch_size", type=int, default=64)
     p.add_argument(
         "--prompt_template",
-        default="a high-quality picture of a {name}",
+        default="a photo of a {name}",
         help="{name}、{id} 见 prompt_for_class",
     )
     p.add_argument(
