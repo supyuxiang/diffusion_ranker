@@ -18,7 +18,7 @@ cd "$SCRIPT_DIR"
 
 export CUDA_VISIBLE_DEVICES=0
 
-for k in 2 4 6 8 10 12 14 16; do
+for k in 10 12 14 16; do
   python /root/diffusion_ranker/search/dit_random_search_clipscore.py \
     --search_batch_size 32 \
     --num_candidates $k \

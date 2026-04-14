@@ -17,6 +17,9 @@
 每个文件 ``torch.load`` 后为 dict，至少含 ``tensor`` shape ``(N, H)``、``repr_key``、``n_images``、
 ``hidden_dim``、``row_order`` 说明字段。
 
+性能 / 内存：对 ``repr.pt`` 优先 ``mmap=True`` 加载；对 ``batches`` 只预计算一次每张图对应的行号，
+每个 key 内用整段 ``tensor`` 索引写入，避免 Python 逐行循环与重复的 ``.float().cpu()`` 路径判断。
+
 example:
 
 python3 /root/diffusion_ranker/scripts/export_training_repr_tensors.py \
@@ -33,6 +36,36 @@ import json
 from pathlib import Path
 
 import torch
+
+
+def _load_repr_pt(path: Path) -> dict:
+    """Load repr checkpoint; mmap storages when possible to lower peak RSS."""
+    try:
+        return torch.load(
+            path,
+            map_location="cpu",
+            mmap=True,
+            weights_only=False,
+        )
+    except TypeError:
+        try:
+            return torch.load(path, map_location="cpu", mmap=True)
+        except TypeError:
+            return torch.load(path, map_location="cpu")
+    except (RuntimeError, OSError):
+        try:
+            return torch.load(path, map_location="cpu", weights_only=False)
+        except TypeError:
+            return torch.load(path, map_location="cpu")
+
+
+def _to_float_cpu(t: torch.Tensor) -> torch.Tensor:
+    t = t.detach()
+    if t.device.type != "cpu":
+        t = t.cpu()
+    if t.dtype != torch.float32:
+        t = t.float()
+    return t
 
 
 def _parse_repr_key(k: str) -> tuple[int, float]:
@@ -120,10 +153,7 @@ def main() -> None:
             f"reward_ls length {len(reward_ls)} != sorted *.png count {n} under {image_dir}"
         )
 
-    try:
-        obj = torch.load(repr_pt, map_location="cpu", weights_only=False)
-    except TypeError:
-        obj = torch.load(repr_pt, map_location="cpu")
+    obj = _load_repr_pt(repr_pt)
 
     meta = dict(obj.get("meta") or {})
     batches = obj["batches"]
@@ -137,6 +167,19 @@ def main() -> None:
             f"repr.pt 中图像条数 {total_in_repr} 与 sorted *.png 数量 {n} 不一致"
         )
 
+    batch_row_idx: list[torch.Tensor] = []
+    for rec in batches:
+        names = rec["image_save_names"]
+        rows: list[int] = []
+        for fn in names:
+            row = name_to_row.get(Path(fn).name)
+            if row is None:
+                raise KeyError(
+                    f"repr image {fn!r} not found in sorted *.png listing for {image_dir}"
+                )
+            rows.append(row)
+        batch_row_idx.append(torch.tensor(rows, dtype=torch.long))
+
     mean_dir = output_root / "mean"
     last_dir = output_root / "last"
     mean_dir.mkdir(parents=True, exist_ok=True)
@@ -145,27 +188,16 @@ def main() -> None:
     for key in all_keys:
         mean_buf = torch.full((n, h0), float("nan"), dtype=torch.float32)
         last_buf = torch.full((n, h0), float("nan"), dtype=torch.float32)
-        seen = 0
-        for rec in batches:
-            names = rec["image_save_names"]
+        for rec, row_idx in zip(batches, batch_row_idx):
             rd = rec["repr"][key]
-            m = rd["mean"].float().cpu()
-            lt = rd["last"].float().cpu()
-            for i, fn in enumerate(names):
-                row = name_to_row.get(Path(fn).name)
-                if row is None:
-                    raise KeyError(
-                        f"repr image {fn!r} not found in sorted *.png listing for {image_dir}"
-                    )
-                mean_buf[row] = m[i]
-                last_buf[row] = lt[i]
-                seen += 1
+            m = _to_float_cpu(rd["mean"])
+            lt = _to_float_cpu(rd["last"])
+            mean_buf[row_idx] = m
+            last_buf[row_idx] = lt
 
-        if seen != n:
-            raise RuntimeError(f"key {key!r}: filled {seen} rows, expected {n}")
-
-        if torch.isnan(mean_buf).any() or torch.isnan(last_buf).any():
-            missing = int(torch.isnan(mean_buf).any(dim=1).sum().item())
+        bad_rows = torch.isnan(mean_buf).any(dim=1) | torch.isnan(last_buf).any(dim=1)
+        if bad_rows.any():
+            missing = int(bad_rows.sum().item())
             raise RuntimeError(
                 f"key {key!r}: {missing} rows never filled (repr batches missing some png names?)"
             )
@@ -188,6 +220,7 @@ def main() -> None:
         torch.save({**payload_base, "tensor": mean_buf}, mean_dir / fname)
         torch.save({**payload_base, "tensor": last_buf}, last_dir / fname)
 
+    del obj
     print(
         f"done: {len(all_keys)} keys × (mean, last) -> {mean_dir} , {last_dir} ; N={n}, H={h0}"
     )

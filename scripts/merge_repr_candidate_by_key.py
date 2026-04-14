@@ -9,6 +9,8 @@
 - 默认每个 ``.pt`` 为字典，含 ``tensor (N,H)`` 及 ``repr_key``、``step_ratio``、``layer_ratio`` 等。
 - ``--as_list`` 时额外写入 ``repr_list``：每张图一个 ``(H,)`` tensor，顺序与 ``tensor`` 行一致。
 
+内存：对每个 repr key 分两次扫 ``idx*.pt``（先拼 mean 再拼 last），并用 ``torch.load(..., mmap=True)``（失败则回退）与按文件合并 batch，降低峰值内存。
+
 example:
 
 python3 /root/diffusion_ranker/scripts/merge_repr_candidate_by_key.py \
@@ -18,10 +20,43 @@ python3 /root/diffusion_ranker/scripts/merge_repr_candidate_by_key.py \
 from __future__ import annotations
 
 import argparse
+import gc
 import re
 from pathlib import Path
 
 import torch
+
+
+def _load_repr_pt(path: Path) -> dict:
+    """Load idx*.pt; mmap tensor storages when possible to lower peak RSS."""
+    try:
+        return torch.load(
+            path,
+            map_location="cpu",
+            mmap=True,
+            weights_only=False,
+        )
+    except (RuntimeError, OSError):
+        return torch.load(path, map_location="cpu", weights_only=False)
+
+
+def _to_float_cpu(t: torch.Tensor) -> torch.Tensor:
+    t = t.detach()
+    if t.device.type != "cpu":
+        t = t.cpu()
+    if t.dtype != torch.float32:
+        t = t.float()
+    return t
+
+
+def _concat_repr_for_key_from_obj(obj: dict, key: str, field: str) -> torch.Tensor:
+    """All batches in one file for one key and one of mean/last -> (N_file, H)."""
+    parts: list[torch.Tensor] = []
+    for rec in obj["batches"]:
+        parts.append(_to_float_cpu(rec["repr"][key][field]))
+    if not parts:
+        raise RuntimeError(f"empty batches for key {key!r}")
+    return torch.cat(parts, dim=0) if len(parts) > 1 else parts[0]
 
 
 def _parse_repr_key(k: str) -> tuple[int, float]:
@@ -86,26 +121,42 @@ def main() -> None:
     meta0: dict = {}
     all_keys: list[str] = []
 
-    first = torch.load(pt_files[0], map_location="cpu", weights_only=False)
+    first = _load_repr_pt(pt_files[0])
     meta0 = dict(first.get("meta") or {})
     b0 = first["batches"][0]
     all_keys = sorted(b0["repr"].keys(), key=lambda k: (_parse_repr_key(k)[0], _parse_repr_key(k)[1]))
+    del first
+    gc.collect()
 
     print(f"repr_dir={repr_dir}")
     print(f"idx pt files: {len(pt_files)}  keys per batch: {len(all_keys)}")
 
     for key in all_keys:
+        # Two passes over idx*.pt: peak RAM ~= one checkpoint + one branch (mean or last)
+        # of per-file chunks, instead of holding both mean and last chunk lists at once.
         mean_chunks: list[torch.Tensor] = []
-        last_chunks: list[torch.Tensor] = []
         for fp in pt_files:
-            obj = torch.load(fp, map_location="cpu", weights_only=False)
-            for rec in obj["batches"]:
-                rd = rec["repr"][key]
-                mean_chunks.append(rd["mean"].float().cpu())
-                last_chunks.append(rd["last"].float().cpu())
+            obj = _load_repr_pt(fp)
+            try:
+                mean_chunks.append(_concat_repr_for_key_from_obj(obj, key, "mean"))
+            finally:
+                del obj
 
         mean_cat = torch.cat(mean_chunks, dim=0)
+        del mean_chunks
+
+        last_chunks: list[torch.Tensor] = []
+        for fp in pt_files:
+            obj = _load_repr_pt(fp)
+            try:
+                last_chunks.append(_concat_repr_for_key_from_obj(obj, key, "last"))
+            finally:
+                del obj
+
         last_cat = torch.cat(last_chunks, dim=0)
+        del last_chunks
+        gc.collect()
+
         assert mean_cat.shape == last_cat.shape
 
         fname = _filename_for_key(meta0, key)
@@ -126,6 +177,9 @@ def main() -> None:
 
         torch.save(payload_mean, mean_dir / fname)
         torch.save(payload_last, last_dir / fname)
+
+        del mean_cat, last_cat, payload_mean, payload_last
+        gc.collect()
 
     print(f"wrote {len(all_keys)} files each under {mean_dir} and {last_dir}")
 
