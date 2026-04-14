@@ -29,8 +29,6 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
-from dit_random_search_common import load_imagenet_simple_labels, prompt_for_class
-
 from utils import compute_fid_is_clipscore, set_device, set_seed
 from reward import load_clip, clipscore_reward, labels_1k
 
