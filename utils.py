@@ -11,6 +11,12 @@ from typing import Any
 
 
 
+
+with open('/root/diffusion_ranker/imagenet-simple-labels.json', 'r') as f:
+    labels_1k = json.load(f)
+
+
+
 INCEPTION_WEIGHTS_PATH = (
     "/root/diffusion_ranker/third_party/torch_fidelity_weights/"
     "weights-inception-2015-12-05-6726825d.pth"

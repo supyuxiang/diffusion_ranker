@@ -2,40 +2,6 @@
 r"""
 用预计算的 ``repr.pt`` + 对应 rollout 图像训练 **Diffusion ranker**，教师为 **ImageReward**。
 
-**默认配置（可在命令行覆盖）**：
-
-- ``--ranker_type listwise``
-- ``--layer_ratios 0.6``、``--step_ratios 1.0``（最后去噪步；与 ``round(u*(T-1))`` 一致）
-- ``--pool_mode mean``：每条样本只拼各选中 key 的 **mean** pooling（不再拼 ``last``）
-
-- Prompt 默认 ``a photo of a {name}``（与 ``--prompt_template`` 中 ``{name}`` / ``{id}`` 一致）。
-- 损失与 ``train_ranker_imagenet.py`` 相同：``α·MSE(s, R) + (1-α)·KL(q‖p)``，``q=softmax(R/τ)``，``p=softmax(s/τ)``。
-- 优化器：``adamw`` / ``sgd``；学习率调度：``cosine`` / ``linear``；``--warmup_ratio`` 为 epoch 占比的线性 warmup。
-
-数据：``--repr_pt``（``DitRolloutReprCapture.save_pt`` 格式）与 ``--image_dir``（与 ``image_save_names`` 一致）。
-
-**预计算教师分**：若已用 ``ranker/labeling.py`` 等写好 ``reward_ls.json``（与 ``labeling.py`` 相同顺序：
-``sorted(image_dir.glob('image_*_*.png'), key=全局序号)`` 逐行对应分数），可传 ``--cached_rewards_json``，
-训练时**不再加载 ImageReward**。
-
-**ImageReward 在线**：未传 ``--cached_rewards_json`` 时需 ``import ImageReward``；可先 ``source /etc/network_turbo`` 再跑。
-
-用法::
-
-    source /etc/network_turbo   # 可选：加速外网 / Hub
-    cd /root/diffusion_ranker
-    python3 -m ranker.train \
-      --repr_pt /path/to/repr.pt \
-      --image_dir /path/to/rollout_images \
-      --output_dir /path/to/out \
-      --group_size 8 \
-      --optimizer adamw \
-      --lr_scheduler cosine \
-      --warmup_ratio 0.05
-
-
-
-
 cd /root/diffusion_ranker && CUDA_VISIBLE_DEVICES=0 python3 -m ranker.train \
   --repr_pt /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/repr.pt \
   --image_dir /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10 \
@@ -75,19 +41,31 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+
+
 from ranker.model import ListwiseDiffusionRanker, PointwiseDiffusionRanker
-from utils import Constants_default, ensure_image_reward_on_path, set_device, set_seed
+from ranker.utils import Constants_default, ensure_image_reward_on_path, set_device, set_seed, labels_1k
+from ranker.loss import mse_kl_combined_loss
+from ranker.dataset import DiffusionRankerDataset
+from ranker.eval_ranker import eval_epoch
+from utils import get_optimizer, get_scheduler
+
+
+
+
+
+
+
+
+
+
 
 
 def load_reward_lookup_from_json(json_path: Path, image_dir: Path) -> dict[str, float]:
     """``labeling.py`` 写出的 ``reward_ls.json``：与按全局序号排序的 ``image_*_*.png`` 逐行对齐。"""
     json_path = json_path.expanduser().resolve()
     image_dir = image_dir.expanduser().resolve()
-    if not json_path.is_file():
-        raise FileNotFoundError(f"cached rewards: {json_path}")
     raw = json.loads(json_path.read_text(encoding="utf-8"))
-    if not isinstance(raw, list):
-        raise ValueError(f"expected JSON list in {json_path}")
     paths = sorted(
         image_dir.glob("image_*_*.png"),
         key=lambda p: int(p.stem.split("_")[1]),
@@ -99,52 +77,6 @@ def load_reward_lookup_from_json(json_path: Path, image_dir: Path) -> dict[str, 
         )
     return {p.name: float(s) for p, s in zip(paths, raw)}
 
-
-def load_imagenet_simple_labels(cache_dir: Path | None = None) -> list[str]:
-    cache_dir = cache_dir or (Path.home() / ".cache" / "diffusion_ranker")
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    path = cache_dir / "imagenet-simple-labels.json"
-    url = "https://raw.githubusercontent.com/anishathalye/imagenet-simple-labels/master/imagenet-simple-labels.json"
-    if not path.exists():
-        try:
-            urllib.request.urlretrieve(url, path)
-        except Exception as e:
-            print(f"警告: 无法下载 ImageNet 标签 ({e})，将使用占位 prompt。")
-            return [f"imagenet class {i}" for i in range(1000)]
-    with open(path, "r", encoding="utf-8") as f:
-        labels = json.load(f)
-    if len(labels) != 1000:
-        return [f"imagenet class {i}" for i in range(1000)]
-    return labels
-
-
-def prompt_for_class(labels: list[str], class_id: int, template: str) -> str:
-    name = labels[class_id] if 0 <= class_id < len(labels) else f"class {class_id}"
-    return template.format(name=name, id=class_id)
-
-
-def kl_reward_ranker_loss(
-    pred_scores: torch.Tensor, teacher_scores: torch.Tensor, tau: float
-) -> torch.Tensor:
-    if tau <= 0:
-        raise ValueError("tau must be positive")
-    q = F.softmax(teacher_scores / tau, dim=0)
-    log_p = F.log_softmax(pred_scores / tau, dim=0)
-    log_q = torch.log(q + 1e-8)
-    return (q * (log_q - log_p)).sum()
-
-
-def mse_kl_combined_loss(
-    pred_scores: torch.Tensor,
-    teacher_scores: torch.Tensor,
-    tau: float,
-    alpha: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    mse = F.mse_loss(pred_scores, teacher_scores)
-    kl = kl_reward_ranker_loss(pred_scores, teacher_scores, tau)
-    a = float(alpha)
-    total = a * mse + (1.0 - a) * kl
-    return total, mse, kl
 
 
 def parse_repr_key(k: str) -> tuple[int, float]:
@@ -397,7 +329,6 @@ def build_lr_scheduler(
 def teacher_scores_for_group(
     teacher,
     labels: list[str],
-    prompt_template: str,
     image_paths: list[Path],
     class_ids: list[int],
     ir_device: str,
@@ -405,7 +336,7 @@ def teacher_scores_for_group(
     scores: list[float] = []
     for p, lab in zip(image_paths, class_ids):
         img = Image.open(p).convert("RGB")
-        prompt = prompt_for_class(labels, lab, prompt_template)
+        prompt = prompt_for_class(lab, labels)
         scores.append(float(teacher.score(prompt, img)))
     return torch.tensor(scores, dtype=torch.float32, device=ir_device)
 
@@ -469,6 +400,8 @@ def iter_training_groups(
         yield tok, t_scores
 
 
+
+
 def parse_args() -> argparse.Namespace:
     cd = Constants_default
     p = argparse.ArgumentParser(description="Diffusion ranker + ImageReward (repr.pt + images)")
@@ -479,7 +412,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--proj_dim", type=int, default=int(cd.get("proj_dim", 64)))
     p.add_argument(
-        "--num_list_layers",
+        "--num_layers",
         type=int,
         default=2,
         help="ListwiseDiffusionRanker 内 TransformerEncoder 层数",
@@ -536,36 +469,20 @@ def parse_args() -> argparse.Namespace:
         "--pool_mode",
         type=str,
         default="mean",
-        choices=("mean", "last", "both"),
-        help="repr 拼接：mean / last / both（both=每 key 先 mean 再 last，与旧版 token 数一致）",
-    )
-    p.add_argument(
-        "--prompt_template",
-        type=str,
-        default="a photo of a {name}",
-        help="ImageReward 用；可用 {name}、{id}",
+        choices=("mean", "last"),
+        help="repr 拼接：mean / last",
     )
     p.add_argument("--seed", type=int, default=int(cd.get("seed", 42)))
-    p.add_argument(
-        "--max_groups_per_epoch",
-        type=int,
-        default=0,
-        help="每 epoch 最多多少个同类 group；0 表示遍历 dataset 全部类",
-    )
     p.add_argument(
         "--ir_device",
         type=str,
         default="",
         help="ImageReward 所在设备；默认与训练 device 相同",
     )
-    p.add_argument(
-        "--cached_rewards_json",
-        type=str,
-        default="",
-        help="预计算 ImageReward 分数（如 labeling.py 的 reward_ls.json）；与 image_dir 下按全局序号排序的图一一对应",
-    )
-    p.add_argument("--save_every", type=int, default=1, help="每 N 个 epoch 存 checkpoint")
+    p.add_argument("--save_freq", type=int, default=1, help="每 N 个 epoch 存 checkpoint")
     return p.parse_args()
+
+
 
 
 def train_epoch(
@@ -638,65 +555,6 @@ def train_epoch(
     }
 
 
-@torch.inference_mode()
-def eval_epoch(
-    model: torch.nn.Module,
-    pt_obj: dict,
-    selected_keys: list[str],
-    image_root: Path,
-    device: torch.device,
-    reward_by_name: dict[str, float] | None,
-    teacher,
-    labels: list[str],
-    prompt_template: str,
-    ir_device: str,
-    dataset: RankerReprGroupDataset,
-    args: argparse.Namespace,
-    ranker_type: str,
-    max_groups: int = 32,
-    epoch: int = 0,
-) -> dict[str, float]:
-    model.eval()
-    dataset.set_epoch(epoch)
-    sum_tot = sum_mse = sum_kl = 0.0
-    n_steps = 0
-    eval_rng = random.Random(args.seed + 17_971 + epoch)
-    for tok_cpu, t_scores_ir in iter_training_groups(
-        dataset,
-        pt_obj,
-        selected_keys,
-        image_root,
-        reward_by_name,
-        teacher,
-        labels,
-        prompt_template,
-        ir_device,
-        max_groups,
-        shuffle_rng=eval_rng,
-        pool_mode=args.pool_mode,
-    ):
-        tok = tok_cpu.to(device, non_blocking=True)
-        t_scores = t_scores_ir.to(device)
-        if ranker_type == "listwise":
-            logits = model(tok.unsqueeze(0)).squeeze(0)
-        else:
-            logits = model(tok)
-        loss, mse_v, kl_v = mse_kl_combined_loss(
-            logits, t_scores, args.listwise_tau, args.alpha
-        )
-        sum_tot += float(loss)
-        sum_mse += float(mse_v)
-        sum_kl += float(kl_v)
-        n_steps += 1
-        if n_steps >= max_groups:
-            break
-    if n_steps == 0:
-        return {"loss": 0.0, "mse": 0.0, "kl": 0.0}
-    return {
-        "loss": sum_tot / n_steps,
-        "mse": sum_mse / n_steps,
-        "kl": sum_kl / n_steps,
-    }
 
 
 def main() -> None:
@@ -757,7 +615,7 @@ def main() -> None:
     else:
         model = PointwiseDiffusionRanker(hidden_dim, proj_dim=args.proj_dim).to(device)
 
-    labels = load_imagenet_simple_labels()
+    labels = load_imagenet_labels()
     buckets = bucket_by_class(flat)
     dataset_tr = RankerReprGroupDataset(buckets, args.group_size, seed=args.seed)
 
@@ -795,7 +653,6 @@ def main() -> None:
             reward_by_name,
             teacher,
             labels,
-            args.prompt_template,
             ir_device,
             dataset_tr,
             args,
@@ -830,7 +687,6 @@ def main() -> None:
         reward_by_name,
         teacher,
         labels,
-        args.prompt_template,
         ir_device,
         dataset_tr,
         args,
