@@ -1,11 +1,15 @@
 """
-Diffusion ranker：吃 DiT rollout 抓取的 **中间步 × 层 × pooling** 的 hidden states（ ``mean`` / ``last``），
-输出 reward
+Diffusion ranker：吃 **单个** 已选定的 (step ratio, layer ratio, pooling) 对应的 hidden，
+输出 reward / 排序 logits。
 
-**输入约定**（单条候选一张图对应的表征）：
+**输入约定**（单条候选一张图）：
 
-- ``x`` shape ``(B, 1, hidden_dim)``，其中 1是某一(step ratio, layer ratio, pooling ratio)的选择。
+- ``x`` shape ``(B, 1, hidden_dim)`` 或 ``(B, hidden_dim)``：数据侧只保留一种 (步, 层, pooling) 组合的一条向量。
 - ``hidden_dim`` 与 DiT 一致（如 XL 为 1152）。
+
+**Listwise**：同一上下文下 ``K`` 个候选，``x`` shape ``(B, K, 1, hidden_dim)`` 或 ``(B, K, hidden_dim)``，
+先对每个候选做与 pointwise 相同的单向量编码，再在候选维上做 ``TransformerEncoder``（与
+``language_ranker-main`` 里在候选序列上堆叠 TransformerBlock 的思路一致，此处用 batch_first API）。
 """
 
 
@@ -17,30 +21,21 @@ import torch.nn.functional as F
 from torch import Tensor
 
 
-class DiffusionHiddenEncoder(nn.Module):
-    """将单候选的多 token 表征 ``(B, N, H)`` 压成一条向量 ``(B, proj_dim)``（learned query attention pool）。"""
+class DiffusionSingleTokenEncoder(nn.Module):
+    """
+    单 token：``(B, 1, H)`` / ``(B, H)`` → ``(B, proj_dim)``。
+    Linear + LayerNorm + 残差 FFN（对齐 ``RankModel_Transformer`` 中 linear + FFN 支路，省去 seq=1 时的 MHA）。
+    """
 
     def __init__(
         self,
         hidden_dim: int,
         proj_dim: int,
-        num_heads: int = 8,
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
-        if proj_dim % num_heads != 0:
-            raise ValueError(f"proj_dim ({proj_dim}) must be divisible by num_heads ({num_heads})")
         self.proj = nn.Linear(hidden_dim, proj_dim)
         self.norm_in = nn.LayerNorm(proj_dim)
-        self.attn = nn.MultiheadAttention(
-            embed_dim=proj_dim,
-            num_heads=num_heads,
-            dropout=dropout,
-            batch_first=True,
-        )
-        self.query = nn.Parameter(torch.empty(1, 1, proj_dim))
-        nn.init.normal_(self.query, std=0.02)
-        self.norm_mid = nn.LayerNorm(proj_dim)
         self.mlp = nn.Sequential(
             nn.Linear(proj_dim, 4 * proj_dim),
             nn.GELU(),
@@ -53,17 +48,22 @@ class DiffusionHiddenEncoder(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         """
         Args:
-            x: ``(B, N_tokens, hidden_dim)``
+            x: ``(B, 1, hidden_dim)`` 或 ``(B, hidden_dim)``
         Returns:
             ``(B, proj_dim)``
         """
-        x = self.proj(x)
-        x = self.norm_in(x)
-        b = x.size(0)
-        q = self.query.expand(b, -1, -1)
-        attn_out, _ = self.attn(q, x, x, need_weights=False)
-        h = attn_out.squeeze(1)
-        h = self.norm_mid(h + self.mlp(h))
+        if x.dim() == 3:
+            if x.shape[1] != 1:
+                raise ValueError(
+                    "expected (B, 1, hidden_dim) for a single (step, layer, pooling) token; "
+                    f"got {tuple(x.shape)}"
+                )
+            x = x.squeeze(1)
+        elif x.dim() != 2:
+            raise ValueError(f"expected (B, 1, H) or (B, H), got {tuple(x.shape)}")
+        h = self.proj(x)
+        h = self.norm_in(h)
+        h = h + self.mlp(h)
         return self.norm_out(h)
 
 
@@ -80,9 +80,8 @@ class PointwiseDiffusionRanker(nn.Module):
         use_half: bool = False,
     ) -> None:
         super().__init__()
-        self.encoder = DiffusionHiddenEncoder(
-            hidden_dim, proj_dim, num_heads=num_heads, dropout=dropout
-        )
+        # num_heads 保留签名以兼容旧调用；单 token 编码不使用 attention。
+        self.encoder = DiffusionSingleTokenEncoder(hidden_dim, proj_dim, dropout=dropout)
         self.score_head = nn.Linear(proj_dim, 1)
         self._init_linear_weights()
         if use_half:
@@ -101,7 +100,7 @@ class PointwiseDiffusionRanker(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         """
         Args:
-            x: ``(B, N_tokens, hidden_dim)``
+            x: ``(B, 1, hidden_dim)`` 或 ``(B, hidden_dim)``
         Returns:
             ``(B,)`` 标量 reward（未约束正负，由损失定义偏好）
         """
@@ -123,8 +122,10 @@ class ListwiseDiffusionRanker(nn.Module):
         use_half: bool = False,
     ) -> None:
         super().__init__()
-        self.candidate_encoder = DiffusionHiddenEncoder(
-            hidden_dim, proj_dim, num_heads=num_heads, dropout=dropout
+        if proj_dim % num_heads != 0:
+            raise ValueError(f"proj_dim ({proj_dim}) must be divisible by num_heads ({num_heads})")
+        self.candidate_encoder = DiffusionSingleTokenEncoder(
+            hidden_dim, proj_dim, dropout=dropout
         )
         enc_layer = nn.TransformerEncoderLayer(
             d_model=proj_dim,
@@ -154,22 +155,36 @@ class ListwiseDiffusionRanker(nn.Module):
     def forward(self, x: Tensor, *, key_padding_mask: Tensor | None = None) -> Tensor:
         """
         Args:
-            x: ``(B, K, N_tokens, hidden_dim)``
-            key_padding_mask: optional ``(B, K)``，``True`` 表示该候选为 padding（与 ``TransformerEncoder`` 约定一致）
+            x: ``(B, K, 1, hidden_dim)`` 或 ``(B, K, hidden_dim)``
+            key_padding_mask: optional ``(B, K)``，``True`` 表示该候选为 padding
         Returns:
             ``(B, K)`` logits
         """
-        b, k, n, hdim = x.shape
-        flat = x.reshape(b * k, n, hdim)
+        if x.dim() == 4:
+            if x.shape[2] != 1:
+                raise ValueError(
+                    "expected (B, K, 1, hidden_dim) for one token per candidate; "
+                    f"got {tuple(x.shape)}"
+                )
+            b, k, _, hdim = x.shape
+            flat = x.reshape(b * k, 1, hdim)
+        elif x.dim() == 3:
+            b, k, hdim = x.shape
+            flat = x.reshape(b * k, hdim)
+        else:
+            raise ValueError(f"expected 3D or 4D input, got {tuple(x.shape)}")
+
         cand_emb = self.candidate_encoder(flat)
         cand_emb = cand_emb.view(b, k, -1)
         list_out = self.list_encoder(cand_emb, src_key_padding_mask=key_padding_mask)
         return self.score_head(list_out).squeeze(-1)
 
 
-# --- 与旧占位类名对齐的别名（便于已有 import） ---
+# --- 别名 ---
 PointwiseRanker = PointwiseDiffusionRanker
 ListwiseRanker = ListwiseDiffusionRanker
+# 旧代码可能 import DiffusionHiddenEncoder；映射到新编码器
+DiffusionHiddenEncoder = DiffusionSingleTokenEncoder
 
 
 def listwise_logits_to_probs(logits: Tensor, dim: int = -1) -> Tensor:
@@ -178,14 +193,14 @@ def listwise_logits_to_probs(logits: Tensor, dim: int = -1) -> Tensor:
 
 if __name__ == "__main__":
     torch.manual_seed(0)
-    b, n_tok, h = 4, 50, 1152
-    x_pw = torch.randn(b, n_tok, h)
+    b, h = 4, 1152
+    x_pw = torch.randn(b, 1, h)
     pw = PointwiseDiffusionRanker(h, proj_dim=128, num_heads=8)
     s = pw(x_pw)
     assert s.shape == (b,), s.shape
 
     k = 8
-    x_ls = torch.randn(b, k, n_tok, h)
+    x_ls = torch.randn(b, k, 1, h)
     ls = ListwiseDiffusionRanker(h, proj_dim=128, num_heads=8, num_list_layers=2)
     logits = ls(x_ls)
     assert logits.shape == (b, k), logits.shape
