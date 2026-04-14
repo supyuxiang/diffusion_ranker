@@ -173,6 +173,24 @@ def steps_from_ratios(ratios: list[float], num_steps: int) -> set[int]:
     return out
 
 
+def layers_from_ratios(ratios: list[float], n_blocks: int) -> set[float]:
+    """
+    与 ``DitRolloutReprCapture`` / ``rollout_trianing_data`` 一致：
+    ``idx = round(u * (n_blocks - 1))``，repr key 中的 r 为 ``idx / (n_blocks - 1)``。
+    """
+    n = max(int(n_blocks), 1)
+    if n <= 1:
+        return {1.0}
+    out: set[float] = set()
+    nb1 = n - 1
+    for u in ratios:
+        u = max(0.0, min(1.0, float(u)))
+        idx = int(round(u * nb1))
+        idx = max(0, min(n - 1, idx))
+        out.add(idx / nb1)
+    return out
+
+
 def select_repr_keys(
     all_keys: list[str],
     *,
@@ -183,11 +201,18 @@ def select_repr_keys(
     num_steps = infer_num_steps(all_keys, meta)
     parsed = [(k, *parse_repr_key(k)) for k in all_keys]
     if layer_ratios is not None:
-        lr_tol = 1e-5
+        n_bl = meta.get("n_transformer_blocks")
+        if n_bl is None:
+            n_bl = len({r for _, _, r in parsed})
+        user_lr = [float(x) for x in layer_ratios]
+        allowed_r = layers_from_ratios(user_lr, int(n_bl))
+        canon_tol = 1e-7
+        literal_tol = 1e-5
         parsed = [
             (k, s, r)
             for k, s, r in parsed
-            if any(abs(r - lr) < lr_tol for lr in layer_ratios)
+            if any(abs(r - ar) < canon_tol for ar in allowed_r)
+            or any(abs(r - ulr) < literal_tol for ulr in user_lr)
         ]
     if step_ratios is not None:
         want = steps_from_ratios(step_ratios, num_steps)
@@ -464,7 +489,10 @@ def parse_args() -> argparse.Namespace:
         "--layer_ratios",
         type=str,
         default="0.6",
-        help="逗号分隔层比例，与 repr key 中 r 对齐；``all`` 表示不筛选（用 repr 中全部键）",
+        help=(
+            "逗号分隔 0~1 层比例；按 ``round(u*(n_blocks-1))`` 映射到 block，与步的 round 规则一致。"
+            "``all`` 表示不筛选"
+        ),
     )
     p.add_argument(
         "--step_ratios",
