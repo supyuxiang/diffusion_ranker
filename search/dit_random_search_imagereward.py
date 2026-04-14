@@ -55,37 +55,30 @@ def run_random_search_imagereward(
     candidate_pathes_dict: dict[int, list[Path]],
 ) -> list[Path]:
     best_path_ls: list[Path] = []
-    current_idx = 0
-    num_rounds = (num_samples + search_batch_size - 1) // search_batch_size
+    start_idx = 0
+    num_loops = (num_samples + search_batch_size - 1) // search_batch_size
 
-    for c in range(num_candidates):
-        if len(candidate_pathes_dict[c]) < num_samples:
-            raise RuntimeError(
-                f"candidate_{c:04d}: need >= {num_samples} images, got {len(candidate_pathes_dict[c])}"
-            )
-
-    for _ in tqdm(range(num_rounds), desc="random search imagereward"):
-        n_this_batch = min(search_batch_size, num_samples - current_idx)
+    for _ in tqdm(range(num_loops), desc="random search imagereward"):
+        n_this_batch = min(search_batch_size, num_samples - start_idx)
         if n_this_batch <= 0:
             break
 
-        best_score = float("-inf")
+        best_reward = float("-inf")
         best_candidate_idx = -1
 
         for candidate_idx, candidate_path_ls in candidate_pathes_dict.items():
-            sub = candidate_path_ls[current_idx : current_idx + n_this_batch]
-            score = imagereward_reward(sub, reward_model)
-            if score > best_score:
-                best_score = score
+            batch_candidate_paths = candidate_path_ls[start_idx : start_idx + n_this_batch]
+            reward = imagereward_reward(batch_candidate_paths, reward_model)
+            if reward > best_reward:
+                best_reward = reward
                 best_candidate_idx = candidate_idx
 
         assert best_candidate_idx != -1
-        best_path_ls.extend(candidate_pathes_dict[best_candidate_idx][
-            current_idx : current_idx + n_this_batch
-        ])
-        current_idx += n_this_batch
-        if current_idx >= num_samples:
-            break
+        best_paths_this_loop = candidate_pathes_dict[best_candidate_idx][
+            start_idx : start_idx + n_this_batch
+        ]
+        best_path_ls.extend(best_paths_this_loop)
+        start_idx += n_this_batch
 
     return best_path_ls
 
