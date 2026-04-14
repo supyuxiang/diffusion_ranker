@@ -8,8 +8,12 @@ r"""
 
 数据：``--repr_pt``（``DitRolloutReprCapture.save_pt`` 格式）与 ``--image_dir``（与 ``image_save_names`` 一致）。
 
+**ImageReward 下载**：未指定 ``--imagereward_ckpt`` 时会从 HuggingFace 拉权重。在 AutoDL 等环境可先执行
+``source /etc/network_turbo`` 再跑训练；或改用本地 ``--imagereward_ckpt`` / ``--imagereward_med_config`` 完全离线。
+
 用法::
 
+    source /etc/network_turbo   # 可选：加速外网 / Hub
     cd /root/diffusion_ranker
     python3 -m ranker.train \
       --repr_pt /path/to/repr.pt \

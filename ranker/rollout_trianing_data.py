@@ -43,7 +43,7 @@ from utils import (
 BASE_SEED = 1314
 
 NUM_IMAGENET_CLASSES = 1000
-DEFAULT_IMAGES_PER_CLASS = 64
+DEFAULT_IMAGES_PER_CLASS = 32
 
 
 def _all_layer_ratios(n_blocks: int) -> tuple[float, ...]:
