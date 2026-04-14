@@ -1,24 +1,7 @@
 """
-DDPM（UNet，如 ``google_ddpm-celebahq-256``）在不同 ``num_inference_steps`` 下生成样本，
-对每个步数目录用 ``utils.compute_fid_is_from_dirs``（``torch_fidelity``）算 FID / IS（需本地真实人脸参考图目录）。
+example:
 
-与 ``dit_scaling_with_different_steps.py`` 不同：DiT 用 ImageNet val + CLIP 类名；此处为**无条件**
-256×256，应对齐人脸真实集（CelebA-HQ、CelebA 对齐图等；递归读 ``.png`` / ``.jpg``）。
-
-CelebA 对齐图可从机内镜像解压到数据盘（示例）::
-
-    unzip -q -o /root/autodl-pub/CelebA/Img/img_align_celeba.zip -d /root/autodl-tmp
-
-从全量目录随机抽 5 万张作固定 FID/IS 参考集（默认输出目录与脚本 ``--real_dir`` 一致）::
-
-    python3 /root/diffusion_ranker/scripts/build_real_image_subset.py \
-        --src /root/autodl-tmp/img_align_celeba \
-        --out /root/autodl-tmp/img_align_celeba_fid_ref_50k \
-        --n 50000 --seed 42
-
-example::
-
-    CUDA_VISIBLE_DEVICES=2 python /root/diffusion_ranker/unet_scaling_with_different_steps.py \
+    CUDA_VISIBLE_DEVICES=0 python /root/diffusion_ranker/unet_scaling_with_different_steps.py \
         --model_name google_ddpm-celebahq-256 \
         --batch_size 512 \
         --num_gen 50000 \
