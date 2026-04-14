@@ -97,7 +97,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     imagenet_val = Path("/root/autodl-tmp/imagenet/val")
-    cache_name = "imagenet_val"
 
     args = parse_args()
     output_dir = Path(args.output_dir).expanduser().resolve()
@@ -120,10 +119,6 @@ def main() -> None:
             key=lambda p: int(p.stem.split("_")[1]),
         )
 
-    print(
-        f"random search (imagereward): root={rollout_root}, "
-        f"num_candidates={args.num_candidates}, search_batch_size={args.search_batch_size}"
-    )
     best_path_ls = run_random_search_imagereward(
         reward_model,
         args.num_samples,
@@ -139,7 +134,6 @@ def main() -> None:
         json.dumps(
             {
                 "verifier": "imagereward",
-                "imagenet_val": str(imagenet_val),
                 "candidates_root": str(rollout_root),
                 "num_samples": args.num_samples,
                 "search_batch_size": args.search_batch_size,
@@ -147,7 +141,6 @@ def main() -> None:
                 "deno_steps": args.deno_steps,
                 "guidance_scale": args.guidance_scale,
                 "seed": args.seed,
-                "ref_cache_name": cache_name,
             },
             indent=2,
             ensure_ascii=False,
