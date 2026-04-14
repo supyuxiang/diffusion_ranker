@@ -32,25 +32,12 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 from dit_random_search_common import load_imagenet_simple_labels, prompt_for_class
 
 from utils import compute_fid_is_clipscore, set_device, set_seed
-from reward import load_clip, clipscore_reward
+from reward import load_clip, clipscore_reward, labels_1k
 
 N_INIT = 1024
 
 _DEFAULT_CLIP_DIR = Path("/root/autodl-tmp/openai_clip-vit-large-patch14")
 
-
-def sorted_rollout_image_paths(directory: Path) -> list[Path]:
-    return sorted(
-        directory.glob("image_*_*.png"),
-        key=lambda p: int(p.stem.split("_")[1]),
-    )
-
-
-def class_id_from_rollout_path(path: Path) -> int:
-    parts = path.stem.split("_")
-    if len(parts) < 3:
-        raise ValueError(f"expected image_*_*_label.png, got {path.name}")
-    return int(parts[2])
 
 
 def load_images_and_class_ids(paths: list[Path]) -> tuple[list[Image.Image], list[int]]:
@@ -61,143 +48,6 @@ def load_images_and_class_ids(paths: list[Path]) -> tuple[list[Image.Image], lis
             images.append(im.convert("RGB").copy())
         cids.append(class_id_from_rollout_path(p))
     return images, cids
-
-
-def resolve_hf_clip_snapshot_dir(path: Path) -> Path:
-    path = path.expanduser().resolve()
-    if (path / "config.json").is_file():
-        return path
-    ref = path / "refs" / "main"
-    if ref.is_file():
-        snap_id = ref.read_text(encoding="utf-8").strip()
-        cand = path / "snapshots" / snap_id
-        if (cand / "config.json").is_file():
-            return cand
-    raise FileNotFoundError(
-        f"无法在 {path} 解析 CLIP 权重（需要 config.json 或 refs/main + snapshots/<hash>）"
-    )
-
-
-def load_hf_clip(model_dir: Path, device: str):
-    from transformers import CLIPModel, CLIPProcessor
-
-    model = CLIPModel.from_pretrained(str(model_dir), local_files_only=True)
-    processor = CLIPProcessor.from_pretrained(str(model_dir), local_files_only=True)
-    model = model.to(device).float().eval()
-    return model, processor
-
-
-def load_open_clip(model_name: str, pretrained: str, device: str):
-    """加载 OpenCLIP。
-
-    ``pretrained`` 可以是：
-
-    - 标签名（如 ``openai``、``laion400m_e32``），与 ``model_name``（如 ``ViT-L-14``）配合；
-    - **文件**：``.pt`` / ``.bin`` 等，``create_model_and_transforms(model_name, pretrained=路径)``；
-    - **目录**：仅当内含 ``open_clip_config.json`` 时为 OpenCLIP 包，使用 ``local-dir:`` 加载。
-
-    HuggingFace Transformers 的 CLIP 目录（只有 ``config.json``、无 ``open_clip_config.json``）
-    **不能**走本函数；请改用 ``load_hf_clip`` / ``--clip_backend hf``。
-    """
-    import open_clip
-    from torchvision import transforms
-
-    p = Path(pretrained).expanduser()
-    model_id: str
-    pretrained_arg: str | None
-
-    if p.is_file():
-        model_id = model_name
-        pretrained_arg = str(p.resolve())
-    elif p.is_dir():
-        root = p.resolve()
-        if (root / "open_clip_config.json").is_file():
-            model_id = f"local-dir:{root}"
-            pretrained_arg = None
-        else:
-            raise ValueError(
-                f"OpenCLIP 无法从该目录加载（需要 open_clip_config.json）: {root}\n"
-                f"若为 HuggingFace CLIP 快照，请使用: --clip_backend hf --clip_model_path {root}"
-            )
-    else:
-        model_id = model_name
-        pretrained_arg = pretrained
-
-    model, _, preprocess = open_clip.create_model_and_transforms(
-        model_id, pretrained=pretrained_arg
-    )
-    tokenizer = open_clip.get_tokenizer(model_id)
-    model = model.to(device).float().eval()
-
-    if preprocess is not None:
-        transform = preprocess
-    else:
-        transform = transforms.Compose(
-            [
-                transforms.Resize((224, 224)),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.48145466, 0.4578275, 0.40821073],
-                    std=[0.26862954, 0.26130258, 0.27577711],
-                ),
-            ]
-        )
-    return model, tokenizer, transform
-
-
-def mean_batch_clipscore_hf(
-    model,
-    processor,
-    device: str,
-    images: list[Image.Image],
-    class_ids: list[int],
-    labels_1k: list[str],
-    prompt_template: str,
-) -> float:
-    prompts = [prompt_for_class(labels_1k, cid, prompt_template) for cid in class_ids]
-    rgb = [img.convert("RGB") for img in images]
-    inputs = processor(text=prompts, images=rgb, return_tensors="pt", padding=True)
-    inputs = {k: v.to(device) for k, v in inputs.items()}
-    with torch.no_grad():
-        out = model(**inputs)
-        image_features = out.image_embeds / out.image_embeds.norm(dim=-1, keepdim=True)
-        text_features = out.text_embeds / out.text_embeds.norm(dim=-1, keepdim=True)
-        sim = (image_features * text_features).sum(dim=-1)
-    return float(sim.mean().item()) if sim.numel() else float("-inf")
-
-
-def mean_batch_clipscore_open_clip(
-    model,
-    tokenizer,
-    image_transform,
-    device: str,
-    images: list[Image.Image],
-    class_ids: list[int],
-    labels_1k: list[str],
-    prompt_template: str,
-) -> float:
-    prompts = [prompt_for_class(labels_1k, cid, prompt_template) for cid in class_ids]
-    text_tokens = tokenizer(prompts).to(device)
-    tensors = torch.stack(
-        [image_transform(img.convert("RGB")) for img in images],
-        dim=0,
-    ).to(device)
-    with torch.no_grad():
-        text_features = model.encode_text(text_tokens)
-        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-        image_features = model.encode_image(tensors)
-        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-        sim = (image_features * text_features).sum(dim=-1)
-    return float(sim.mean().item()) if sim.numel() else float("-inf")
-
-
-def save_init_images(init_paths: list[Path], output_dir: Path) -> None:
-    """``image_{i:05d}_{class_id:05d}.png``，与 rollout / ``compute_fid_is_clipscore`` 一致。"""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for i, path in enumerate(init_paths):
-        cid = class_id_from_rollout_path(path)
-        dest = output_dir / f"image_{i:05d}_{cid:05d}.png"
-        shutil.copy2(path, dest)
 
 
 def save_best_images(best_path_ls: list[Path], output_dir: Path, *, start_idx: int = 0) -> None:

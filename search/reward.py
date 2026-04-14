@@ -88,32 +88,62 @@ def fid_reward(batch_stats:dict,n_batch:int,selected_stats:dict,n_selected:int,r
 ######################## clipscore reward ##############################
 from PIL import Image
 
-def load_clip(model_dir:Path,device):
-    _default_clip_dir = Path("/root/autodl-tmp/openai_clip-vit-large-patch14")
+
+with open('/root/diffusion_ranker/imagenet-simple-labels.json', 'r') as f:
+    labels_1k = json.load(f)
+
+
+def _path_to_clip_prompt(path: Path, labels_1k: list[str]) -> str:
+    """``image_14007_00512.png`` → 取 stem 最后一段为 class_id。"""
+    stem = Path(path).stem
+    parts = stem.split("_")
+    # check
+    if len(parts) < 3:
+        raise ValueError(f"expected image_*_*_{{class}}.png, got {path.name}")
+    class_id = int(parts[-1])
+    if not (0 <= class_id < len(labels_1k)):
+        raise IndexError(f"class_id={class_id} out of range for labels ({len(labels_1k)})")
+
+    return f"a photo of a {labels_1k[class_id]}"
+
+
+def load_clip(model_dir: Path, device: torch.device):
     from transformers import CLIPModel, CLIPProcessor
-    clip = CLIPModel.from_pretrained(model_dir, local_files_only=True)
+
+    clip = CLIPModel.from_pretrained(str(model_dir), local_files_only=True)
     clip.to(device)
     clip.eval()
-    return clip
+    processor = CLIPProcessor.from_pretrained(str(model_dir))
+    return clip, processor
 
-def clipscore_reward(batch_paths:list[Path],clip:CLIPModel,processor:CLIPProcessor,labels_1k:list[str]) -> float:
+
+def clipscore_reward(
+    batch_paths: list[Path],
+    clip,
+    processor,
+    labels_1k: list[str],
+) -> float:
     batch_images = [
-        Image.open(path).convert('RGB').copy()
-        for path in batch_paths
+        Image.open(path).convert("RGB").copy() for path in batch_paths
     ]
-    batch_prompts = [
-        path2prompt(path,labels_1k)
-        for path in batch_paths
-    ]
+    batch_prompts = [_path_to_clip_prompt(path, labels_1k) for path in batch_paths]
 
-    def path2prompt(path:Path,labels_1k:list[str]) -> str:
-        # 类似   image_14007_00512.png, 其中512是classid, 00000 到 00999
-        path = Path(path)
-        parts = path.stem.split('_')[-1] # 00512, str
-        class_id = int(parts) # 512, int
+    inputs = processor(
+        text=batch_prompts,
+        images=batch_images,
+        return_tensors="pt",
+        padding=True,
+    )
+    inputs = {k:v.to(clip.device) for k,v in inputs.items()}
+    # inference
+    with torch.no_grad():
+        out = clip(**inputs)
+        image_features = out.image_embeds / out.image_embeds.norm(dim=-1, keepdim=True)
+        text_features = out.text_embeds / out.text_embeds.norm(dim=-1,keepdim=True)
+        sim = (image_features * text_features).sum(dim=-1)
+    return float(sim.mean().item())
 
-        return f"a photo of a {labels_1k[class_id]}"
-        
+########################     end clipscore reward     ##############################
 
 
 
