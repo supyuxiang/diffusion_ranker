@@ -13,6 +13,7 @@ from utils import *
 
 import numpy as np
 
+
 ############# fid reward ####################
 
 def extract_features_from_images(
