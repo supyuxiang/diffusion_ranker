@@ -109,12 +109,14 @@ def _path_to_clip_prompt(path: Path, labels_1k: list[str]) -> str:
     return f"a photo of a {labels_1k[class_id]}"
 
 
-def load_clip(model_dir: Path, device: torch.device):
+def load_clip(device: torch.device):
 
-    clip = CLIPModel.from_pretrained(str(model_dir), local_files_only=True)
+    _DEFAULT_CLIP_DIR = Path("/root/autodl-tmp/openai_clip-vit-large-patch14")
+
+    clip = CLIPModel.from_pretrained(str(_DEFAULT_CLIP_DIR), local_files_only=True)
     clip.to(device)
     clip.eval()
-    processor = CLIPProcessor.from_pretrained(str(model_dir))
+    processor = CLIPProcessor.from_pretrained(str(_DEFAULT_CLIP_DIR))
     return clip, processor
 
 

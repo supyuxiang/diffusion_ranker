@@ -163,30 +163,11 @@ def main() -> None:
     ]
     init_dir = rollout_root / "init1024"
 
-    assert all(
-        len(list(candidate_dir.glob("image_*_*.png"))) == args.num_samples
-        for candidate_dir in candidate_dir_ls
-    ) and len(list(init_dir.glob("image_*_*.png"))) == N_INIT, (
-        f"expected each candidate to have {args.num_samples} images and init {N_INIT}; "
-        f"check rollout_root={rollout_root}"
-    )
-
     set_seed(args.seed)
     device = set_device()
     dstr = "cuda" if device.type == "cuda" else "cpu"
 
-    labels_1k = load_imagenet_simple_labels()
-    clip_dir_resolved: Path | None = None
-    if args.clip_backend == "hf":
-        clip_dir_resolved = resolve_hf_clip_snapshot_dir(Path(args.clip_model_path))
-        print(f"load HF CLIP: {clip_dir_resolved}")
-        clip_model, clip_aux = load_hf_clip(clip_dir_resolved, dstr)
-    else:
-        print(f"load OpenCLIP {args.clip_model}/{args.clip_pretrained}")
-        clip_model, clip_tok, clip_tf = load_open_clip(
-            args.clip_model, args.clip_pretrained, dstr
-        )
-        clip_aux = (clip_tok, clip_tf)
+    clip, processor = load_clip(device)
 
     candidate_pathes_dict: dict[int, list[Path]] = {}
     for i in range(args.num_candidates):
