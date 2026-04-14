@@ -36,7 +36,7 @@ import ImageReward as RM
 
 from dit_random_search_common import load_imagenet_simple_labels, prompt_for_class
 
-from utils import compute_fid_is_from_dirs, set_device, set_seed
+from utils import compute_fid_is_clipscore, set_device, set_seed
 from reward import load_imagereward, imagereward_reward
 
 
@@ -148,7 +148,7 @@ def main() -> None:
         encoding="utf-8",
     )
 
-    metrics = compute_imagereward_metrics(best_dir, device)
+    metrics = compute_fid_is_clipscore(best_dir, device)
     with open(best_dir / "final_metrics.json", "w", encoding='utf-8') as f:
         json.dump(metrics, f, indent=2, ensure_ascii=False)
     print(metrics)
