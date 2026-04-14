@@ -10,7 +10,9 @@ run single:
       --num_samples 50000 \
       --num_candidates 16 \
       --deno_steps 10 \
-      --guidance_scale 1.0
+      --search_batch_size 32 \
+      --guidance_scale 1.0 \
+      --output_dir /root/autodl-tmp/random_search_fid_reward_50k_cfg1.0_deno10_search32
 
 # run all:
 bash /root/diffusion_ranker/scripts/run_fid_search.sh

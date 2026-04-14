@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """
-init 固定 N_INIT=1024（与 FID 脚本一致）。
-
 example:
 
 python3 /root/diffusion_ranker/search/dit_random_search_clipscore.py \
