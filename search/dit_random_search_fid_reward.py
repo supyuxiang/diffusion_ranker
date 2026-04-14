@@ -117,59 +117,58 @@ def run_random_search_fid(
     selected_stats, n_selected = init_stats, n_init # 初始化 selected_stats 和 n_selected， 后续每个loop进行update
     best_path_ls: list[Path] = [] # 以便后续save和计算metrics
     
-    current_num_samples = n_init
+    start_idx = 0
     num_loops = (n_expected + _search_batch_size - 1) // _search_batch_size # 总的search loop数
 
     for _ in tqdm(range(num_loops), desc="random search fid"):
-        n_this_batch = min(_search_batch_size, num_samples - current_num_samples) # 当前loop需要生成的样本数
+        n_this_batch = min(_search_batch_size, n_expected - start_idx) # 当前loop需要生成的样本数
         if n_this_batch <= 0:
             break
         # predefine best_fid, best_batch_images, best_batch_stats
         best_reward = -float("inf")
         best_candidate_idx = -1
-        best_batch_images: list[Image.Image] | None = None
-        best_batch_stats: dict | None = None
+        best_images: list[Image.Image] | None = None
+        best_stats: dict | None = None
 
         # iterate over all candidates
         for candidate_idx,candidate_path_ls in candidate_pathes_dict.items():
-            batch_images = [
+            batch_candidate_images = [
                 Image.open(path).convert('RGB').copy()
-                for path in candidate_path_ls[current_num_samples: current_num_samples + n_this_batch]
+                for path in candidate_path_ls[start_idx: start_idx + n_this_batch]
             ] # list[Image.Image] this candidate's batch images
 
             batch_stats = fid_features_to_statistics(
-                extract_features_from_images(batch_images, feat_extractor, device, min(512, n_this_batch))
+                extract_features_from_images(batch_candidate_images, feat_extractor, device, min(512, n_this_batch))
             ) # dict: {"mu": (2048,), "sigma": (2048, 2048)}
 
             # compute reward and select best candidate this round
-            reward_this = fid_reward(
-                batch_stats, len(batch_images),selected_stats, n_selected, ref_stats
+            reward_this_candidate_batch = fid_reward(
+                batch_stats, len(batch_candidate_images),selected_stats, n_selected, ref_stats
             )
 
-            if reward_this > best_reward:
-                best_reward = reward_this
+            if reward_this_candidate_batch > best_reward:
+                best_reward = reward_this_candidate_batch
                 best_candidate_idx = candidate_idx
-                best_batch_images = batch_images
-                best_batch_stats = batch_stats
+                best_images = batch_candidate_images
+                best_stats = batch_stats
             
-            del batch_images
+            del batch_candidate_images
             gc.collect()
 
-        assert best_batch_images is not None and best_batch_stats is not None and best_candidate_idx != -1
+        assert best_images is not None and best_stats is not None
+        assert best_candidate_idx >= 0
 
         # 必须用胜出 candidate 的路径列表；循环结束后 candidate_path_ls 只是「最后一个」candidate
-        win_paths = candidate_pathes_dict[best_candidate_idx][
-            current_num_samples : current_num_samples + n_this_batch
+        win_paths_this_loop = candidate_pathes_dict[best_candidate_idx][
+            start_idx : start_idx + n_this_batch
         ]
-        best_path_ls.extend(win_paths)
+        best_path_ls.extend(win_paths_this_loop)
         
         selected_stats = merge_fid_statistics(
-            selected_stats, n_selected, best_batch_stats, len(best_batch_images)
+            selected_stats, n_selected, best_stats, len(best_images)
         )
-        n_selected += len(best_batch_images)
-        current_num_samples += n_this_batch
-        if current_num_samples >= num_samples:
-            break
+        n_selected += len(best_images)
+        start_idx += n_this_batch
     return selected_stats, best_path_ls
 
 
