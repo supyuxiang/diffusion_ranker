@@ -303,7 +303,7 @@ def run_random_search_clipscore(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--output_dir", default="/root/autodl-tmp/eval_dit_random_search_clipscore")
+    p.add_argument("--output_dir", default="/root/autodl-tmp/random_search_clipscore_50k_cfg1.0_deno10")
     p.add_argument("--num_samples", type=int, default=50_000)
     p.add_argument(
         "--batch_size",
@@ -312,13 +312,13 @@ def parse_args() -> argparse.Namespace:
         help="每轮每个 candidate 池切片长度（search batch，默认 32）",
     )
     p.add_argument("--num_candidates", type=int, default=16)
-    p.add_argument("--deno_steps", type=int, default=20, help="与 rollout 目录名一致")
+    p.add_argument("--deno_steps", type=int, default=10, help="与 rollout 目录名一致")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--guidance_scale", type=float, default=1.0)
     p.add_argument("--metrics_batch_size", type=int, default=64)
     p.add_argument(
         "--prompt_template",
-        default="a high-quality picture of a {name}",
+        default="a photo of a {name}",
         help="{name}、{id} 见 prompt_for_class",
     )
     p.add_argument("--clip_backend", choices=("hf", "open_clip"), default="hf")

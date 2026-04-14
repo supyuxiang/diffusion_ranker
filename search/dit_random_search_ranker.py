@@ -138,6 +138,7 @@ def make_repr_capture(
             "已用当前 DiT 的「全层 + 全步」抓取（与 rollout_trianing_data 默认一致）。"
         )
 
+
     return DitRolloutReprCapture(
         pipe,
         num_inference_steps=T,
