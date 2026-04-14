@@ -1,8 +1,9 @@
-import torch
-import torch.nn as nn
-
+import json
 import sys
 from pathlib import Path
+
+import torch
+import torch.nn as nn
 from typing import Optional
 
 _ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -87,6 +88,7 @@ def fid_reward(batch_stats:dict,n_batch:int,selected_stats:dict,n_selected:int,r
 
 ######################## clipscore reward ##############################
 from PIL import Image
+from transformers import CLIPModel, CLIPProcessor
 
 
 with open('/root/diffusion_ranker/imagenet-simple-labels.json', 'r') as f:
@@ -108,7 +110,6 @@ def _path_to_clip_prompt(path: Path, labels_1k: list[str]) -> str:
 
 
 def load_clip(model_dir: Path, device: torch.device):
-    from transformers import CLIPModel, CLIPProcessor
 
     clip = CLIPModel.from_pretrained(str(model_dir), local_files_only=True)
     clip.to(device)
