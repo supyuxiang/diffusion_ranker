@@ -1,28 +1,15 @@
 #!/usr/bin/env python3
 """
-DiT Random Search + CLIPScore verifier（仅读预生成图）。init 固定 N_INIT=1024（与 FID 脚本一致）。
+init 固定 N_INIT=1024（与 FID 脚本一致）。
 
-须先用 ``search/rollout.py`` 生成 ``candidate_0000`` …（``image_{idx}_{label}.png``）与 ``init1024/``。
+example:
 
-每轮从 K 个 candidate 池的同一位置切片取 ``batch_size`` 张图，算 batch 平均 CLIP 图文余弦相似度，
-选最高的一批；胜出路径记入 ``best_path_ls``，最后 ``shutil.copy2`` 到 ``best_images/``，文件名保留
-``image_{序}_{class_id}.png``，供 ``compute_fid_is_clipscore`` 解析类别。
-
-默认 search ``--batch_size=32``（小于 FID 版）。
-
-**本地 CLIP 目录**：若为 HuggingFace 格式（含 ``config.json`` / ``preprocessor_config.json``），须用
-``--clip_backend hf --clip_model_path <目录>``。OpenCLIP 后端仅支持：内置 ``pretrained`` 标签、
-``.pt/.bin`` 权重文件，或含 ``open_clip_config.json`` 的 OpenCLIP 导出目录（``local-dir:``）。
-
-用法::
-
-  python3 search/dit_random_search_clipscore.py \
-      --output_dir /root/autodl-tmp/eval_dit_rs_clip \
-      --deno_steps 10 --guidance_scale 1.0 \
-      --num_candidates 16 --batch_size 32
-
-  # 本地 HF CLIP（如 openai_clip-vit-large-patch14）::
-  #   --clip_backend hf --clip_model_path /root/autodl-tmp/openai_clip-vit-large-patch14
+python3 /root/diffusion_ranker/search/dit_random_search_clipscore.py \
+    --output_dir /root/autodl-tmp/dit_random_search_clipscore_reward \
+    --num_samples 50000 \
+    --deno_steps 10 \
+    --guidance_scale 1.0 \
+    --num_candidates 16
 """
 
 from __future__ import annotations
@@ -45,18 +32,11 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 from dit_random_search_common import load_imagenet_simple_labels, prompt_for_class
 
 from utils import compute_fid_is_clipscore, set_device, set_seed
+from reward import load_clip, clipscore_reward
 
 N_INIT = 1024
 
-_DEFAULT_HF_CLIP_ROOT = Path(
-    os.environ.get(
-        "CLIP_HF_CACHE",
-        os.environ.get(
-            "CLIP_MODEL_PATH",
-            "/root/autodl-tmp/openai_clip-vit-large-patch14",
-        ),
-    )
-)
+_DEFAULT_CLIP_DIR = Path("/root/autodl-tmp/openai_clip-vit-large-patch14")
 
 
 def sorted_rollout_image_paths(directory: Path) -> list[Path]:

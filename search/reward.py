@@ -86,6 +86,35 @@ def fid_reward(batch_stats:dict,n_batch:int,selected_stats:dict,n_selected:int,r
 
 
 ######################## clipscore reward ##############################
+from PIL import Image
+
+def load_clip(model_dir:Path,device):
+    _default_clip_dir = Path("/root/autodl-tmp/openai_clip-vit-large-patch14")
+    from transformers import CLIPModel, CLIPProcessor
+    clip = CLIPModel.from_pretrained(model_dir, local_files_only=True)
+    clip.to(device)
+    clip.eval()
+    return clip
+
+def clipscore_reward(batch_paths:list[Path],clip:CLIPModel,processor:CLIPProcessor,labels_1k:list[str]) -> float:
+    batch_images = [
+        Image.open(path).convert('RGB').copy()
+        for path in batch_paths
+    ]
+    batch_prompts = [
+        path2prompt(path,labels_1k)
+        for path in batch_paths
+    ]
+
+    def path2prompt(path:Path,labels_1k:list[str]) -> str:
+        # 类似   image_14007_00512.png, 其中512是classid, 00000 到 00999
+        path = Path(path)
+        parts = path.stem.split('_')[-1] # 00512, str
+        class_id = int(parts) # 512, int
+
+        return f"a photo of a {labels_1k[class_id]}"
+        
+
 
 
 
