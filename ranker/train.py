@@ -30,23 +30,21 @@ r"""
 
 
 
-cd /root/diffusion_ranker
-python3 -m ranker.train \
+cd /root/diffusion_ranker && CUDA_VISIBLE_DEVICES=0 python3 -m ranker.train \
   --repr_pt /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/repr.pt \
   --image_dir /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10 \
   --cached_rewards_json /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/reward_ls.json \
   --output_dir /root/autodl-tmp/ranker_train_perclass32_deno10 \
+  --ranker_type listwise \
   --group_size 8 \
   --proj_dim 64 \
   --num_list_layers 2 \
   --num_epochs 50 \
   --lr 1e-4 \
   --optimizer adamw \
-  --lr_scheduler cosine \
-  --warmup_ratio 0.05 \
-  --alpha 0.3 \
+  --seed 42 \
   --listwise_tau 1.0 \
-  --seed 42      
+  --alpha 0.3  
 """
 
 from __future__ import annotations
@@ -465,14 +463,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--layer_ratios",
         type=str,
-        default="",
-        help="逗号分隔层比例，与 repr key 中 r 对齐；空表示全部",
+        default="0.6",
+        help="逗号分隔层比例，与 repr key 中 r 对齐；``all`` 表示不筛选（用 repr 中全部键）",
     )
     p.add_argument(
         "--step_ratios",
         type=str,
-        default="",
-        help="逗号分隔 0~1，映射到步索引 round(u*(T-1))；空表示全部步",
+        default="0.5",
+        help="逗号分隔 0~1，映射到步索引 round(u*(T-1))；``all`` 表示不筛选",
     )
     p.add_argument(
         "--prompt_template",

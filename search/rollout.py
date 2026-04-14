@@ -2,9 +2,12 @@
 """
 多卡：每进程 ``--candidate_idx``，写满一个目录（默认 50k 张），供后续 search 只读盘。
 
-输出目录（固定）::
+输出目录（固定；多卡见 ``scripts/rollout_all.sh``）::
 
     /root/autodl-tmp/dit_candidates_50k_cfg{guidance_scale}_deno{deno_steps}/candidate_{idx:04d}/
+
+``--repr_pt`` 写入的 ``idx{i}.pt`` 与上述目录一一对应，供 ``dit_random_search_ranker.py`` 的
+``--precomputed_suite_*`` 只读选优（无需在线 rollout）。
 
 示例::
 
@@ -36,6 +39,20 @@ from utils import DitRolloutReprCapture, model_loader, rollout_dit_with_steps, s
 
 BASE_SEED = 42
 
+
+def _all_layer_ratios(n_blocks: int) -> tuple[float, ...]:
+    """与 ``ranker/rollout_trianing_data.py`` 一致：每个 DiT block 一个 ratio。"""
+    if n_blocks <= 1:
+        return (1.0,)
+    return tuple(i / (n_blocks - 1) for i in range(n_blocks))
+
+
+def _all_step_ratio_ls(num_inference_steps: int) -> list[float]:
+    """hook 步覆盖 ``0 .. T-1``，与训练 ``repr.pt`` / ranker ``selected_repr_keys`` 对齐。"""
+    t = num_inference_steps
+    if t <= 1:
+        return [0.0]
+    return [i / (t - 1) for i in range(t)]
 
 
 def _output_dir(guidance_scale: float, deno_steps: int, candidate_idx: int) -> Path:
@@ -118,7 +135,10 @@ def main() -> None:
     p.add_argument(
         "--repr_pt",
         default="",
-        help="若非空：抓取去噪步 {0,T/4,T/2,3T/4,T} 上若干层的 token mean/last 并存此 .pt（与 compile 不兼容，将自动关闭 compile）",
+        help=(
+            "若非空：按训练数据同款抓取（每层 block × 每去噪步）mean/last 并存此 .pt；"
+            "与 ``ranker/train.py`` 的 ``selected_repr_keys`` 一致（与 compile 不兼容）。"
+        ),
     )
     p.add_argument(
         "--repr_max_batches",
@@ -128,9 +148,9 @@ def main() -> None:
     )
     p.add_argument(
         "--repr_store_dtype",
-        default="fp16",
+        default="bf16",
         choices=("fp16", "bf16"),
-        help="表征落盘前的精度（fp16 更省内存；与 sample_hidden 思路一致：尽快缩小 CPU 侧占用）",
+        help="表征落盘 dtype；默认 bf16 与 ``rollout_trianing_data`` / ranker ckpt meta 一致",
     )
     args = p.parse_args()
 
@@ -142,14 +162,17 @@ def main() -> None:
     pipe.set_progress_bar_config(disable=True)
     repr_capture: DitRolloutReprCapture | None = None
     repr_max_batches: int | None = None
-    if args.repr_pt: # 带表征提取的rollout
+    if args.repr_pt:  # 带表征提取的 rollout（与训练 repr 键空间一致）
         store_dtype = (
             torch.bfloat16 if args.repr_store_dtype == "bf16" else torch.float16
         )
+        n_blocks = len(pipe.transformer.transformer_blocks)
         repr_capture = DitRolloutReprCapture(
             pipe,
             num_inference_steps=args.deno_steps,
             guidance_scale=args.guidance_scale,
+            layer_ratios=_all_layer_ratios(n_blocks),
+            step_ratio_ls=_all_step_ratio_ls(args.deno_steps),
             store_dtype=store_dtype,
             rollout_base_seed=BASE_SEED + args.candidate_idx * 520,
         )
