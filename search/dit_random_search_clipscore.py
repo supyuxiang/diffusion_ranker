@@ -162,8 +162,6 @@ def main() -> None:
     )
 
     # compute metrics
-    from utils import compute_fid_is_clipscore
-    import json
     metrics = compute_fid_is_clipscore(best_dir, device=device)
     with open(best_dir / "final_metrics.json", "w", encoding='utf-8') as f:
         json.dump(metrics, f, indent=2, ensure_ascii=False)

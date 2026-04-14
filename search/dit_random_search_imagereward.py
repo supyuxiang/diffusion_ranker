@@ -148,6 +148,11 @@ def main() -> None:
         encoding="utf-8",
     )
 
+    metrics = compute_imagereward_metrics(best_dir, device)
+    with open(best_dir / "final_metrics.json", "w", encoding='utf-8') as f:
+        json.dump(metrics, f, indent=2, ensure_ascii=False)
+    print(metrics)
+
 
 if __name__ == "__main__":
     main()
