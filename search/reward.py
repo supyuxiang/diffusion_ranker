@@ -148,6 +148,41 @@ def clipscore_reward(
 
 ########################     end clipscore reward     ##############################
 
+########################     imagereward reward     ##############################
+from pathlib import Path
+from PIL import Image
+import numpy as np
+
+_DEFAULT_IMAGEREWARD_DIR = Path("/root/autodl-tmp/ImageReward")
+_DEFAULT_IMAGEREWARD_CKPT = _DEFAULT_IMAGEREWARD_DIR / "ImageReward.pt"
+med = _DEFAULT_IMAGEREWARD_DIR / "med_config.json"
+ensure_image_reward_on_path()
+import ImageReward as RM
+
+def load_imagereward(device: torch.device):
+    import ImageReward as RM
+    model = RM.load(str(_DEFAULT_IMAGEREWARD_CKPT), device=device, med_config=str(med))
+    model.eval()
+    return model
+
+def imagereward_reward(batch_paths:list[Path],model) -> float:
+    import numpy as np
+    from PIL import Image
+    batch_images = [
+        Image.open(path).convert('RGB').copy() for path in batch_paths
+    ]
+    batch_prompts = [
+        _path_to_clip_prompt(path, labels_1k) for path in batch_paths
+    ]
+
+    reward_ls = []
+    for prompt,image in zip(batch_prompts,batch_images):
+        reward = float(model.score(prompt,image))
+        reward_ls.append(reward)
+    return np.mean(reward_ls)
+
+    
+
 
 
 
