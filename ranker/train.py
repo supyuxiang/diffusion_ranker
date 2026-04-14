@@ -8,8 +8,11 @@ r"""
 
 数据：``--repr_pt``（``DitRolloutReprCapture.save_pt`` 格式）与 ``--image_dir``（与 ``image_save_names`` 一致）。
 
-**ImageReward 下载**：未指定 ``--imagereward_ckpt`` 时会从 HuggingFace 拉权重。在 AutoDL 等环境可先执行
-``source /etc/network_turbo`` 再跑训练；或改用本地 ``--imagereward_ckpt`` / ``--imagereward_med_config`` 完全离线。
+**预计算教师分**：若已用 ``ranker/labeling.py`` 等写好 ``reward_ls.json``（与 ``labeling.py`` 相同顺序：
+``sorted(image_dir.glob('image_*_*.png'), key=全局序号)`` 逐行对应分数），可传 ``--cached_rewards_json``，
+训练时**不再加载 ImageReward**。
+
+**ImageReward 在线**：未传 ``--cached_rewards_json`` 时需 ``import ImageReward``；可先 ``source /etc/network_turbo`` 再跑。
 
 用法::
 
@@ -23,6 +26,27 @@ r"""
       --optimizer adamw \
       --lr_scheduler cosine \
       --warmup_ratio 0.05
+
+
+
+
+cd /root/diffusion_ranker
+python3 -m ranker.train \
+  --repr_pt /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/repr.pt \
+  --image_dir /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10 \
+  --cached_rewards_json /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/reward_ls.json \
+  --output_dir /root/autodl-tmp/ranker_train_perclass32_deno10 \
+  --group_size 8 \
+  --proj_dim 64 \
+  --num_list_layers 2 \
+  --num_epochs 50 \
+  --lr 1e-4 \
+  --optimizer adamw \
+  --lr_scheduler cosine \
+  --warmup_ratio 0.05 \
+  --alpha 0.3 \
+  --listwise_tau 1.0 \
+  --seed 42      
 """
 
 from __future__ import annotations
@@ -49,6 +73,27 @@ if str(_ROOT) not in sys.path:
 
 from ranker.model import ListwiseDiffusionRanker, PointwiseDiffusionRanker
 from utils import Constants_default, ensure_image_reward_on_path, set_device, set_seed
+
+
+def load_reward_lookup_from_json(json_path: Path, image_dir: Path) -> dict[str, float]:
+    """``labeling.py`` 写出的 ``reward_ls.json``：与按全局序号排序的 ``image_*_*.png`` 逐行对齐。"""
+    json_path = json_path.expanduser().resolve()
+    image_dir = image_dir.expanduser().resolve()
+    if not json_path.is_file():
+        raise FileNotFoundError(f"cached rewards: {json_path}")
+    raw = json.loads(json_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, list):
+        raise ValueError(f"expected JSON list in {json_path}")
+    paths = sorted(
+        image_dir.glob("image_*_*.png"),
+        key=lambda p: int(p.stem.split("_")[1]),
+    )
+    if len(raw) != len(paths):
+        raise ValueError(
+            f"cached rewards len={len(raw)} != sorted rollout images len={len(paths)} "
+            f"under {image_dir}"
+        )
+    return {p.name: float(s) for p, s in zip(paths, raw)}
 
 
 def load_imagenet_simple_labels(cache_dir: Path | None = None) -> list[str]:
@@ -317,11 +362,25 @@ def teacher_scores_for_group(
     return torch.tensor(scores, dtype=torch.float32, device=ir_device)
 
 
+def cached_scores_for_group(
+    group_fi: list[FlatIndex],
+    reward_by_name: dict[str, float],
+) -> torch.Tensor:
+    out: list[float] = []
+    for fi in group_fi:
+        name = fi.image_name
+        if name not in reward_by_name:
+            raise KeyError(f"no cached score for image_save_names entry {name!r}")
+        out.append(reward_by_name[name])
+    return torch.tensor(out, dtype=torch.float32, device="cpu")
+
+
 def iter_training_groups(
     dataset: RankerReprGroupDataset,
     pt_obj: dict,
     selected_keys: list[str],
     image_root: Path,
+    reward_by_name: dict[str, float] | None,
     teacher,
     labels: list[str],
     prompt_template: str,
@@ -346,9 +405,13 @@ def iter_training_groups(
         )
         class_ids = [fi.label for fi in group_fi]
         with torch.inference_mode():
-            t_scores = teacher_scores_for_group(
-                teacher, labels, prompt_template, paths, class_ids, ir_device
-            )
+            if reward_by_name is not None:
+                t_scores = cached_scores_for_group(group_fi, reward_by_name)
+            else:
+                assert teacher is not None
+                t_scores = teacher_scores_for_group(
+                    teacher, labels, prompt_template, paths, class_ids, ir_device
+                )
         yield tok, t_scores
 
 
@@ -430,6 +493,12 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="ImageReward 所在设备；默认与训练 device 相同",
     )
+    p.add_argument(
+        "--cached_rewards_json",
+        type=str,
+        default="",
+        help="预计算 ImageReward 分数（如 labeling.py 的 reward_ls.json）；与 image_dir 下按全局序号排序的图一一对应",
+    )
     p.add_argument("--save_every", type=int, default=1, help="每 N 个 epoch 存 checkpoint")
     return p.parse_args()
 
@@ -441,6 +510,7 @@ def train_epoch(
     selected_keys: list[str],
     image_root: Path,
     device: torch.device,
+    reward_by_name: dict[str, float] | None,
     teacher,
     labels: list[str],
     prompt_template: str,
@@ -464,6 +534,7 @@ def train_epoch(
             pt_obj,
             selected_keys,
             image_root,
+            reward_by_name,
             teacher,
             labels,
             prompt_template,
@@ -508,6 +579,7 @@ def eval_epoch(
     selected_keys: list[str],
     image_root: Path,
     device: torch.device,
+    reward_by_name: dict[str, float] | None,
     teacher,
     labels: list[str],
     prompt_template: str,
@@ -528,6 +600,7 @@ def eval_epoch(
         pt_obj,
         selected_keys,
         image_root,
+        reward_by_name,
         teacher,
         labels,
         prompt_template,
@@ -565,18 +638,31 @@ def main() -> None:
     device = set_device()
     ir_device = args.ir_device.strip() or str(device)
 
-    ensure_image_reward_on_path()
-    import ImageReward as RM
-
     repr_path = Path(args.repr_pt).expanduser().resolve()
     image_root = Path(args.image_dir).expanduser().resolve()
     out_dir = Path(args.output_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    reward_by_name: dict[str, float] | None = None
+    cache_json = (args.cached_rewards_json or "").strip()
+    if cache_json:
+        reward_by_name = load_reward_lookup_from_json(Path(cache_json), image_root)
+        print(f"使用预计算教师分: {cache_json} ({len(reward_by_name)} 条)")
+    else:
+        ensure_image_reward_on_path()
+
     try:
         pt_obj = torch.load(repr_path, map_location="cpu", weights_only=False)
     except TypeError:
         pt_obj = torch.load(repr_path, map_location="cpu")
+
+    if reward_by_name is not None:
+        flat_n = len(build_flat_indices(pt_obj))
+        if len(reward_by_name) != flat_n:
+            raise ValueError(
+                f"cached rewards / images count {len(reward_by_name)} != repr.pt 样本数 {flat_n} "
+                "(请确认 labeling 与 rollout 为同一 image_dir、且未缺图)"
+            )
     meta = pt_obj.get("meta") or {}
     all_keys = sorted(pt_obj["batches"][0]["repr"].keys())
     layer_f = _parse_float_list(args.layer_ratios)
@@ -605,8 +691,12 @@ def main() -> None:
     buckets = bucket_by_class(flat)
     dataset_tr = RankerReprGroupDataset(buckets, args.group_size, seed=args.seed)
 
-    teacher = RM.load("ImageReward-v1.0", device=ir_device)
-    teacher.eval()
+    teacher = None
+    if reward_by_name is None:
+        import ImageReward as RM
+
+        teacher = RM.load("ImageReward-v1.0", device=ir_device)
+        teacher.eval()
 
     optimizer = build_optimizer(
         model,
@@ -632,6 +722,7 @@ def main() -> None:
             selected_keys,
             image_root,
             device,
+            reward_by_name,
             teacher,
             labels,
             args.prompt_template,
@@ -665,6 +756,7 @@ def main() -> None:
         selected_keys,
         image_root,
         device,
+        reward_by_name,
         teacher,
         labels,
         args.prompt_template,
