@@ -1,15 +1,11 @@
 """
-Diffusion ranker：吃 DiT rollout 抓取的 **中间步 × 层 × pooling** 的 hidden states（如 ``mean`` / ``last``），
-输出 reward / 排序 logits。与 ``language_ranker-main/ranker/ranker_structure.py`` 类似，分 **pointwise** 与 **listwise**。
+Diffusion ranker：吃 DiT rollout 抓取的 **中间步 × 层 × pooling** 的 hidden states（ ``mean`` / ``last``），
+输出 reward
 
 **输入约定**（单条候选一张图对应的表征）：
 
-- ``x`` shape ``(B, N_tokens, hidden_dim)``，其中 ``N_tokens = n_steps × n_layers × n_poolings``（你在数据侧把
-  若干 ``s*``、``r*``、``mean``/``last`` 向量按固定顺序拼成序列即可）。
+- ``x`` shape ``(B, 1, hidden_dim)``，其中 1是某一(step ratio, layer ratio, pooling ratio)的选择。
 - ``hidden_dim`` 与 DiT 一致（如 XL 为 1152）。
-
-**Listwise**：同一上下文下 ``K`` 个候选，``x`` shape ``(B, K, N_tokens, hidden_dim)``，输出每个候选一个标量 logit
-``(B, K)``，供 softmax / ListNet / ListMLE 等使用。
 """
 
 
@@ -194,3 +190,4 @@ if __name__ == "__main__":
     logits = ls(x_ls)
     assert logits.shape == (b, k), logits.shape
     print("pointwise", s.shape, "listwise", logits.shape, "ok")
+    print(f"pointwise: {pw.count_params()}, listwise: {ls.count_params()}")
