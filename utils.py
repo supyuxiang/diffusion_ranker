@@ -906,7 +906,7 @@ def rollout_dit_with_steps(
 
     return img_counter
 
-
+##############################################################
 @torch.inference_mode()
 def rollout_dit_perclass32_and_save_repr(
     *,
@@ -1249,6 +1249,10 @@ def rollout_dit_perclass32_and_save_repr(
     if device.type == "cuda":
         torch.cuda.empty_cache()
     return repr_tensor
+
+
+##############################################################
+
 
 
 @torch.inference_mode()
