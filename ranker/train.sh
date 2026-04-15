@@ -3,9 +3,9 @@
 export CUDA_VISIBLE_DEVICES=0
 python /root/diffusion_ranker/ranker/train.py \
     --num_epochs 10 \
-    --output_dir /root/autodl-tmp/ranker_ckpt_pointwise_l06_s1 \
+    --output_dir /root/autodl-tmp/ranker_ckpt_pointwise_l06_s2 \
     --image_dir /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10 \
-    --candidate_repr_pt /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/mean/step_1_layer_0.6.pt \
+    --candidate_repr_pt /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/mean/step_0.25_layer_0.6.pt \
     --prompt_repr_pt /root/diffusion_ranker/ranker/prompt_repr_mean_pooling/from_hidden_states_ratio0.6.pt \
     --reward_path /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/reward_ls.json \
     --batch_size 32 \

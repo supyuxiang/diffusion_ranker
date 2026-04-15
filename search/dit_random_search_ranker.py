@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 r"""
-DiT **random search**：每轮从 K 个候选（预计算 suite 或在线 DiT）里用 **ranker 均分 logits** 选最优，
-写入 ``output_dir``；可选 init；最后算 FID/IS。
+离线 random search（ranker）：
 
-打分实现为 ``reward.ranker_mean_logit_score``（单键 ``repr_key`` 的 ``mean`` 向量 + prompt 表）。
+- 每轮从预计算 candidate pool 中随机抽 K 个候选；
+- 用 ``reward.ranker_mean_logit_score`` 打分；
+- 选最优并写图到 ``output_dir``，最后计算 FID/IS。
 
-**默认**未指定 ``precomputed_*`` 时自动填与 ``dit_random_search_clipscore`` / ``rollout.py`` 相同路径。
-
-``fk_search/dit_ranker.py`` 依赖本模块的 ``load_diffusion_ranker``、``repr_dict_to_tokens``、
-``mean_batch_ranker_score``、``slice_repr_batch`` 等符号。
+本脚本只支持 **预计算表征/图像**，不包含在线 DiT rollout 与 init 逻辑。
 """
 
 from __future__ import annotations
@@ -27,8 +25,6 @@ import torch.nn as nn
 from PIL import Image
 from tqdm import tqdm
 
-from diffusers import DiTPipeline
-
 _SEARCH = Path(__file__).resolve().parent
 _ROOT = _SEARCH.parent
 # 与 ``python3 search/...py`` 一致：脚本目录在 path 上，``reward`` 可解析；项目根供 ``utils`` / ``ranker``。
@@ -39,77 +35,9 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 from ranker.model import DiffusionRanker_CrossAttention, DiffusionRanker_MLP, DiffusionRanker_Transformer
 from reward import ranker_mean_logit_score
 from utils import (
-    DitRolloutReprCapture,
     compute_fid_is_from_dirs,
-    dit_loader,
-    rollout_dit_with_steps,
     set_seed,
 )
-
-CANDIDATE_SEED_HIGH = 2**31 - 1
-
-
-# ---------------------------------------------------------------------------
-# 步比例 -> DitRolloutReprCapture 的 step_ratio_ls
-# ---------------------------------------------------------------------------
-
-
-def _step_ratio_ls_from_ratios(
-    num_inference_steps: int, step_ratios: tuple[float, ...]
-) -> list[float]:
-    t = num_inference_steps
-    if t <= 1:
-        return [0.0]
-    return [float(r) for r in step_ratios] if step_ratios else [0.0]
-
-
-def make_repr_capture(
-    pipe: DiTPipeline,
-    *,
-    deno_steps: int,
-    guidance_scale: float,
-    layer_ratios: tuple[float, ...],
-    step_ratios: tuple[float, ...],
-    store_dtype: torch.dtype,
-    seed: int,
-) -> DitRolloutReprCapture:
-    return DitRolloutReprCapture(
-        pipe,
-        num_inference_steps=deno_steps,
-        guidance_scale=guidance_scale,
-        layer_ratios=layer_ratios,
-        step_ratio_ls=_step_ratio_ls_from_ratios(deno_steps, step_ratios),
-        store_dtype=store_dtype,
-        rollout_base_seed=seed,
-    )
-
-
-@torch.inference_mode()
-def rollout_dit_batch_with_repr(
-    pipe: DiTPipeline,
-    repr_capture: DitRolloutReprCapture,
-    num_steps: int,
-    n_this: int,
-    device: torch.device,
-    generator_seed: int,
-    guidance_scale: float,
-) -> tuple[list[Image.Image], list[int], dict]:
-    batch_labels_ls = torch.randint(0, 1000, (n_this,), device=device).tolist()
-    gen = torch.Generator(device=device).manual_seed(int(generator_seed))
-    repr_capture.set_capturing(True)
-    repr_capture.begin_batch(batch_labels_ls)
-    out = pipe(
-        class_labels=batch_labels_ls,
-        num_inference_steps=num_steps,
-        guidance_scale=guidance_scale,
-        generator=gen,
-    )
-    repr_capture.end_batch(0, 0, generator_seed=int(generator_seed))
-    rec = repr_capture.records.pop()
-    repr_dict = rec["repr"]
-    imgs = [im.copy() for im in out.images]
-    del out, gen
-    return imgs, batch_labels_ls, repr_dict
 
 
 def load_prompt_table(path: Path) -> torch.Tensor:
@@ -299,33 +227,191 @@ def load_precomputed_candidate_pool(
     return [_batch_record_to_pool_entry(rec, image_dir, source_hint=str(repr_pt)) for rec in batches]
 
 
+def _load_merged_repr_tensor(path: Path) -> torch.Tensor:
+    try:
+        obj = torch.load(path, map_location="cpu", mmap=True, weights_only=False)
+    except TypeError:
+        obj = torch.load(path, map_location="cpu")
+    except RuntimeError:
+        obj = torch.load(path, map_location="cpu", weights_only=False)
+    if isinstance(obj, torch.Tensor):
+        t = obj
+    elif isinstance(obj, dict) and "tensor" in obj:
+        t = obj["tensor"]
+    else:
+        raise ValueError(f"{path}: 期望 Tensor 或含 tensor 字段的字典")
+    if not isinstance(t, torch.Tensor) or t.dim() != 2:
+        raise ValueError(f"{path}: 期望 2D Tensor，得到 {type(t)} shape={getattr(t, 'shape', None)}")
+    return t
+
+
+def _sorted_candidate_image_paths(candidate_dir: Path) -> list[Path]:
+    return sorted(
+        candidate_dir.glob("image_*_*.png"),
+        key=lambda p: int(p.stem.split("_")[1]),
+    )
+
+
+def _load_images_labels_slice(
+    candidate_dir: Path,
+    start: int,
+    end: int,
+) -> tuple[list[Image.Image], list[int]]:
+    paths = _sorted_candidate_image_paths(candidate_dir)
+    if end > len(paths):
+        raise ValueError(
+            f"{candidate_dir}: 切片 [{start}:{end}) 越界（仅 {len(paths)} 张）；"
+            "请检查 --precomputed_suite_batch_index / --batch_size。"
+        )
+    sel = paths[start:end]
+    imgs: list[Image.Image] = []
+    labels: list[int] = []
+    for p in sel:
+        lab = int(p.stem.split("_")[2])
+        imgs.append(Image.open(p).convert("RGB").copy())
+        labels.append(lab)
+    return imgs, labels
+
+
+def _load_pool_from_merged_layout(
+    repr_mean_dir: Path,
+    repr_last_dir: Path,
+    image_root: Path,
+    num_candidates: int,
+    repr_keys: list[str],
+    *,
+    batch_index: int,
+    batch_size: int | None,
+) -> list[tuple[list[Image.Image], list[int], dict]]:
+    """
+    兼容 scripts/merge_repr_candidate_by_key.py 产物：
+    ``repr_dir/mean/{repr_key}.pt``、``repr_dir/last/{repr_key}.pt``。
+    行顺序按 idx0 全量后接 idx1 …，这里切出每个 candidate 的一个小批次。
+    """
+    if not repr_keys:
+        raise ValueError("merged layout 需要 repr_keys（至少 1 个）")
+
+    mean_tensors: dict[str, torch.Tensor] = {}
+    last_tensors: dict[str, torch.Tensor] = {}
+    n_rows: int | None = None
+    for k in repr_keys:
+        mean_pt = repr_mean_dir / f"{k}.pt"
+        last_pt = repr_last_dir / f"{k}.pt"
+        if not mean_pt.is_file():
+            raise FileNotFoundError(f"缺少 {mean_pt}")
+        t_mean = _load_merged_repr_tensor(mean_pt)
+        t_last = _load_merged_repr_tensor(last_pt) if last_pt.is_file() else t_mean
+        if t_last.shape != t_mean.shape:
+            raise ValueError(
+                f"{k}: mean/last 形状不一致 {tuple(t_mean.shape)} vs {tuple(t_last.shape)}"
+            )
+        if n_rows is None:
+            n_rows = int(t_mean.shape[0])
+        elif t_mean.shape[0] != n_rows:
+            raise ValueError(f"{k}: 行数 {t_mean.shape[0]} 与其它 key 的 {n_rows} 不一致")
+        mean_tensors[k] = t_mean
+        last_tensors[k] = t_last
+
+    assert n_rows is not None
+    if n_rows % num_candidates != 0:
+        raise ValueError(
+            f"合并表征总行数 {n_rows} 不能被 num_candidates={num_candidates} 整除。"
+        )
+    per_candidate = n_rows // num_candidates
+    bs = per_candidate if batch_size is None else int(batch_size)
+    start_local = int(batch_index) * bs
+    end_local = start_local + bs
+    if end_local > per_candidate:
+        raise IndexError(
+            f"merged 表征每个 candidate 仅 {per_candidate} 行，"
+            f"请求切片 [{start_local}:{end_local}) 越界。"
+        )
+
+    pool: list[tuple[list[Image.Image], list[int], dict]] = []
+    for idx in range(num_candidates):
+        row_start = idx * per_candidate + start_local
+        row_end = idx * per_candidate + end_local
+        candidate_dir = image_root / f"candidate_{idx:04d}"
+        imgs, labels = _load_images_labels_slice(candidate_dir, start_local, end_local)
+        repr_dict = {
+            k: {
+                "mean": mean_tensors[k][row_start:row_end].float().clone(),
+                "last": last_tensors[k][row_start:row_end].float().clone(),
+            }
+            for k in repr_keys
+        }
+        pool.append((imgs, labels, repr_dict))
+    return pool
+
+
 def load_precomputed_pool_from_rollout_suite(
     repr_dir: Path,
     image_root: Path,
     num_candidates: int,
     batch_index: int = 0,
-) -> list[tuple[list[Image.Image], list[int], dict]]:
+    *,
+    repr_keys: list[str] | None = None,
+    batch_size: int | None = None,
+) -> tuple[list[tuple[list[Image.Image], list[int], dict]], dict]:
     repr_dir = Path(repr_dir).resolve()
     image_root = Path(image_root).resolve()
-    pool: list[tuple[list[Image.Image], list[int], dict]] = []
-    for idx in range(num_candidates):
-        repr_pt = repr_dir / f"idx{idx}.pt"
-        cand_dir = image_root / f"candidate_{idx:04d}"
-        if not repr_pt.is_file():
-            raise FileNotFoundError(f"缺少 {repr_pt}")
-        try:
-            obj = torch.load(repr_pt, map_location="cpu", weights_only=False)
-        except TypeError:
-            obj = torch.load(repr_pt, map_location="cpu")
-        batches = obj.get("batches")
-        if not batches or batch_index >= len(batches):
-            raise IndexError(f"{repr_pt}: batches 无效或 batch_index 越界")
-        pool.append(
-            _batch_record_to_pool_entry(
-                batches[batch_index], cand_dir, source_hint=f"{repr_pt}"
+    if repr_dir.name == "mean":
+        repr_mean_dir = repr_dir
+        repr_last_dir = repr_dir.parent / "last"
+        repr_root = repr_dir.parent
+    else:
+        repr_root = repr_dir
+        repr_mean_dir = repr_root / "mean"
+        repr_last_dir = repr_root / "last"
+    idx0 = repr_root / "idx0.pt"
+    if idx0.is_file():
+        pool: list[tuple[list[Image.Image], list[int], dict]] = []
+        for idx in range(num_candidates):
+            repr_pt = repr_root / f"idx{idx}.pt"
+            cand_dir = image_root / f"candidate_{idx:04d}"
+            if not repr_pt.is_file():
+                raise FileNotFoundError(f"缺少 {repr_pt}")
+            try:
+                obj = torch.load(repr_pt, map_location="cpu", weights_only=False)
+            except TypeError:
+                obj = torch.load(repr_pt, map_location="cpu")
+            batches = obj.get("batches")
+            if not batches or batch_index >= len(batches):
+                raise IndexError(f"{repr_pt}: batches 无效或 batch_index 越界")
+            pool.append(
+                _batch_record_to_pool_entry(
+                    batches[batch_index], cand_dir, source_hint=f"{repr_pt}"
+                )
             )
+        return pool, {"layout": "idx_pt", "batch_index": int(batch_index)}
+
+    if not repr_keys:
+        raise FileNotFoundError(
+            f"缺少 {idx0}，且未提供 repr_keys，无法从 merged 布局加载。"
         )
-    return pool
+    first_mean = repr_mean_dir / f"{repr_keys[0]}.pt"
+    if not first_mean.is_file():
+        avail = sorted(repr_mean_dir.glob("*.pt"))
+        avail_stems = [p.stem for p in avail[:20]]
+        raise FileNotFoundError(
+            f"缺少 {idx0}，且 merged 文件不存在: {first_mean}。\n"
+            f"mean/ 下可用键示例: {avail_stems}"
+        )
+    pool = _load_pool_from_merged_layout(
+        repr_mean_dir,
+        repr_last_dir,
+        image_root,
+        num_candidates,
+        repr_keys,
+        batch_index=batch_index,
+        batch_size=batch_size,
+    )
+    return pool, {
+        "layout": "mean_last_merge",
+        "batch_index": int(batch_index),
+        "batch_size": int(batch_size) if batch_size is not None else None,
+        "repr_keys": list(repr_keys),
+    }
 
 
 def copy_init_images_from_rollout_candidate(
@@ -436,8 +522,6 @@ def verify_precomputed_pool_ranker_keys(
 @torch.inference_mode()
 def run_random_search_ranker(
     *,
-    pipe: DiTPipeline | None,
-    repr_capture: DitRolloutReprCapture | None,
     ranker: nn.Module,
     prompt_table: torch.Tensor,
     repr_key: str,
@@ -445,28 +529,24 @@ def run_random_search_ranker(
     num_samples: int,
     batch_size: int,
     num_candidates: int,
-    deno_steps: int,
     device: torch.device,
     seed: int,
-    guidance_scale: float,
-    n_init: int,
-    precomputed_pool: list[tuple[list[Image.Image], list[int], dict]] | None,
+    precomputed_pool: list[tuple[list[Image.Image], list[int], dict]],
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
-    img_counter = n_init
-    num_rounds = (num_samples - n_init + batch_size - 1) // batch_size
+    img_counter = 0
+    num_rounds = (num_samples + batch_size - 1) // batch_size
 
-    pool_n = len(precomputed_pool) if precomputed_pool is not None else 0
-    if precomputed_pool is not None:
-        if pool_n < num_candidates:
-            raise ValueError(f"预计算候选数 {pool_n} < --num_candidates={num_candidates}")
-        b0 = len(precomputed_pool[0][1])
-        for i, (_, lab, _) in enumerate(precomputed_pool):
-            if len(lab) != b0:
-                raise ValueError(f"预计算各 candidate batch 大小须一致: 0={b0} vs {i}={len(lab)}")
-        if b0 != batch_size:
-            raise ValueError(f"预计算 batch 大小 {b0} != --batch_size={batch_size}")
+    pool_n = len(precomputed_pool)
+    if pool_n < num_candidates:
+        raise ValueError(f"预计算候选数 {pool_n} < --num_candidates={num_candidates}")
+    b0 = len(precomputed_pool[0][1])
+    for i, (_, lab, _) in enumerate(precomputed_pool):
+        if len(lab) != b0:
+            raise ValueError(f"预计算各 candidate batch 大小须一致: 0={b0} vs {i}={len(lab)}")
+    if b0 != batch_size:
+        raise ValueError(f"预计算 batch 大小 {b0} != --batch_size={batch_size}")
 
     for _ in tqdm(range(num_rounds), desc="random search (ranker)"):
         n_this = min(batch_size, num_samples - img_counter)
@@ -477,33 +557,17 @@ def run_random_search_ranker(
         best_imgs: list[Image.Image] | None = None
         best_labels: list[int] | None = None
 
-        if precomputed_pool is not None:
-            idxs = rng.choice(pool_n, size=num_candidates, replace=False).tolist()
-            candidate_iter: list[tuple[list[Image.Image], list[int], dict]] = []
-            for j in idxs:
-                imgs_f, labels_f, repr_f = precomputed_pool[j]
-                if n_this < len(imgs_f):
-                    imgs_s = imgs_f[:n_this]
-                    labels_s = labels_f[:n_this]
-                    repr_s = slice_repr_batch(repr_f, n_this)
-                else:
-                    imgs_s, labels_s, repr_s = imgs_f, labels_f, repr_f
-                candidate_iter.append((imgs_s, labels_s, repr_s))
-        else:
-            assert pipe is not None and repr_capture is not None
-            candidate_iter = []
-            for _k in range(num_candidates):
-                cand_seed = int(rng.integers(0, CANDIDATE_SEED_HIGH))
-                imgs, labels, repr_d = rollout_dit_batch_with_repr(
-                    pipe,
-                    repr_capture,
-                    deno_steps,
-                    n_this,
-                    device,
-                    cand_seed,
-                    guidance_scale,
-                )
-                candidate_iter.append((imgs, labels, repr_d))
+        idxs = rng.choice(pool_n, size=num_candidates, replace=False).tolist()
+        candidate_iter: list[tuple[list[Image.Image], list[int], dict]] = []
+        for j in idxs:
+            imgs_f, labels_f, repr_f = precomputed_pool[j]
+            if n_this < len(imgs_f):
+                imgs_s = imgs_f[:n_this]
+                labels_s = labels_f[:n_this]
+                repr_s = slice_repr_batch(repr_f, n_this)
+            else:
+                imgs_s, labels_s, repr_s = imgs_f, labels_f, repr_f
+            candidate_iter.append((imgs_s, labels_s, repr_s))
 
         for imgs, labels, repr_d in candidate_iter:
             score = mean_ranker_score_batch(
@@ -522,14 +586,9 @@ def run_random_search_ranker(
             img_counter += 1
 
 
-def _parse_float_list(s: str) -> tuple[float, ...]:
-    return tuple(float(x.strip()) for x in s.split(",") if x.strip())
-
-
-def default_candidate_suite_paths(guidance_scale: float, deno_steps: int) -> tuple[str, str]:
-    gs, T = float(guidance_scale), int(deno_steps)
-    image_root = f"/root/autodl-tmp/dit_candidates_50k_cfg{gs}_deno{T}"
-    repr_dir = f"/root/autodl-tmp/repr_candidate_deno{T}_cfg{gs}"
+def default_candidate_suite_paths() -> tuple[str, str]:
+    image_root = "/root/autodl-tmp/dit_candidates_50k_cfg1.0_deno10"
+    repr_dir = "/root/autodl-tmp/repr_candidate_deno10_cfg1.0/mean"
     return image_root, repr_dir
 
 
@@ -548,34 +607,13 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="repr 字典键，如 s1_r0.6（须与预计算 / 抓取一致）",
     )
-    p.add_argument("--dit_path", type=str, default=str(Path("/root/autodl-tmp/DiT-XL-2-256")))
     p.add_argument("--imagenet_val", type=str, default="/root/autodl-tmp/imagenet/val")
     p.add_argument("--output_dir", type=str, default="/root/autodl-tmp/eval_dit_random_search_ranker")
     p.add_argument("--num_samples", type=int, default=50_000)
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--num_candidates", type=int, default=8)
-    p.add_argument("--deno_steps", type=int, default=10)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--guidance_scale", type=float, default=1.0)
-    p.add_argument(
-        "--fp16",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    p.add_argument("--init_random_samples", type=int, default=1024)
     p.add_argument("--metrics_batch_size", type=int, default=64)
-    p.add_argument(
-        "--layer_ratios",
-        type=str,
-        default="0.6",
-        help="逗号分隔；须含 repr_key 对应层比",
-    )
-    p.add_argument(
-        "--step_ratios",
-        type=str,
-        default="0.0",
-        help="逗号分隔去噪步比例（0..1）",
-    )
     p.add_argument("--num_attention_heads", type=int, default=4)
     p.add_argument("--dropout", type=float, default=0.1)
     p.add_argument("--precomputed_candidates_pt", type=str, default="")
@@ -584,12 +622,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--precomputed_suite_repr_dir", type=str, default="")
     p.add_argument("--precomputed_suite_num_candidates", type=int, default=16)
     p.add_argument("--precomputed_suite_batch_index", type=int, default=0)
-    p.add_argument("--init_suite_candidate_idx", type=int, default=0)
-    p.add_argument(
-        "--online_rollout_candidates",
-        action="store_true",
-        help="search 每轮在线 DiT 采样；默认用预计算池",
-    )
     return p.parse_args()
 
 
@@ -597,23 +629,21 @@ def main() -> None:
     args = parse_args()
 
     if (
-        not args.online_rollout_candidates
-        and not str(args.precomputed_candidates_pt).strip()
+        not str(args.precomputed_candidates_pt).strip()
         and not str(args.precomputed_suite_image_root).strip()
         and not str(args.precomputed_suite_repr_dir).strip()
     ):
-        ir, rd = default_candidate_suite_paths(args.guidance_scale, args.deno_steps)
+        ir, rd = default_candidate_suite_paths()
         args.precomputed_suite_image_root = ir
         args.precomputed_suite_repr_dir = rd
         print(
-            "未指定 precomputed_*，使用默认候选路径：\n"
+            "未指定 precomputed_*，使用默认离线路径：\n"
             f"  --precomputed_suite_image_root {ir}\n"
             f"  --precomputed_suite_repr_dir {rd}"
         )
 
     output_dir = Path(args.output_dir).expanduser().resolve()
     imagenet_val = Path(args.imagenet_val).expanduser().resolve()
-    dit_path = Path(args.dit_path).expanduser().resolve()
     ckpt_p = Path(args.ranker_ckpt).expanduser().resolve()
     prompt_p = Path(args.prompt_repr_pt).expanduser().resolve()
 
@@ -630,24 +660,15 @@ def main() -> None:
         raise SystemExit("precomputed_suite_image_root 需要 precomputed_suite_repr_dir")
 
     precomputed = use_pt_single or use_suite
-    if not args.online_rollout_candidates and not precomputed:
+    if not precomputed:
         raise SystemExit(
-            "须指定预计算 suite/pt，或加 --online_rollout_candidates 做在线采样。"
+            "当前脚本固定离线模式：须指定预计算 suite/pt。"
         )
 
-    init_from_suite = use_suite and args.init_random_samples > 0
-    need_dit = (args.online_rollout_candidates and not precomputed) or (
-        args.init_random_samples > 0 and not init_from_suite
-    )
-    if need_dit and not dit_path.is_dir():
-        raise SystemExit(f"DiT 路径未找到: {dit_path}")
-
-    assert 0 <= args.init_random_samples <= args.num_samples
     output_dir.mkdir(parents=True, exist_ok=True)
 
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dtype_s = "fp16" if args.fp16 else "fp32"
 
     print(f"加载 ranker: {ckpt_p}")
     ranker = load_ranker_from_ckpt(
@@ -675,13 +696,15 @@ def main() -> None:
 
     precomputed_pool = None
     if use_suite:
-        precomputed_pool = load_precomputed_pool_from_rollout_suite(
+        precomputed_pool, pre_meta = load_precomputed_pool_from_rollout_suite(
             Path(args.precomputed_suite_repr_dir).expanduser().resolve(),
             Path(args.precomputed_suite_image_root).expanduser().resolve(),
             int(args.precomputed_suite_num_candidates),
             batch_index=int(args.precomputed_suite_batch_index),
+            repr_keys=[args.repr_key],
+            batch_size=int(args.batch_size),
         )
-        print(f"预计算 suite: {len(precomputed_pool)} candidates")
+        print(f"预计算 suite: {len(precomputed_pool)} candidates  layout={pre_meta.get('layout')}")
     elif use_pt_single:
         precomputed_pool = load_precomputed_candidate_pool(
             Path(args.precomputed_candidates_pt).expanduser().resolve(),
@@ -692,92 +715,28 @@ def main() -> None:
     if precomputed_pool is not None:
         verify_pool_repr_key(precomputed_pool, args.repr_key)
 
-    layer_ratios = _parse_float_list(args.layer_ratios)
-    step_ratios = _parse_float_list(args.step_ratios)
-
-    pipe: DiTPipeline | None = None
-    repr_capture: DitRolloutReprCapture | None = None
-    if need_dit:
-        print(f"加载 DiT: {dit_path} ({dtype_s})")
-        pipe = dit_loader(dit_path, device, dtype=dtype_s)
-        pipe.set_progress_bar_config(disable=True)
-        store_dtype = torch.float16 if args.fp16 else torch.float32
-        repr_capture = make_repr_capture(
-            pipe,
-            deno_steps=args.deno_steps,
-            guidance_scale=args.guidance_scale,
-            layer_ratios=layer_ratios,
-            step_ratios=step_ratios,
-            store_dtype=store_dtype,
-            seed=args.seed,
-        )
-        repr_capture.install()
-
-    try:
-        n_init = 0
-        if args.init_random_samples > 0:
-            if init_from_suite:
-                root = Path(args.precomputed_suite_image_root).expanduser().resolve()
-                icand = int(args.init_suite_candidate_idx)
-                cand_dir = root / f"candidate_{icand:04d}"
-                n_init = copy_init_images_from_rollout_candidate(
-                    output_dir, cand_dir, args.init_random_samples
-                )
-                print(f"init: 从 {cand_dir} 复制 {n_init} 张")
-            else:
-                assert pipe is not None
-                if repr_capture is not None:
-                    repr_capture.set_capturing(False)
-                n_init = rollout_dit_with_steps(
-                    pipe,
-                    output_dir,
-                    args.deno_steps,
-                    args.init_random_samples,
-                    args.batch_size,
-                    device,
-                    args.seed,
-                    guidance_scale=args.guidance_scale,
-                    repr_capture=None,
-                )
-                print(f"init: DiT 写入 {n_init} 张")
-                if repr_capture is not None:
-                    repr_capture.set_capturing(True)
-        else:
-            print("init: 跳过")
-
-        run_random_search_ranker(
-            pipe=pipe,
-            repr_capture=repr_capture,
-            ranker=ranker,
-            prompt_table=prompt_table,
-            repr_key=args.repr_key,
-            output_dir=output_dir,
-            num_samples=args.num_samples,
-            batch_size=args.batch_size,
-            num_candidates=args.num_candidates,
-            deno_steps=args.deno_steps,
-            device=device,
-            seed=args.seed,
-            guidance_scale=args.guidance_scale,
-            n_init=n_init,
-            precomputed_pool=precomputed_pool,
-        )
-    finally:
-        if repr_capture is not None:
-            repr_capture.remove()
+    print("init: 固定关闭（n_init=0）")
+    run_random_search_ranker(
+        ranker=ranker,
+        prompt_table=prompt_table,
+        repr_key=args.repr_key,
+        output_dir=output_dir,
+        num_samples=args.num_samples,
+        batch_size=args.batch_size,
+        num_candidates=args.num_candidates,
+        device=device,
+        seed=args.seed,
+        precomputed_pool=precomputed_pool,
+    )
 
     cfg = {
         "ranker_ckpt": str(ckpt_p),
         "prompt_repr_pt": str(prompt_p),
         "repr_key": args.repr_key,
-        "layer_ratios": list(layer_ratios),
-        "step_ratios": list(step_ratios),
         "output_dir": str(output_dir),
         "num_samples": args.num_samples,
         "batch_size": args.batch_size,
         "num_candidates": args.num_candidates,
-        "deno_steps": args.deno_steps,
-        "guidance_scale": args.guidance_scale,
         "seed": args.seed,
     }
     (output_dir / "config.json").write_text(

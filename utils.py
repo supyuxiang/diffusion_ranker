@@ -907,8 +907,348 @@ def rollout_dit_with_steps(
     return img_counter
 
 
+@torch.inference_mode()
+def rollout_dit_perclass32_and_save_repr(
+    *,
+    layer_ratio: float,
+    step_ratio: float,
+    image_output_dir: Path | str,
+    repr_output_pt: Path | str,
+    model_name: str | Path = "dit-xl-2-256",
+    num_inference_steps: int = 10,
+    guidance_scale: float = 1.0,
+    batch_size: int = 256,
+    seed: int = 42,
+    dtype: str = "bf16",
+    device: torch.device | str | None = None,
+    image_size: int = 256,
+    pooling_mode: str = "mean",
+    mc: int = 4,
+    store_dtype: torch.dtype = torch.float16,
+    jpeg_quality: int = 92,
+    png_compress_level: int = 1,
+) -> torch.Tensor:
+    """
+    输入 ``layer_ratio`` + ``step_ratio``，生成 32x1000 个 tensor 样本，并在对应 step 处做 MC 补全评估 reward。
 
+    产物：
+    - 图像：``image_output_dir/image_{global_idx:05d}_{label:05d}_mc{j:02d}.png``（按 sample 顺序，每个 sample 连续 mc 张）
+    - 表征+reward：``repr_output_pt``（同顺序 ``tensor``、``reward``）
+    - 返回：``tensor``，shape = ``(32000, hidden_dim)``
+    """
+    if not (0.0 <= float(layer_ratio) <= 1.0):
+        raise ValueError(f"layer_ratio 应在 [0,1]，得到 {layer_ratio}")
+    if not (0.0 <= float(step_ratio) <= 1.0):
+        raise ValueError(f"step_ratio 应在 [0,1]，得到 {step_ratio}")
+    if pooling_mode not in ("mean", "last"):
+        raise ValueError(f"pooling_mode 仅支持 mean/last，得到 {pooling_mode!r}")
+    if int(mc) <= 0:
+        raise ValueError(f"mc 必须为正整数，得到 {mc}")
 
+    image_output_dir = Path(image_output_dir).expanduser().resolve()
+    repr_output_pt = Path(repr_output_pt).expanduser().resolve()
+    image_output_dir.mkdir(parents=True, exist_ok=True)
+    repr_output_pt.parent.mkdir(parents=True, exist_ok=True)
+
+    if device is None:
+        device = set_device()
+    else:
+        device = torch.device(device)
+
+    set_seed(seed)
+    pipe = dit_loader(model_name, device=device, dtype=dtype)
+    pipe.set_progress_bar_config(disable=True)
+    ensure_image_reward_on_path()
+    try:
+        from search.reward import load_imagereward
+    except ModuleNotFoundError:
+        # 兼容从 search/ 目录直接运行的旧入口
+        from reward import load_imagereward
+    rm_model = load_imagereward(device)
+
+    num_classes, per_class = 1000, 32
+    num_samples = num_classes * per_class
+    labels_all = [c for c in range(num_classes) for _ in range(per_class)]
+    num_batches = (num_samples + batch_size - 1) // batch_size
+
+    repr_capture = DitRolloutReprCapture(
+        pipe,
+        num_inference_steps=int(num_inference_steps),
+        guidance_scale=float(guidance_scale),
+        layer_ratios=(float(layer_ratio),),
+        step_ratio_ls=[float(step_ratio)],
+        store_dtype=store_dtype,
+        rollout_base_seed=seed,
+    )
+    repr_capture.install()
+
+    step_idx = min(
+        int(num_inference_steps) - 1,
+        max(0, round(float(step_ratio) * (int(num_inference_steps) - 1))),
+    )
+    # 先完成到 step_idx（包含该步）后，从后续 timesteps 做 MC 补全。
+    k_completed = step_idx + 1
+    repr_key = f"s{step_idx}_r{float(layer_ratio):g}"
+
+    repr_chunks: list[torch.Tensor] = []
+    reward_chunks: list[torch.Tensor] = []
+    img_counter = 0
+
+    def _broadcast_timesteps(t, latent_model_input: torch.Tensor) -> torch.Tensor:
+        if not torch.is_tensor(t):
+            is_mps = latent_model_input.device.type == "mps"
+            is_npu = latent_model_input.device.type == "npu"
+            if isinstance(t, float):
+                dt = torch.float32 if (is_mps or is_npu) else torch.float64
+            else:
+                dt = torch.int32 if (is_mps or is_npu) else torch.int64
+            timesteps = torch.tensor([t], dtype=dt, device=latent_model_input.device)
+        elif len(t.shape) == 0:
+            timesteps = t[None].to(latent_model_input.device)
+        else:
+            timesteps = t
+        return timesteps.expand(latent_model_input.shape[0])
+
+    def _run_prefix_and_capture(
+        batch_labels_ls: list[int],
+        generator: torch.Generator,
+        batch_idx: int,
+        image_index_start: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, int, torch.Tensor, torch.Tensor]:
+        batch_num_samples = len(batch_labels_ls)
+        latent_size = pipe.transformer.config.sample_size
+        latent_channels = pipe.transformer.config.in_channels
+
+        latents = torch.randn(
+            (batch_num_samples, latent_channels, latent_size, latent_size),
+            generator=generator,
+            device=pipe._execution_device,
+            dtype=pipe.transformer.dtype,
+        )
+        x = torch.cat([latents] * 2, dim=0) if guidance_scale > 1 else latents
+
+        cls = torch.tensor(batch_labels_ls, device=pipe._execution_device).reshape(-1)
+        cls_null = torch.tensor([1000] * batch_num_samples, device=pipe._execution_device)
+        class_labels_input = torch.cat([cls, cls_null], 0) if guidance_scale > 1 else cls
+
+        pipe.scheduler.set_timesteps(int(num_inference_steps))
+        timesteps = pipe.scheduler.timesteps
+        k = min(int(k_completed), len(timesteps))
+
+        repr_capture.set_capturing(True)
+        repr_capture.begin_batch(batch_labels_ls)
+        for t in timesteps[:k]:
+            if guidance_scale > 1:
+                half = x[: len(x) // 2]
+                x = torch.cat([half, half], dim=0)
+            x = pipe.scheduler.scale_model_input(x, t)
+
+            timesteps_b = _broadcast_timesteps(t, x)
+            noise_pred = pipe.transformer(
+                x, timestep=timesteps_b, class_labels=class_labels_input
+            ).sample
+            if guidance_scale > 1:
+                eps, tail = noise_pred[:, :latent_channels], noise_pred[:, latent_channels:]
+                cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
+                half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
+                eps = torch.cat([half_eps, half_eps], dim=0)
+                noise_pred = torch.cat([eps, tail], dim=1)
+            if pipe.transformer.config.out_channels // 2 == latent_channels:
+                model_output, _ = torch.split(noise_pred, latent_channels, dim=1)
+            else:
+                model_output = noise_pred
+            x = pipe.scheduler.step(model_output, t, x, generator=generator).prev_sample
+
+        repr_capture.end_batch(
+            batch_idx, image_index_start, generator_seed=seed + batch_idx
+        )
+        rec = repr_capture.records.pop()
+        repr_dict = rec["repr"]
+        if repr_key not in repr_dict:
+            raise KeyError(
+                f"未抓到 repr_key={repr_key!r}；当前 keys={list(repr_dict.keys())[:8]}"
+            )
+        repr_batch = repr_dict[repr_key][pooling_mode].clone()
+        # DPMSolverMultistepScheduler 内部有 step_index / model_outputs 状态；
+        # 后续每个 MC 分支都应从同一 prefix 终态独立继续，避免状态串扰导致越界。
+        import copy
+        scheduler_after_prefix = copy.deepcopy(pipe.scheduler)
+        return x, class_labels_input, latent_channels, timesteps, repr_batch, scheduler_after_prefix
+
+    def _decode_suffix_mc_batch(
+        x_start: torch.Tensor,
+        class_labels_input: torch.Tensor,
+        latent_channels: int,
+        timesteps: torch.Tensor,
+        scheduler_after_prefix,
+        mc_index: int,
+        batch_idx: int,
+    ) -> list[Image.Image]:
+        import copy
+        scheduler_mc = copy.deepcopy(scheduler_after_prefix)
+        gen_mc = torch.Generator(device=x_start.device).manual_seed(
+            int(seed) + 10_000 + batch_idx * 9_973 + mc_index * 67
+        )
+        x = x_start.clone()
+        for t in timesteps[k_completed:]:
+            if guidance_scale > 1:
+                half = x[: len(x) // 2]
+                x = torch.cat([half, half], dim=0)
+            x = scheduler_mc.scale_model_input(x, t)
+            timesteps_b = _broadcast_timesteps(t, x)
+            noise_pred = pipe.transformer(
+                x, timestep=timesteps_b, class_labels=class_labels_input
+            ).sample
+            if guidance_scale > 1:
+                eps, tail = noise_pred[:, :latent_channels], noise_pred[:, latent_channels:]
+                cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
+                half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
+                eps = torch.cat([half_eps, half_eps], dim=0)
+                noise_pred = torch.cat([eps, tail], dim=1)
+            if pipe.transformer.config.out_channels // 2 == latent_channels:
+                model_output, _ = torch.split(noise_pred, latent_channels, dim=1)
+            else:
+                model_output = noise_pred
+            variance_noise = torch.randn(
+                x.shape,
+                generator=gen_mc,
+                device=x.device,
+                dtype=x.dtype,
+            )
+            x = scheduler_mc.step(
+                model_output, t, x, generator=gen_mc, variance_noise=variance_noise
+            ).prev_sample
+
+        if guidance_scale > 1:
+            latents, _ = x.chunk(2, dim=0)
+        else:
+            latents = x
+        latents = 1 / pipe.vae.config.scaling_factor * latents
+        samples = pipe.vae.decode(latents).sample
+        samples = (samples / 2 + 0.5).clamp(0, 1)
+
+        out_images: list[Image.Image] = []
+        for bi in range(samples.shape[0]):
+            arr = samples[bi].detach().cpu().permute(1, 2, 0).float().numpy()
+            out_images.append(
+                Image.fromarray((arr * 255.0).round().clip(0, 255).astype("uint8"))
+            )
+        return out_images
+
+    try:
+        pbar = tqdm(
+            range(num_batches),
+            desc=f"perclass32+mc{mc} s={step_idx} r={float(layer_ratio):g}",
+            leave=False,
+        )
+        for batch_idx in pbar:
+            start = batch_idx * batch_size
+            end = min(start + batch_size, num_samples)
+            batch_labels_ls = labels_all[start:end]
+            batch_prompts = [f"a photo of a {labels_1k[int(l)]}" for l in batch_labels_ls]
+            gen = torch.Generator(device=device).manual_seed(seed + batch_idx)
+
+            x_mid, class_input, latent_c, timesteps, repr_batch, scheduler_after_prefix = _run_prefix_and_capture(
+                batch_labels_ls=batch_labels_ls,
+                generator=gen,
+                batch_idx=batch_idx,
+                image_index_start=img_counter,
+            )
+            repr_chunks.append(repr_batch)
+            batch_n = len(batch_labels_ls)
+            reward_sum = torch.zeros(batch_n, dtype=torch.float32)
+
+            for mc_i in range(int(mc)):
+                batch_images = _decode_suffix_mc_batch(
+                    x_start=x_mid,
+                    class_labels_input=class_input,
+                    latent_channels=latent_c,
+                    timesteps=timesteps,
+                    scheduler_after_prefix=scheduler_after_prefix,
+                    mc_index=mc_i,
+                    batch_idx=batch_idx,
+                )
+                to_save: list[tuple[Path, Image.Image]] = []
+                for i, (label, prompt, img) in enumerate(
+                    zip(batch_labels_ls, batch_prompts, batch_images)
+                ):
+                    img = _prepare_pil_for_save(img, image_size)
+                    save_path = image_output_dir / (
+                        f"image_{(img_counter + i):05d}_{int(label):05d}_mc{mc_i:02d}.png"
+                    )
+                    to_save.append((save_path, img.copy()))
+                    reward_sum[i] += float(rm_model.score(prompt, img))
+
+                with ThreadPoolExecutor(max_workers=_ROLLOUT_SAVE_WORKERS) as ex:
+                    futures = [
+                        ex.submit(
+                            _save_pil_task,
+                            path,
+                            im,
+                            fmt="png",
+                            jpeg_quality=jpeg_quality,
+                            png_compress_level=png_compress_level,
+                        )
+                        for path, im in to_save
+                    ]
+                    for fut in as_completed(futures):
+                        fut.result()
+
+                del batch_images, to_save
+            reward_chunks.append(reward_sum / float(mc))
+            img_counter += batch_n
+            del gen, x_mid, class_input, timesteps, repr_batch, scheduler_after_prefix, reward_sum
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+    finally:
+        repr_capture.remove()
+
+    if len(repr_chunks) != num_batches:
+        raise RuntimeError(f"repr chunks 数 {len(repr_chunks)} 与批次数 {num_batches} 不一致")
+    # 按全局样本顺序拼成单个大 tensor（不是按 batch 保存）
+    repr_tensor = torch.cat(repr_chunks, dim=0).contiguous()
+    reward_tensor = torch.cat(reward_chunks, dim=0).contiguous()
+    if not isinstance(repr_tensor, torch.Tensor) or not isinstance(reward_tensor, torch.Tensor):
+        raise RuntimeError("repr/reward 必须是 torch.Tensor")
+    if repr_tensor.dim() != 2:
+        raise RuntimeError(f"repr_tensor 期望 2D，得到 {tuple(repr_tensor.shape)}")
+    if reward_tensor.dim() != 1:
+        raise RuntimeError(f"reward_tensor 期望 1D，得到 {tuple(reward_tensor.shape)}")
+    if repr_tensor.shape[0] != num_samples:
+        raise RuntimeError(f"repr tensor 行数 {repr_tensor.shape[0]} != 期望 {num_samples}")
+    if reward_tensor.shape[0] != num_samples:
+        raise RuntimeError(f"reward tensor 行数 {reward_tensor.shape[0]} != 期望 {num_samples}")
+    if img_counter != num_samples:
+        raise RuntimeError(f"保存图像数 {img_counter} != 期望 {num_samples}")
+
+    torch.save(
+        {
+            "tensor": repr_tensor,
+            "reward": reward_tensor,
+            "n_images": int(repr_tensor.shape[0]),
+            "hidden_dim": int(repr_tensor.shape[1]),
+            "tensor_shape": list(repr_tensor.shape),
+            "reward_shape": list(reward_tensor.shape),
+            "repr_key": repr_key,
+            "step_ratio": float(step_ratio),
+            "step_index": int(step_idx),
+            "layer_ratio": float(layer_ratio),
+            "pooling_mode": pooling_mode,
+            "num_inference_steps": int(num_inference_steps),
+            "guidance_scale": float(guidance_scale),
+            "mc": int(mc),
+            "seed": int(seed),
+            "dtype": str(dtype),
+            "image_dir": str(image_output_dir),
+            "image_filename_pattern": "image_{global_idx:05d}_{imagenet_label:05d}_mc{mc_idx:02d}.png",
+            "label_order": "class-major, each class repeated 32 times",
+        },
+        repr_output_pt,
+    )
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    return repr_tensor
 
 
 @torch.inference_mode()

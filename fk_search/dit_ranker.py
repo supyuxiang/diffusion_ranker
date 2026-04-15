@@ -180,6 +180,8 @@ def main() -> None:
         suite_root,
         args.num_candidates,
         batch_index=args.batch_index,
+        repr_keys=selected_keys,
+        batch_size=args.batch_size,
     )
     dsr.verify_precomputed_pool_ranker_keys(
         pool, selected_keys, repr_dir_hint=repr_d
