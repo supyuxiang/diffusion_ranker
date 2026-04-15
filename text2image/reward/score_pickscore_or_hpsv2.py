@@ -37,6 +37,40 @@ def _score_with_pickscore(
         return (image_emb * text_emb).sum(dim=-1).float().cpu()
 
 
+def _score_with_hpsv2(prompt: str, image_paths: list[Path]) -> torch.Tensor:
+    import hpsv2  # type: ignore
+
+    vals: list[float] = []
+    for p in image_paths:
+        path_s = str(p)
+        score = None
+        for kwargs in (
+            {"prompt": prompt},
+            {"prompts": [prompt]},
+            {"caption": prompt},
+        ):
+            try:
+                out = hpsv2.score(path_s, **kwargs)
+            except Exception:
+                continue
+            if isinstance(out, (list, tuple)):
+                score = float(out[0])
+            else:
+                score = float(out)
+            break
+        if score is None:
+            try:
+                out = hpsv2.score([path_s], [prompt])
+                score = float(out[0]) if isinstance(out, (list, tuple)) else float(out)
+            except Exception as e:
+                raise RuntimeError(
+                    "failed to call hpsv2.score; please check installed hpsv2 API and adapt "
+                    "text2image/reward/score_pickscore_or_hpsv2.py"
+                ) from e
+        vals.append(score)
+    return torch.tensor(vals, dtype=torch.float32)
+
+
 @torch.inference_mode()
 def main() -> None:
     p = argparse.ArgumentParser("Score candidate pool with PickScore/HPSv2")
@@ -49,16 +83,13 @@ def main() -> None:
     p.add_argument("--device", type=str, default="cuda")
     args = p.parse_args()
 
-    if args.mode == "hpsv2":
-        raise NotImplementedError(
-            "hpsv2 direct scorer varies by installed package version. "
-            "Use --mode pickscore now, or plug your local hpsv2 API in this file."
-        )
-
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     out_dir = ensure_dir(args.output_dir)
-    model = AutoModel.from_pretrained(args.model_name_or_path, local_files_only=True).to(device).eval()
-    processor = AutoProcessor.from_pretrained(args.model_name_or_path, local_files_only=True)
+    model = None
+    processor = None
+    if args.mode == "pickscore":
+        model = AutoModel.from_pretrained(args.model_name_or_path, local_files_only=True).to(device).eval()
+        processor = AutoProcessor.from_pretrained(args.model_name_or_path, local_files_only=True)
     pdirs = list_prompt_dirs(args.pool_root, args.benchmark or None)
     if not pdirs:
         raise FileNotFoundError(f"no prompt folders under {args.pool_root}")
@@ -74,8 +105,11 @@ def main() -> None:
         chunks: list[torch.Tensor] = []
         for i in range(0, len(img_paths), int(args.batch_size)):
             batch_paths = img_paths[i : i + int(args.batch_size)]
-            batch_images = [Image.open(x).convert("RGB").copy() for x in batch_paths]
-            chunks.append(_score_with_pickscore(model, processor, prompt, batch_images, device))
+            if args.mode == "pickscore":
+                batch_images = [Image.open(x).convert("RGB").copy() for x in batch_paths]
+                chunks.append(_score_with_pickscore(model, processor, prompt, batch_images, device))
+            else:
+                chunks.append(_score_with_hpsv2(prompt, batch_paths))
         scores = torch.cat(chunks, dim=0) if chunks else torch.empty(0, dtype=torch.float32)
         all_means.append(float(scores.mean().item()) if scores.numel() > 0 else float("nan"))
         prompt_out_dir = out_dir / meta.get("benchmark", "custom")
