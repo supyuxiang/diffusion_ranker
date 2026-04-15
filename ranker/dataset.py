@@ -50,7 +50,7 @@ def collect(batch:list[tuple[torch.Tensor,torch.Tensor,float]]):
     return batch_candidate_hstates,batch_prompt_hstates,batch_rewards
 
 
-def dataloader(candidate_repr_path:Path,reward_path:Path,prompt_repr_path:Path,batch_size:int,shuffle:bool=True):
+def diffusion_ranker_dataloader(candidate_repr_path:Path,reward_path:Path,prompt_repr_path:Path,batch_size:int,shuffle:bool=True):
     train_dataset = DiffusionRankerDataset(candidate_repr_path,reward_path,prompt_repr_path)
     train_loader = DataLoader(train_dataset,batch_size=batch_size,shuffle=shuffle,collate_fn=collect)
     return train_loader
