@@ -14,11 +14,11 @@ python /root/diffusion_ranker/ranker/train.py \
     --num_cand 10 \
     --input_dim_candidate 1152 \
     --input_dim_prompt 3584 \
-    --hidden_dim 64 \
+    --hidden_dim 128 \
     --num_attention_heads 4 \
-    --num_layers 2 \
+    --num_layers 4 \
     --dropout 0.1 \
-    --optimizer sgd \
+    --optimizer adamw \
     --lr_scheduler cosine \
     --warmup_ratio 0.03 \
     --lr_min_ratio 0.01 \
@@ -26,7 +26,7 @@ python /root/diffusion_ranker/ranker/train.py \
     --tau 1.0 \
     --seed 42 \
     --num_candidate_groups 8 \
-    --ranker_type pointwise  \
+    --ranker_type pointwise \
     --has_prompt_hstates
 
 
@@ -51,7 +51,7 @@ if str(_ROOT) not in sys.path:
 
 
 from ranker.loss import mse_kl_combined_loss
-from ranker.model import DiffusionRanker_Transformer, DiffusionRanker_MLP
+from ranker.model import DiffusionRanker_Transformer, DiffusionRanker_MLP, DiffusionRanker_CrossAttention
 from ranker.dataset import diffusion_ranker_dataloader
 from utils import Constants_default, set_device, set_seed
 
@@ -118,7 +118,7 @@ def set_args() -> argparse.Namespace:
         "--ranker_type",
         type=str,
         default='listwise',
-        choices=('listwise', 'pointwise'),
+        choices=('listwise', 'pointwise', 'cross_attention'),
         help="ranker_type",
     )
     p.add_argument(
@@ -357,6 +357,16 @@ def main() -> None:
             half=True,
         ).to(device)
         ranker.criterion = 'cos_t1.0'
+    elif args.ranker_type == 'cross_attention':
+        ranker = DiffusionRanker_CrossAttention(
+            candidate_hidden_dim=args.input_dim_candidate,
+            prompt_hidden_dim=args.input_dim_prompt,
+            hidden_dim=args.hidden_dim,
+            num_heads=args.num_attention_heads,
+            num_layers=args.num_layers,
+            dropout=args.dropout,
+            half=True,
+        ).to(device)
     else:
         raise ValueError(f"unknown ranker_type: {args.ranker_type}")
 
