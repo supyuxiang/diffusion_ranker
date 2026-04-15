@@ -111,7 +111,6 @@ def set_args() -> argparse.Namespace:
         default="/root/autodl-tmp/ranker_train_l06_s00",
         help="checkpoint 输出目录",
     )
-    p.add_argument("--proj_dim", type=int, default=64)
     p.add_argument(
         "--num_layers",
         type=int,
@@ -161,8 +160,12 @@ def set_args() -> argparse.Namespace:
         help="余弦/线性衰减末端 lr / 初始 lr",
     )
     p.add_argument("--alpha", type=float, default=0.8, help="MSE 权重；KL 权重为 1-alpha")
+    p.add_argument("--tau", type=float, default=1.0, help="KL 温度")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--save_freq", type=int, default=1, help="每 N 个 epoch 存 checkpoint")
+    p.add_argument("--input_dim_candidate", type=int, default=1024)
+    p.add_argument("--input_dim_prompt", type=int, default=768)
+    p.add_argument("--hidden_dim", type=int, default=64)
     return p.parse_args()
 
 
@@ -181,24 +184,24 @@ def train_epoch(
     for batch in pbar:
         candidate_hstates, prompt_hstates, rewards = batch
         logits = ranker(candidate_hstates, prompt_hstates)
-        metrics = loss_fn(logits, rewards)
+        total_loss, mse, kl = loss_fn(logits, rewards)
         optimizer.zero_grad(set_to_none=True)
-        metrics["loss"].backward()
+        total_loss.backward()
         optimizer.step()
-        sum_loss += float(metrics["loss"].detach())
-        sum_mse += float(metrics["mse"].detach())
-        sum_kl += float(metrics["kl"].detach())
+        sum_loss += float(total_loss.detach())
+        sum_mse += float(mse.detach())
+        sum_kl += float(kl.detach())
         n_steps += 1
         pbar.set_postfix(
-            loss=sum_loss / n_steps,
-            mse=sum_mse / n_steps,
-            kl=sum_kl / n_steps,
+            total_loss=sum_loss / n_steps,
+            mse_loss=sum_mse / n_steps,
+            kl_loss=sum_kl / n_steps,
         )
         
     out = {
-        "loss": sum_loss / n_steps,
-        "mse": sum_mse / n_steps,
-        "kl": sum_kl / n_steps,
+        "total_loss": sum_loss / n_steps,
+        "mse_loss": sum_mse / n_steps,
+        "kl_loss": sum_kl / n_steps,
     }
     if scheduler is not None:
         scheduler.step()
@@ -234,12 +237,12 @@ def main() -> None:
     print(f"train_loader built")
 
     ranker = DiffusionRanker_Transformer(
-        input_dim_candidate=,
-        input_dim_prompt=prompt_dim,
-        hidden_dim=args.proj_dim,
-        num_heads=args.num_list_heads,
+        input_dim_candidate=args.input_dim_candidate,
+        input_dim_prompt=args.input_dim_prompt,
+        hidden_dim=args.hidden_dim,
+        num_heads=args.num_attention_heads,
         dropout=args.dropout,
-        num_layers=args.num_list_layers,
+        num_layers=args.num_layers,
         half=True,
     ).to(device)
 
@@ -248,6 +251,7 @@ def main() -> None:
         args.optimizer,
         args.lr,
         args.weight_decay,
+        args.sgd_momentum,
     )
 
     scheduler = get_scheduler(
@@ -260,7 +264,8 @@ def main() -> None:
     )
 
     loss_fn = mse_kl_combined_loss(
-        args.alpha,
+        alpha=args.alpha,
+        tau=args.tau,
     )
 
     for epoch in range(args.num_epochs):
@@ -272,7 +277,7 @@ def main() -> None:
             loss_fn,
         )
         print(f"epoch {epoch + 1}/{args.num_epochs}  lr={scheduler.get_last_lr()[0]:.2e}  "
-            f"loss={o['loss']:.6f}  mse={o['mse']:.6f}  kl={o['kl']:.6f}")
+            f"total_loss={o['total_loss']:.6f}  mse_loss={o['mse_loss']:.6f}  kl_loss={o['kl_loss']:.6f}")
         if (epoch + 1) % max(args.save_freq, 1) == 0:
             ckpt = {
                 "epoch": epoch + 1,

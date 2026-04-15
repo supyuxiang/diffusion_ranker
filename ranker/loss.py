@@ -18,14 +18,16 @@ def kl_reward_ranker_loss(
     return (q * (log_q - log_p)).sum()
 
 
-def mse_kl_combined_loss(
-    pred_scores: torch.Tensor,
-    teacher_scores: torch.Tensor,
-    tau: float,
-    alpha: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    mse = F.mse_loss(pred_scores, teacher_scores)
-    kl = kl_reward_ranker_loss(pred_scores, teacher_scores, tau)
-    a = float(alpha)
-    total = a * mse + (1.0 - a) * kl
-    return total, mse, kl
+
+class mse_kl_combined_loss(nn.Module):
+    def __init__(self, alpha:float,tau:float):
+        super(mse_kl_combined_loss,self).__init__()
+        self.alpha = alpha
+        self.tau = tau
+
+    def forward(self, pred_scores:torch.Tensor, teacher_scores:torch.Tensor):
+        mse = F.mse_loss(pred_scores, teacher_scores)
+        kl = kl_reward_ranker_loss(pred_scores, teacher_scores, self.tau)
+        alpha = float(self.alpha)
+        total = alpha * mse + (1.0 - alpha) * kl
+        return torch.tensor(total), torch.tensor(mse), torch.tensor(kl)
