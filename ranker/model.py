@@ -21,188 +21,182 @@ import torch.nn.functional as F
 from torch import Tensor
 
 
-class DiffusionSingleTokenEncoder(nn.Module):
-    """
-    单 token：``(B, 1, H)`` / ``(B, H)`` → ``(B, proj_dim)``。
-    Linear + LayerNorm + 残差 FFN（对齐 ``RankModel_Transformer`` 中 linear + FFN 支路，省去 seq=1 时的 MHA）。
-    """
 
-    def __init__(
-        self,
-        hidden_dim: int,
-        proj_dim: int,
-        dropout: float = 0.1,
-    ) -> None:
-        super().__init__()
-        self.proj = nn.Linear(hidden_dim, proj_dim)
-        self.norm_in = nn.LayerNorm(proj_dim)
-        self.mlp = nn.Sequential(
-            nn.Linear(proj_dim, 4 * proj_dim),
+class TransformerBlock(nn.Module):
+    def __init__(self, hidden_dim:int,num_heads:int,dropout:float):
+        super(TransformerBlock,self).__init__()
+        self.self_attention = nn.MultiheadAttention(embed_dim=hidden_dim,num_heads=num_heads,dropout=dropout)
+        self.norm2 = nn.LayerNorm(hidden_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim*4),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(4 * proj_dim, proj_dim),
+            nn.Linear(hidden_dim*4, hidden_dim),
+            nn.Dropout(dropout)
+        )
+        self.norm3 = nn.LayerNorm(hidden_dim)
+    
+    def forward(self,x:Tensor,key_padding_mask:Tensor|None=None)->Tensor:
+        attn_output, _ = self.self_attention(x,x,x,key_padding_mask=key_padding_mask)
+        x = self.norm2(x+attn_output)
+        output = x+self.ffn(x)
+        output = self.norm3(output+x)
+        return output
+
+    
+
+class MLP(nn.Module):
+    def __init__(self, hidden_size, num_layers):
+        super(MLP, self).__init__()
+        layers = []
+        for _ in range(num_layers):
+            layers.append(nn.Linear(hidden_size, hidden_size))
+            layers.append(nn.ReLU())
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.mlp(x)
+
+
+class DiffusionRanker_Transformer(nn.Module):
+    def __init__(
+        self,
+        input_dim_candidate:int,
+        input_dim_prompt:int,
+        hidden_dim:int,
+        num_heads:int,
+        dropout:float,
+        num_layers:int,
+        half:bool=True
+    ):
+        super(DiffusionRanker_Transformer,self).__init__()
+        self.input_dim_prompt = input_dim_prompt
+        self.input_dim_candidate = input_dim_candidate
+
+        self.linear_candidate = nn.Linear(input_dim_candidate,hidden_dim)
+        self.linear_prompt = nn.Linear(input_dim_prompt,hidden_dim)
+        self.layers = nn.ModuleList(
+            [
+                TransformerBlock(hidden_dim,num_heads,dropout)
+                for _ in range(num_layers)
+            ]
+        )
+        self.output_weights = nn.Parameter(torch.empty(hidden_dim,1))
+        nn.init.xavier_uniform_(self.output_weights)
+        self._init_weights()
+        if half:
+            self.to(torch.bfloat16)
+
+    def _init_weights(self):
+        for layer in self.layers:
+            for module in layer.modules():
+                if isinstance(module, nn.Linear):
+                    nn.init.xavier_uniform_(module.weight)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
+
+    def forward(self,candidate_hstates,prompt_hstates,key_padding_mask=None):
+        # candidate_hstates: (B, K, input_dim_candidate) -> linear -> (B, K, hidden_dim)
+        b, k, _ = candidate_hstates.shape
+
+        candidate_hstates = self.linear_candidate(candidate_hstates)  # (B, K, hidden_dim)
+
+        if prompt_hstates is not None:
+            prompt_hstates = self.linear_prompt(prompt_hstates)  # (B, hidden_dim)
+            prompt_hstates = prompt_hstates.unsqueeze(0)  # (1, B, hidden_dim)
+        else:
+            # 与有 prompt 时相同占位形状，便于与 (K, B, H) 在 dim=1 对齐；须用 B 而非 K
+            prompt_hstates = torch.zeros(
+                1,
+                candidate_hstates.shape[0],
+                candidate_hstates.shape[2],
+                device=candidate_hstates.device,
+                dtype=candidate_hstates.dtype,
+            )
+        
+
+
+        candidate_hstates = candidate_hstates.permute(
+            1,0,2
+        )# b,k,hidden_dim -> k,b,hidden_dim
+        x = torch.cat((prompt_hstates,candidate_hstates),dim=0) # k+1, b , hidden_dim
+
+        for layer in self.layers:
+            x = x + layer(x,key_padding_mask=key_padding_mask)
+        # after : k+1, b ,hidden_dim
+        
+        logits = torch.matmul(x,self.output_weights) # k+1, b ,1
+        logits = logits.squeeze(-1) # k+1,b
+        logits = logits.permute(1,0) # b,k+1
+        logits = logits[:,1:] # b,k
+        return logits
+    
+    def count_params(self):
+        return sum(
+            p.numel() for p in self.parameters()
+        )
+    
+
+
+
+class DiffusionRanker_MLP(nn.Module):
+    def __init__(
+        slef,
+        candidate_hidden_dim:int,
+        prompt_hidden_dim:int,
+        output_dim:int,
+        num_layers:int,
+        dropout:float,
+        half:bool=True,
+        criterion=None,
+    ):
+        super(DiffusionRanker_MLP,self).__init__()
+        self.criterion = criterion
+        self.ffn = nn.Sequential(
+            nn.Linear(candidate_hidden_dim, candidate_hidden_dim*4),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(candidate_hidden_dim*4, candidate_hidden_dim),
+            nn.ReLU(),
             nn.Dropout(dropout),
         )
-        self.norm_out = nn.LayerNorm(proj_dim)
-
-    def forward(self, x: Tensor) -> Tensor:
-        """
-        Args:
-            x: ``(B, 1, hidden_dim)`` 或 ``(B, hidden_dim)``
-        Returns:
-            ``(B, proj_dim)``
-        """
-        if x.dim() == 3:
-            if x.shape[1] != 1:
-                raise ValueError(
-                    "expected (B, 1, hidden_dim) for a single (step, layer, pooling) token; "
-                    f"got {tuple(x.shape)}"
-                )
-            x = x.squeeze(1)
-        elif x.dim() != 2:
-            raise ValueError(f"expected (B, 1, H) or (B, H), got {tuple(x.shape)}")
-        h = self.proj(x)
-        h = self.norm_in(h)
-        h = h + self.mlp(h)
-        return self.norm_out(h)
-
-
-class PointwiseDiffusionRanker(nn.Module):
-    """Pointwise reward：每个样本一个标量分数 ``(B,)``。"""
-
-    def __init__(
-        self,
-        hidden_dim: int,
-        proj_dim: int = 256,
-        num_heads: int = 8,
-        dropout: float = 0.1,
-        *,
-        use_half: bool = False,
-    ) -> None:
-        super().__init__()
-        # num_heads 保留签名以兼容旧调用；单 token 编码不使用 attention。
-        self.encoder = DiffusionSingleTokenEncoder(hidden_dim, proj_dim, dropout=dropout)
-        self.score_head = nn.Linear(proj_dim, 1)
-        self._init_linear_weights()
-        if use_half:
-            self.to(torch.bfloat16)
-
-    def _init_linear_weights(self) -> None:
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-
-    def count_params(self) -> int:
-        return sum(p.numel() for p in self.parameters())
-
-    def forward(self, x: Tensor) -> Tensor:
-        """
-        Args:
-            x: ``(B, 1, hidden_dim)`` 或 ``(B, hidden_dim)``
-        Returns:
-            ``(B,)`` 标量 reward（未约束正负，由损失定义偏好）
-        """
-        h = self.encoder(x)
-        return self.score_head(h).squeeze(-1)
-
-
-class ListwiseDiffusionRanker(nn.Module):
-    """Listwise：``K`` 个候选互相交互后各输出一个 logit ``(B, K)``。"""
-
-    def __init__(
-        self,
-        hidden_dim: int,
-        proj_dim: int = 256,
-        num_heads: int = 8,
-        dropout: float = 0.1,
-        num_list_layers: int = 2,
-        *,
-        use_half: bool = False,
-    ) -> None:
-        super().__init__()
-        if proj_dim % num_heads != 0:
-            raise ValueError(f"proj_dim ({proj_dim}) must be divisible by num_heads ({num_heads})")
-        self.candidate_encoder = DiffusionSingleTokenEncoder(
-            hidden_dim, proj_dim, dropout=dropout
+        self.layers = nn.ModuleList(
+            [self.ffn for _ in range(num_layers)]
         )
-        enc_layer = nn.TransformerEncoderLayer(
-            d_model=proj_dim,
-            nhead=num_heads,
-            dim_feedforward=4 * proj_dim,
-            dropout=dropout,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
-        )
-        self.list_encoder = nn.TransformerEncoder(enc_layer, num_layers=num_list_layers)
-        self.score_head = nn.Linear(proj_dim, 1)
-        self._init_linear_weights()
-        if use_half:
+        self.projection = nn.Linear(candidate_hidden_dim,output_dim)
+        self._init_weights()
+        if half:
             self.to(torch.bfloat16)
-
-    def _init_linear_weights(self) -> None:
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-
-    def count_params(self) -> int:
-        return sum(p.numel() for p in self.parameters())
-
-    def forward(self, x: Tensor, *, key_padding_mask: Tensor | None = None) -> Tensor:
-        """
-        Args:
-            x: ``(B, K, 1, hidden_dim)`` 或 ``(B, K, hidden_dim)``
-            key_padding_mask: optional ``(B, K)``，``True`` 表示该候选为 padding
-        Returns:
-            ``(B, K)`` logits
-        """
-        if x.dim() == 4:
-            if x.shape[2] != 1:
-                raise ValueError(
-                    "expected (B, K, 1, hidden_dim) for one token per candidate; "
-                    f"got {tuple(x.shape)}"
-                )
-            b, k, _, hdim = x.shape
-            flat = x.reshape(b * k, 1, hdim)
-        elif x.dim() == 3:
-            b, k, hdim = x.shape
-            flat = x.reshape(b * k, hdim)
-        else:
-            raise ValueError(f"expected 3D or 4D input, got {tuple(x.shape)}")
-
-        cand_emb = self.candidate_encoder(flat)
-        cand_emb = cand_emb.view(b, k, -1)
-        list_out = self.list_encoder(cand_emb, src_key_padding_mask=key_padding_mask)
-        return self.score_head(list_out).squeeze(-1)
+    
+    def _init_weights(self):
+        for layer in self.layers:
+            for module in layer.modules():
+                if isinstance(module, nn.Linear):
+                    nn.init.xavier_uniform_(module.weight)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
+    
+    def forward(self,single_candidate_hstates):
+        x = single_candidate_hstates # b,1,hidden_dim
+        for layer in self.layers:
+            x = x + layer(x)
+        # b,1,hidden_dim
+        if self.criterion is None:
+            return x[:,1:,0]
 
 
-# --- 别名 ---
-PointwiseRanker = PointwiseDiffusionRanker
-ListwiseRanker = ListwiseDiffusionRanker
-# 旧代码可能 import DiffusionHiddenEncoder；映射到新编码器
-DiffusionHiddenEncoder = DiffusionSingleTokenEncoder
-
-
-def listwise_logits_to_probs(logits: Tensor, dim: int = -1) -> Tensor:
-    return F.softmax(logits, dim=dim)
 
 
 if __name__ == "__main__":
-    torch.manual_seed(0)
-    b, h = 4, 1152
-    x_pw = torch.randn(b, 1, h)
-    pw = PointwiseDiffusionRanker(h, proj_dim=128, num_heads=8)
-    s = pw(x_pw)
-    assert s.shape == (b,), s.shape
-
-    k = 8
-    x_ls = torch.randn(b, k, 1, h)
-    ls = ListwiseDiffusionRanker(h, proj_dim=128, num_heads=8, num_list_layers=2)
-    logits = ls(x_ls)
-    assert logits.shape == (b, k), logits.shape
-    print("pointwise", s.shape, "listwise", logits.shape, "ok")
-    print(f"pointwise: {pw.count_params()}, listwise: {ls.count_params()}")
+   ranker = DiffusionRanker_Transformer(
+    input_dim_candidate=1152,
+    input_dim_prompt=1152,
+    hidden_dim=1152,
+    num_heads=12,
+    dropout=0.1,
+    num_layers=12,
+    half=True
+   )
+   ranker.forward(
+    candidate_hstates=torch.randn(4,8,1152),
+   )
