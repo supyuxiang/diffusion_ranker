@@ -161,9 +161,36 @@ ensure_image_reward_on_path()
 import ImageReward as RM
 
 def load_imagereward(device: torch.device):
+    import os
     import ImageReward as RM
+    from transformers import BertTokenizer
+
+    # 避免在无网/慢网环境下卡在 tokenizer 在线探测
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+
+    print("[imagereward] warmup bert-base-uncased tokenizer (local_files_only=True)")
+    try:
+        _ = BertTokenizer.from_pretrained("bert-base-uncased", local_files_only=True)
+    except Exception as e:
+        raise RuntimeError(
+            "BertTokenizer 本地缓存不可用。请先在可联网环境下载 bert-base-uncased，"
+            "或把缓存放到当前机器后重试。"
+        ) from e
+
+    # ImageReward 内部仍会再次调用 from_pretrained，这里强制补 local_files_only=True
+    _orig_from_pretrained = BertTokenizer.from_pretrained
+
+    def _offline_from_pretrained(*args, **kwargs):
+        kwargs.setdefault("local_files_only", True)
+        return _orig_from_pretrained(*args, **kwargs)
+
+    BertTokenizer.from_pretrained = _offline_from_pretrained
+    print("[imagereward] loading ImageReward checkpoint ...")
     model = RM.load(str(_DEFAULT_IMAGEREWARD_CKPT), device=device, med_config=str(med))
     model.eval()
+    print("[imagereward] checkpoint loaded")
     return model
 
 def imagereward_reward(batch_paths:list[Path],model) -> float:
