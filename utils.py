@@ -1176,16 +1176,14 @@ def rollout_dit_perclass32_and_save_repr(
                     mc_index=mc_i,
                     batch_idx=batch_idx,
                 )
+                # 先落图，再算 reward，避免目录长时间无文件看起来像“卡住”。
                 to_save: list[tuple[Path, Image.Image]] = []
-                for i, (label, prompt, img) in enumerate(
-                    zip(batch_labels_ls, batch_prompts, batch_images)
-                ):
+                for i, (label, img) in enumerate(zip(batch_labels_ls, batch_images)):
                     img = _prepare_pil_for_save(img, image_size)
                     save_path = image_output_dir / (
                         f"image_{(img_counter + i):05d}_{int(label):05d}_mc{mc_i:02d}.png"
                     )
                     to_save.append((save_path, img.copy()))
-                    reward_sum[i] += float(rm_model.score(prompt, img))
 
                 with ThreadPoolExecutor(max_workers=_ROLLOUT_SAVE_WORKERS) as ex:
                     futures = [
@@ -1201,6 +1199,9 @@ def rollout_dit_perclass32_and_save_repr(
                     ]
                     for fut in as_completed(futures):
                         fut.result()
+                # 图像已落盘后再做 ImageReward 打分
+                for i, (prompt, img) in enumerate(zip(batch_prompts, batch_images)):
+                    reward_sum[i] += float(rm_model.score(prompt, img))
                 print(
                     f"[case l{float(layer_ratio):g}_s{step_idx}] "
                     f"batch {batch_idx + 1}/{num_batches} "
