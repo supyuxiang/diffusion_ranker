@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-
+import gc
 import torch
 from torch import Tensor
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -111,6 +111,9 @@ def get_repr(
                 pass
             pooled = _pool_seq(seq, enc["attention_mask"], pooling_mode)
             outs.append(pooled.float().cpu())
+            del enc,seq,pooled
+            gc.collect()
+            torch.cuda.empty_cache()
 
     return torch.cat(outs, dim=0)
 
