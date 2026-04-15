@@ -94,6 +94,17 @@ class DiffusionRanker_Transformer(nn.Module):
                     nn.init.xavier_uniform_(module.weight)
                     if module.bias is not None:
                         nn.init.zeros_(module.bias)
+        for module in self.linear_candidate.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+        for module in self.linear_prompt.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+
 
     def forward(self,candidate_hstates,prompt_hstates,key_padding_mask=None):
         # candidate_hstates: (B, K, input_dim_candidate) -> linear -> (B, K, hidden_dim)
@@ -144,6 +155,7 @@ class DiffusionRanker_MLP(nn.Module):
         self,
         candidate_hidden_dim:int,
         prompt_hidden_dim:int,
+        hidden_dim:int,
         output_dim:int,
         num_layers:int,
         dropout:float,
@@ -151,19 +163,21 @@ class DiffusionRanker_MLP(nn.Module):
         criterion=None,
     ):
         super(DiffusionRanker_MLP,self).__init__()
+        self.linear_prompt = nn.Linear(prompt_hidden_dim,hidden_dim)
+        self.linear_candidate = nn.Linear(candidate_hidden_dim,hidden_dim)
         self.criterion = criterion
         self.ffn = nn.Sequential(
-            nn.Linear(candidate_hidden_dim, candidate_hidden_dim*4),
+            nn.Linear(hidden_dim, hidden_dim*4),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(candidate_hidden_dim*4, candidate_hidden_dim),
+            nn.Linear(hidden_dim*4, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
         )
         self.layers = nn.ModuleList(
             [self.ffn for _ in range(num_layers)]
         )
-        self.projection = nn.Linear(candidate_hidden_dim,output_dim)
+        self.projection = nn.Linear(hidden_dim,output_dim)
         self._init_weights()
         if half:
             self.to(torch.bfloat16)
@@ -175,8 +189,27 @@ class DiffusionRanker_MLP(nn.Module):
                     nn.init.xavier_uniform_(module.weight)
                     if module.bias is not None:
                         nn.init.zeros_(module.bias)
+        for module in self.linear_candidate.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+        for module in self.linear_prompt.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+        for module in self.projection.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
     
     def forward(self,candidate_hstates,prompt_hstates):
+        # candidate_hstates: b,k,candidate_hidden_dim
+        # prompt_hstates: b,prompt_hidden_dim
+        prompt_hstates = self.linear_prompt(prompt_hstates)
+        candidate_hstates = self.linear_candidate(candidate_hstates)
         # candidate_hstates: b,k,hidden_dim
         # prompt_hstates: b,hidden_dim
         prompt_hstates = prompt_hstates.unsqueeze(1)
@@ -200,6 +233,7 @@ class DiffusionRanker_MLP(nn.Module):
             return out / t
         else:
             raise NotImplementedError
+            
     def count_params(self):
         return sum(
             p.numel() for p in self.parameters()
@@ -224,11 +258,12 @@ default_ranker = DiffusionRanker_Transformer(
 pointwise_ranker = DiffusionRanker_MLP(
     candidate_hidden_dim=1152,
     prompt_hidden_dim=3804,
+    hidden_dim=64,
     output_dim=1,
     num_layers=2,
     dropout=0.1,
     half=True,
-    criterion='cos_t1.0'
+    criterion='cos_t1.0',
 )
 
 
