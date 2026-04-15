@@ -30,15 +30,32 @@ python3 /root/diffusion_ranker/scripts/export_training_repr_tensors.py \
   --repr_pt /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/repr.pt \
   --reward_json /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/reward_ls.json
 
+只导出与 ``ranker/train.py`` 相同的「稀疏」层/步约定（dense ``repr.pt`` 内会映射到对应 ``s*_r*`` 键）::
+
+python3 scripts/export_training_repr_tensors.py \\
+  --image_dir /path/to/dit_training_data_... \\
+  --preset sparse --purge_output_dirs
+
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import torch
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from ranker.train import select_repr_keys
+
+# 与 ``rollout_trianing_data.py --repr_layout sparse`` / ``DitRolloutReprCapture`` 默认网格一致
+_SPARSE_LAYER_RATIOS: list[float] = [0.1 * i for i in range(1, 11)]
+_SPARSE_STEP_RATIOS: list[float] = [0.0, 0.25, 0.5, 0.75, 1.0]
 
 
 def _load_repr_pt(path: Path) -> dict:
@@ -117,6 +134,27 @@ def main() -> None:
         default=None,
         help="默认与 --image_dir 相同（在其下创建 mean/、last/）",
     )
+    p.add_argument(
+        "--preset",
+        choices=("", "sparse"),
+        default="",
+        help="sparse：层 0.1…1.0、步 0/0.25/0.5/0.75/1；可用 --layer_ratios/--step_ratios 覆盖其中一部分",
+    )
+    p.add_argument(
+        "--layer_ratios",
+        default="",
+        help="逗号分隔，语义同 train.py；非空则按层过滤（覆盖 preset 的层列表）",
+    )
+    p.add_argument(
+        "--step_ratios",
+        default="",
+        help="逗号分隔，语义同 train.py；非空则按步过滤（覆盖 preset 的步列表）",
+    )
+    p.add_argument(
+        "--purge_output_dirs",
+        action="store_true",
+        help="写入前删除 mean/、last/ 下全部 .pt，避免残留未筛选键",
+    )
     args = p.parse_args()
 
     image_dir: Path = args.image_dir.expanduser().resolve()
@@ -161,9 +199,43 @@ def main() -> None:
     meta = dict(obj.get("meta") or {})
     batches = obj["batches"]
     b0 = batches[0]
-    all_keys = sorted(b0["repr"].keys(), key=lambda k: (_parse_repr_key(k)[0], _parse_repr_key(k)[1]))
+    all_keys_raw = sorted(
+        b0["repr"].keys(),
+        key=lambda k: (_parse_repr_key(k)[0], _parse_repr_key(k)[1]),
+    )
 
-    h0 = int(b0["repr"][all_keys[0]]["mean"].shape[1])
+    layer_f: list[float] | None = None
+    step_f: list[float] | None = None
+    if args.preset == "sparse":
+        layer_f = list(_SPARSE_LAYER_RATIOS)
+        step_f = list(_SPARSE_STEP_RATIOS)
+    if args.layer_ratios.strip():
+        layer_f = [
+            float(x.strip()) for x in args.layer_ratios.split(",") if x.strip()
+        ]
+    if args.step_ratios.strip():
+        step_f = [float(x.strip()) for x in args.step_ratios.split(",") if x.strip()]
+
+    if layer_f is not None or step_f is not None:
+        all_keys = select_repr_keys(
+            all_keys_raw,
+            meta=meta,
+            layer_ratios=layer_f,
+            step_ratios=step_f,
+        )
+        print(
+            f"filter: preset={args.preset!r} layer_ratios={layer_f} step_ratios={step_f} "
+            f"-> {len(all_keys)} keys (of {len(all_keys_raw)})"
+        )
+        if not all_keys:
+            raise SystemExit(
+                "筛选后没有键：请检查 repr.pt 是否与 layer/step 约定一致，"
+                "或去掉 --preset/--layer_ratios/--step_ratios 导出全部键"
+            )
+    else:
+        all_keys = all_keys_raw
+
+    h0 = int(b0["repr"][all_keys_raw[0]]["mean"].shape[1])
     total_in_repr = sum(len(rec["image_save_names"]) for rec in batches)
     if total_in_repr != n:
         raise SystemExit(
@@ -187,6 +259,11 @@ def main() -> None:
     last_dir = output_root / "last"
     mean_dir.mkdir(parents=True, exist_ok=True)
     last_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.purge_output_dirs:
+        for d in (mean_dir, last_dir):
+            for fp in d.glob("*.pt"):
+                fp.unlink()
 
     for key in all_keys:
         mean_buf = torch.full((n, h0), float("nan"), dtype=torch.float32)
