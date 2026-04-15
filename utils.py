@@ -833,6 +833,9 @@ def rollout_dit_with_steps(
     ``repr_capture``: 可选，在每次 ``pipe`` 内按步抓取若干 block 的 token 表征；``repr_max_batches``
     非空时只记录前若干 batch（仍生成全部图像）。
     """
+    save_dir = Path(save_dir).expanduser().resolve()
+    save_dir.mkdir(parents=True, exist_ok=True)
+
     if device is None:
         device = set_device()
     else:

@@ -44,7 +44,9 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 from diffusers import DiTPipeline
 
-from ranker.model import DiffusionRanker_Transformer
+import torch.nn as nn
+
+from ranker.model import DiffusionRanker_MLP, DiffusionRanker_Transformer
 from utils import (
     DitRolloutReprCapture,
     compute_fid_is_from_dirs,
@@ -149,54 +151,100 @@ def _count_transformer_layers(state: dict) -> int:
     return (max(layer_ids) + 1) if layer_ids else 2
 
 
-def load_listwise_ranker(
+def _count_mlp_ffn_layers(state: dict) -> int:
+    layer_ids: list[int] = []
+    for k in state:
+        parts = k.split(".")
+        if k.startswith("layers.") and len(parts) > 1 and parts[1].isdigit():
+            layer_ids.append(int(parts[1]))
+    return (max(layer_ids) + 1) if layer_ids else 2
+
+
+def load_ranker_from_ckpt(
     ckpt_path: Path,
     device: torch.device,
     *,
     num_attention_heads: int,
     dropout: float,
-) -> DiffusionRanker_Transformer:
+) -> nn.Module:
     try:
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     except TypeError:
         ckpt = torch.load(ckpt_path, map_location="cpu")
     state = ckpt["model_state_dict"]
-    if "linear_candidate.weight" not in state:
-        raise ValueError(f"{ckpt_path}: 非 DiffusionRanker_Transformer（缺 linear_candidate.weight）")
-
-    wc = state["linear_candidate.weight"]
-    hidden_internal, input_dim_candidate = int(wc.shape[0]), int(wc.shape[1])
-    wp = state["linear_prompt.weight"]
-    input_dim_prompt = int(wp.shape[1])
-
     args_ckpt = ckpt.get("args") or {}
-    nl = int(
-        args_ckpt.get(
-            "num_list_layers",
-            args_ckpt.get("num_layers", _count_transformer_layers(state)),
-        )
-    )
-    nh = int(args_ckpt.get("num_list_heads", args_ckpt.get("num_attention_heads", num_attention_heads)))
     half = not bool(args_ckpt.get("ranker_float32", False))
+    drp = float(args_ckpt.get("dropout", dropout))
 
-    model = DiffusionRanker_Transformer(
-        input_dim_candidate=input_dim_candidate,
-        input_dim_prompt=input_dim_prompt,
-        hidden_dim=hidden_internal,
-        num_heads=nh,
-        dropout=float(args_ckpt.get("dropout", dropout)),
-        num_layers=nl,
-        half=half,
+    # Listwise Transformer
+    if "output_weights" in state:
+        if "linear_candidate.weight" not in state:
+            raise ValueError(f"{ckpt_path}: Transformer ckpt 缺 linear_candidate.weight")
+        wc = state["linear_candidate.weight"]
+        hidden_internal, input_dim_candidate = int(wc.shape[0]), int(wc.shape[1])
+        wp = state["linear_prompt.weight"]
+        input_dim_prompt = int(wp.shape[1])
+        nl = int(
+            args_ckpt.get(
+                "num_list_layers",
+                args_ckpt.get("num_layers", _count_transformer_layers(state)),
+            )
+        )
+        nh = int(
+            args_ckpt.get(
+                "num_list_heads", args_ckpt.get("num_attention_heads", num_attention_heads)
+            )
+        )
+        model = DiffusionRanker_Transformer(
+            input_dim_candidate=input_dim_candidate,
+            input_dim_prompt=input_dim_prompt,
+            hidden_dim=hidden_internal,
+            num_heads=nh,
+            dropout=drp,
+            num_layers=nl,
+            half=half,
+        )
+        model.load_state_dict(state, strict=True)
+        model.to(device)
+        model.eval()
+        return model
+
+    # Pointwise MLP（train.py 里通常 criterion='cos_t1.0'）
+    if "projection.weight" in state and "process_prompt.0.weight" in state:
+        if "score_head.weight" in state:
+            raise ValueError(f"{ckpt_path}: 疑似 CrossAttention ckpt，请用对应加载逻辑（当前未接）")
+        wc = state["linear_candidate.weight"]
+        hidden_internal, input_dim_candidate = int(wc.shape[0]), int(wc.shape[1])
+        wp0 = state["process_prompt.0.weight"]
+        input_dim_prompt = int(wp0.shape[1])
+        nl = int(args_ckpt.get("num_layers", _count_mlp_ffn_layers(state)))
+        model = DiffusionRanker_MLP(
+            candidate_hidden_dim=input_dim_candidate,
+            prompt_hidden_dim=input_dim_prompt,
+            hidden_dim=hidden_internal,
+            output_dim=1,
+            num_layers=nl,
+            dropout=drp,
+            half=half,
+            criterion=None,
+        )
+        model.load_state_dict(state, strict=True)
+        model.criterion = "cos_t1.0"
+        model.input_dim_candidate = input_dim_candidate
+        model.input_dim_prompt = input_dim_prompt
+        model.to(device)
+        model.eval()
+        return model
+
+    raise ValueError(
+        f"{ckpt_path}: 无法识别 ranker（需 listwise 含 output_weights，"
+        f"或 pointwise MLP 含 projection + process_prompt）"
     )
-    model.load_state_dict(state, strict=True)
-    model.to(device)
-    model.eval()
-    return model
 
 
 @torch.inference_mode()
 def mean_ranker_score_batch(
-    ranker: DiffusionRanker_Transformer,
+    ranker: nn.Module,
     repr_dict: dict,
     repr_key: str,
     labels: list[int],
@@ -343,7 +391,7 @@ def run_random_search_ranker(
     *,
     pipe: DiTPipeline | None,
     repr_capture: DitRolloutReprCapture | None,
-    ranker: DiffusionRanker_Transformer,
+    ranker: nn.Module,
     prompt_table: torch.Tensor,
     repr_key: str,
     output_dir: Path,
@@ -521,18 +569,28 @@ def main() -> None:
 
     assert 0 <= args.init_random_samples <= args.num_samples
 
+    # init 阶段会调用 rollout_dit_with_steps 写图，须早于 random search 内的 mkdir
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype_s = "fp16" if args.fp16 else "fp32"
 
     print(f"加载 ranker: {ckpt_p}")
-    ranker = load_listwise_ranker(
+    ranker = load_ranker_from_ckpt(
         ckpt_p,
         device,
         num_attention_heads=args.num_attention_heads,
         dropout=args.dropout,
     )
-    print(f"   input_dim_candidate={ranker.input_dim_candidate} input_dim_prompt={ranker.input_dim_prompt} hidden={ranker.linear_candidate.out_features}")
+    ic = getattr(ranker, "input_dim_candidate", None) or ranker.linear_candidate.in_features
+    ip = getattr(ranker, "input_dim_prompt", None)
+    if ip is None:
+        ip = ranker.linear_prompt.in_features if hasattr(ranker, "linear_prompt") else ranker.process_prompt[0].in_features
+    print(
+        f"   input_dim_candidate={ic} input_dim_prompt={ip} "
+        f"hidden={ranker.linear_candidate.out_features}"
+    )
 
     print(f"加载 prompt 表: {prompt_p}")
     prompt_table = load_prompt_table(prompt_p)
