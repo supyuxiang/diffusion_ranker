@@ -125,13 +125,15 @@ def mask_self_attention(
     return out, weights
 
 
+
+
 class CrossAttention(nn.Module):
     """
     标准 **cross-attention**（decoder 风格）：Q 来自 ``x``，K/V 来自 ``memory``。
 
     - ``x``: ``(B, L_q, d_query)``
     - ``memory``: ``(B, L_k, d_memory)``
-    - 内部投影到同一 ``embed_dim`` 后调用 ``nn.MultiheadAttention``（``batch_first=True``）。
+    - **手写**多头 scaled dot-product attention（不调用 ``nn.MultiheadAttention``）。
     """
 
     def __init__(
@@ -146,21 +148,42 @@ class CrossAttention(nn.Module):
         super().__init__()
         if embed_dim % num_heads != 0:
             raise ValueError("embed_dim 必须整除 num_heads")
+        self.d_memory = d_memory
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
         self.q_proj = nn.Linear(d_query, embed_dim)
-        self.mha = nn.MultiheadAttention(
-            embed_dim,
-            num_heads,
-            dropout=dropout,
-            batch_first=True,
-            kdim=d_memory,
-            vdim=d_memory,
-        )
+        self.k_proj = nn.Linear(d_memory, embed_dim)
+        self.v_proj = nn.Linear(d_memory, embed_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        self.attn_dropout = nn.Dropout(dropout)
 
     def forward(
         self, x: torch.Tensor, memory: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        q = self.q_proj(x) # b,l_x,embed_dim
-        return self.mha(q, memory, memory, need_weights=True, average_attn_weights=True) # b,l_x,embed_dim
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        b, l_q, _ = x.shape
+        _, l_k, _ = memory.shape
+
+        q = self.q_proj(x)
+        k = self.k_proj(memory)
+        v = self.v_proj(memory)
+
+        # (B, L, E) -> (B, H, L, D)。Linear 输出连续，可先 view；transpose 后一般不连续，
+        # 但 @ / softmax 不要求连续；只有再次 view 前须 contiguous（见下面 out 那一行）。
+        q = q.view(b, l_q, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(b, l_k, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(b, l_k, self.num_heads, self.head_dim).transpose(1, 2)
+
+        scores = q @ k.transpose(-2, -1) / math.sqrt(self.head_dim)
+        attn = F.softmax(scores, dim=-1) # b,num_heads,l_q,l_k
+        attn = self.attn_dropout(attn)
+        out = attn @ v # b,num_heads,l_q,head_dim
+
+        out = out.transpose(1, 2).contiguous().view(b, l_q, self.embed_dim) # b,l_q,embed_dim
+        out = self.out_proj(out)
+
+        attn_weights = attn.mean(dim=1)
+        return out, attn_weights
 
 
 def cross_attention(
@@ -169,7 +192,7 @@ def cross_attention(
     num_heads: int,
     d_k: int,
     layer: CrossAttention,
-) -> tuple[torch.Tensor, torch.Tensor | None]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     对 ``CrossAttention`` 模块的薄封装（权重在 ``layer`` 里，避免每次调用新建随机参数）。
 
@@ -185,12 +208,12 @@ def cross_attention(
         raise ValueError("batch 维须相同")
     if x.shape[-1] != layer.q_proj.in_features:
         raise ValueError("x 最后一维须等于 CrossAttention 的 d_query")
-    if memory.shape[-1] != layer.mha.kdim:
+    if memory.shape[-1] != layer.d_memory:
         raise ValueError("memory 最后一维须等于 CrossAttention 的 d_memory")
-    embed_dim = layer.q_proj.out_features
+    embed_dim = layer.embed_dim
     if embed_dim != d_k:
         raise ValueError(f"d_k={d_k} 须等于 CrossAttention 的 embed_dim={embed_dim}")
-    if num_heads != layer.mha.num_heads:
+    if num_heads != layer.num_heads:
         raise ValueError("num_heads 须与构造 CrossAttention 时一致")
     return layer(x, memory)
 
