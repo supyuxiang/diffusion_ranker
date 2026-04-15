@@ -3,7 +3,7 @@ set -euo pipefail
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
-python /root/difusion_ranker/uncondition/ddpm_train_ranker.py \
+python /root/diffusion_ranker/uncondition/ddpm_train_ranker.py \
   --train_data_pt "${TRAIN_PT:-/root/autodl-tmp/ddpm_ranker_train_data_deno10.pt}" \
   --output_dir "${CKPT_DIR:-/root/autodl-tmp/ddpm_ranker_ckpt_deno10}" \
   --batch_size "${BATCH_SIZE:-512}" \
