@@ -225,10 +225,19 @@ def train_epoch(
     num_cand: int,
 ) -> dict[str, float]:
     ranker.train()
+    device = next(ranker.parameters()).device
+    dtype = next(ranker.parameters()).dtype
+    num_candidate_groups_show = max(int(num_candidate_groups), 1)
     epoch_loss = epoch_mse = epoch_kl = 0.0
     n_batch = 0
     pbar = tqdm(train_loader, desc="train", leave=False, total=len(train_loader))
     for batch in pbar:
+        batch_c, batch_p, batch_r = batch
+        batch = (
+            batch_c.to(device=device, dtype=dtype, non_blocking=True),
+            batch_p.to(device=device, dtype=dtype, non_blocking=True),
+            batch_r.to(device=device, dtype=dtype, non_blocking=True),
+        )
         batch_loss = batch_mse = batch_kl = 0.0
         groups = split_batch_into_candidate_groups(batch, num_candidate_groups, num_cand)
         for group in groups:
@@ -236,11 +245,10 @@ def train_epoch(
             batch_loss += group_loss
             batch_mse += group_mse
             batch_kl += group_kl
-        num_candidate_groups = max(num_candidate_groups, 1)
         pbar.set_postfix(
-            batch_loss=float(batch_loss.detach() / num_candidate_groups),
-            batch_mse_loss=float(batch_mse.detach() / num_candidate_groups),
-            batch_kl_loss=float(batch_kl.detach() / num_candidate_groups),
+            batch_loss=float(batch_loss.detach() / num_candidate_groups_show),
+            batch_mse_loss=float(batch_mse.detach() / num_candidate_groups_show),
+            batch_kl_loss=float(batch_kl.detach() / num_candidate_groups_show),
         )
         optimizer.zero_grad(set_to_none=True)
         batch_loss.backward()
@@ -249,15 +257,17 @@ def train_epoch(
         epoch_loss += float(batch_loss.detach())
         epoch_mse += float(batch_mse.detach())
         epoch_kl += float(batch_kl.detach())
-    epoch_loss /= n_batch
-    epoch_mse /= n_batch
-    epoch_kl /= n_batch
-
-    out = {
-        "epoch_loss": epoch_loss,
-        "epoch_mse": epoch_mse,
-        "epoch_kl": epoch_kl,
-    }
+    if n_batch == 0:
+        out = {"epoch_loss": 0.0, "epoch_mse": 0.0, "epoch_kl": 0.0}
+    else:
+        epoch_loss /= n_batch
+        epoch_mse /= n_batch
+        epoch_kl /= n_batch
+        out = {
+            "epoch_loss": epoch_loss,
+            "epoch_mse": epoch_mse,
+            "epoch_kl": epoch_kl,
+        }
 
     if scheduler is not None:
         scheduler.step()

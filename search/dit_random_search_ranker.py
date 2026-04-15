@@ -1,33 +1,14 @@
 #!/usr/bin/env python3
 """
-DiT **在线** Random Search：每轮从 ``num_candidates`` 个不同随机种子的 batch 中选优。
-
-- **``--verifier fid``**（默认）：与 ``dit_random_search_fid_reward.py`` 相同思路，用
-  ``reward.fid_reward``（对 ImageNet val 的 FID 改善，越大越好）选 batch；维护已选样本的
-  running Inception 统计量。
-- **``--verifier ranker``**：用训练好的 **Diffusion ranker**（``ranker/model.py``，checkpoint
-  与 ``ranker/train.py`` 一致）对 ``DitRolloutReprCapture`` 表征做 **batch 内平均分** 选优。
-
-表征抓取与训练数据一致：``DitRolloutReprCapture`` 全层比例 + 默认步比例；推理时用 checkpoint 里的
-``selected_repr_keys`` 子集拼 token。
-
-用法::
+example:
 
   CUDA_VISIBLE_DEVICES=0 python3 search/dit_random_search_ranker.py \
-    --verifier fid \
-    --dit_path /root/autodl-tmp/DiT-XL-2-256 \
-    --imagenet_val /root/autodl-tmp/imagenet/val \
-    --output_dir /root/autodl-tmp/eval_dit_rs_fid \
+    --ranker_ckpt /root/diffusion_ranker/ranker/ranker_epoch100.pt \
+    --output_dir /root/autodl-tmp/eval_dit_rs_ranker \
     --num_samples 5000 \
     --init_random_samples 1024 \
-    --batch_size 32 \
-    --num_candidates 8 \
-    --deno_steps 10 --guidance_scale 1.0
+    --batch_size 32
 
-  # ranker 选优（需 ``--ranker_ckpt``）::
-  python3 search/dit_random_search_ranker.py --verifier ranker \
-    --ranker_ckpt /path/to/ranker_final.pt \
-    ...
 """
 
 from __future__ import annotations

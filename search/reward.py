@@ -182,6 +182,13 @@ def imagereward_reward(batch_paths:list[Path],model) -> float:
         reward_ls.append(reward)
     return np.mean(reward_ls)
 
+########################     end imagereward reward     ##############################
+
+
+
+########################     ranker reward     ##############################
+
+
     
 
 
