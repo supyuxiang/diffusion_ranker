@@ -917,6 +917,7 @@ def rollout_dit_perclass32_and_save_repr(
     model_name: str | Path = "dit-xl-2-256",
     num_inference_steps: int = 10,
     guidance_scale: float = 1.0,
+    per_class: int = 64,
     batch_size: int = 256,
     seed: int = 42,
     dtype: str = "bf16",
@@ -929,12 +930,13 @@ def rollout_dit_perclass32_and_save_repr(
     png_compress_level: int = 1,
 ) -> torch.Tensor:
     """
-    输入 ``layer_ratio`` + ``step_ratio``，生成 32x1000 个 tensor 样本，并在对应 step 处做 MC 补全评估 reward。
+    输入 ``layer_ratio`` + ``step_ratio``，生成 ``per_class x 1000`` 个 tensor 样本，
+    并在对应 step 处做 MC 补全评估 reward。
 
     产物：
     - 图像：``image_output_dir/image_{global_idx:05d}_{label:05d}_mc{j:02d}.png``（按 sample 顺序，每个 sample 连续 mc 张）
     - 表征+reward：``repr_output_pt``（同顺序 ``tensor``、``reward``）
-    - 返回：``tensor``，shape = ``(32000, hidden_dim)``
+    - 返回：``tensor``，shape = ``(1000 * per_class, hidden_dim)``
     """
     if not (0.0 <= float(layer_ratio) <= 1.0):
         raise ValueError(f"layer_ratio 应在 [0,1]，得到 {layer_ratio}")
@@ -944,6 +946,8 @@ def rollout_dit_perclass32_and_save_repr(
         raise ValueError(f"pooling_mode 仅支持 mean/last，得到 {pooling_mode!r}")
     if int(mc) <= 0:
         raise ValueError(f"mc 必须为正整数，得到 {mc}")
+    if int(per_class) <= 0:
+        raise ValueError(f"per_class 必须为正整数，得到 {per_class}")
 
     image_output_dir = Path(image_output_dir).expanduser().resolve()
     repr_output_pt = Path(repr_output_pt).expanduser().resolve()
@@ -969,7 +973,8 @@ def rollout_dit_perclass32_and_save_repr(
         from reward import load_imagereward
     rm_model = load_imagereward(device)
 
-    num_classes, per_class = 1000, 32
+    num_classes = 1000
+    per_class = int(per_class)
     num_samples = num_classes * per_class
     labels_all = [c for c in range(num_classes) for _ in range(per_class)]
     num_batches = (num_samples + batch_size - 1) // batch_size
@@ -1262,7 +1267,7 @@ def rollout_dit_perclass32_and_save_repr(
             "dtype": str(dtype),
             "image_dir": str(image_output_dir),
             "image_filename_pattern": "image_{global_idx:05d}_{imagenet_label:05d}_mc{mc_idx:02d}.png",
-            "label_order": "class-major, each class repeated 32 times",
+            "label_order": f"class-major, each class repeated {per_class} times",
         },
         repr_output_pt,
     )
