@@ -43,7 +43,7 @@ if str(_ROOT) not in sys.path:
 
 
 
-from ranker.model import ListwiseDiffusionRanker, PointwiseDiffusionRanker
+from ranker.model import *
 from ranker.utils import Constants_default, ensure_image_reward_on_path, set_device, set_seed, labels_1k
 from ranker.loss import mse_kl_combined_loss
 from ranker.dataset import DiffusionRankerDataset
