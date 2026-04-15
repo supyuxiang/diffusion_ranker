@@ -188,6 +188,108 @@ def imagereward_reward(batch_paths:list[Path],model) -> float:
 
 ########################     ranker reward     ##############################
 
+def load_ranker(ranker_type:str,
+                input_dim_candidate:int=1152,
+                input_dim_prompt:int=3584,
+                hidden_dim:int=128,
+                num_heads:int=4,
+                dropout:float=0.1,
+                num_layers:int=4,
+                half:bool=True
+                ):
+    assert ranker_type in ['pointwise','listwise','cross_attention']
+    if ranker_type == 'pointwise':
+        from ranker.model import DiffusionRanker_MLP
+        ranker = DiffusionRanker_MLP(
+            input_dim_candidate=input_dim_candidate,
+            input_dim_prompt=input_dim_prompt,
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            num_layers=num_layers,
+            half=half
+        )
+    elif ranker_type == 'listwise':
+        pass
+    else:
+        pass
+
+def load_repr(layer_ratio:float,step_idx:int,pooling_mode:str='mean'):
+    assert pooling_mode in ['mean','last']
+    import torch
+    base_dir = Path('/root/autodl-tmp/repr_candidate_deno10_cfg1.0') / str(pooling_mode)
+    repr_path = base_dir / f's_{step_idx}_r{layer_idx}.pt'
+    
+    raw_repr = torch.load(repr_path,map_location='cpu',weights_only=False)
+    # split. [80000,1152] -> 16 x [5000,1152]
+    repr_ls = []
+    for i in range(16):
+        start_idx = i*5000
+        end_idx = start_idx + 5000
+        repr_i = raw_repr[start_idx:end_idx]
+        repr_ls.append(repr_i)
+        del repr_i
+    return repr_ls
+
+def path2idx(path:Path) -> int:
+    cand_idx = int(path.split('/')[-2].split('_')[-1])
+    img_idx = int(path.stem.split('_')[-2])
+    return cand_idx,img_idx
+    
+
+def get_prompt_hstates(path:Path,prompt_hstates_ls:list[torch.Tensor]) -> torch.Tensor:
+    label_idx = int(path.stem.split('_')[-1])
+    prompt_hstates = prompt_hstates_ls[label_idx]
+    return prompt_hstates
+    
+
+
+def ranker_reward(batch_paths:list[Path],ranker,repr_ls:list[torch.Tensor],prompt_hstates_ls:list[torch.Tensor]) -> float:
+    assert len(batch_paths) % 10 == 0
+    reward_batch_size = len(batch_paths) // 10
+    total_reward = 0
+
+    cand_idx_ls , img_idx_ls = [],[]
+    for path in batch_paths:
+        cand_idx,img_idx = path2idx(path)
+        cand_idx_ls.append(cand_idx)
+        img_idx_ls.append(img_idx)
+    
+    batch_prompt_hstates = [
+        get_prompt_hstates(path,prompt_hstates_ls) for path in batch_paths
+    ]
+    
+    batch_repr_ls = [
+        repr_ls[cand_idx][img_idx] for cand_idx,img_idx in zip(cand_idx_ls,img_idx_ls)
+    ] 
+    batch_repr = torch.stack(batch_repr_ls,dim=0) # b,1152
+
+    for i in range(0,len(batch_paths),reward_batch_size):
+        mini_batch = batch_repr[i:i+reward_batch_size]
+        # [b,1152] x 10 -> [b,10,1152]
+        candidate_hstates = torch.stack(mini_batch,dim=1) # b,10,1152
+        prompt_hstates = batch_prompt_hstates[i:i+reward_batch_size]
+        prompt_hstates = torch.stack(prompt_hstates,dim=1) # b,10,hidden_dim
+
+        reward = ranker(candidate_hstates,prompt_hstates)
+        total_reward += reward.mean().item()
+
+    return total_reward / len(batch_paths)
+        
+def load_prompt_hstates_ls() -> list[torch.Tensor]:
+    path = Path('/root/autodl-tmp/ranker/prompt_repr_mean_pooling/from_hidden_states_ratio0.6.pt')
+    return torch.load(path,map_location='cpu',weights_only=False)
+
+############ end ranker reward     ##############################
+    
+
+
+    
+    
+
+
+
+
 
     
 
