@@ -216,6 +216,40 @@ Because the ranker operates on compact feature vectors and uses only a few Trans
 
 \subsection{Experiments}
 
+\subsubsection{Unconditional DDPM generation}
+\label{sec:exp_uncond_ddpm}
+
+\paragraph{Setting}
+We additionally evaluate \method on unconditional generation with the DDPM backbone \texttt{google/ddpm-celebahq-256} \citep{ho2020ddpm}. We follow the same inference-time scaling protocol used throughout this paper: for each sampling round, we maintain a candidate pool of trajectories generated from different random seeds, then select one trajectory per round. Since the backbone is unconditional, no class or text condition is injected into the ranker input. The ranker operates directly on diffusion-derived image representations and predicts scalar preference scores for candidate comparison.
+
+For supervision, we use fixed-prompt reward signals on final decoded images (e.g., ImageReward or CLIP-style similarity with prompt ``a photo of a human face'') to construct teacher targets. This keeps the reward definition aligned with unconditional face synthesis while preserving a unified training interface with the conditional setting.
+
+\paragraph{Baselines}
+We compare the following methods under matched candidate budgets: (i) base DDPM sampling without reranking, (ii) external-reward best-of-$N$ selection, (iii) \method-based best-of-$N$ selection, (iv) FK-Steering with external reward (DIFFERENCE / MAX), and (v) FK-Steering with \method as the potential model (DIFFERENCE / MAX). Following standard unconditional evaluation on CelebA-HQ style data, we report FID and IS against a held-out real-image reference set; we also report CLIPScore with the same fixed prompt as an auxiliary semantic metric.
+
+\paragraph{Results}
+Main unconditional DDPM results are shown in Table~\ref{tab:main_uncond_ddpm}.
+
+\begin{table}[htbp]
+\centering
+\caption{Unconditional DDPM (\texttt{google/ddpm-celebahq-256}) on CelebA-HQ-style evaluation. Lower FID is better; higher IS/CLIPScore is better.}
+\label{tab:main_uncond_ddpm}
+\begin{tabular}{lccccc}
+\toprule
+Method & Candidate / Particle Budget & FID$\downarrow$ & IS$\uparrow$ & CLIPScore$\uparrow$ & Latency (s/img)$\downarrow$ \\
+\midrule
+Base DDPM & 1 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+Best-of-$N$ + CLIPScore & 16 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+Best-of-$N$ + ImageReward & 16 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+Best-of-$N$ + \method & 16 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+FK (DIFFERENCE) + External Reward & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+FK (MAX) + External Reward & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+FK (DIFFERENCE) + \method & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+FK (MAX) + \method & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \subsubsection{Class-conditional posterior sampling}
 \label{sec:exp_class_posterior}
 
@@ -254,40 +288,6 @@ FK (DIFFERENCE) & External Reward & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm
 FK (MAX) & External Reward & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
 FK (DIFFERENCE) & \method & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
 FK (MAX) & \method & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsubsection{Unconditional DDPM generation}
-\label{sec:exp_uncond_ddpm}
-
-\paragraph{Setting}
-We additionally evaluate \method on unconditional generation with the DDPM backbone \texttt{google/ddpm-celebahq-256} \citep{ho2020ddpm}. We follow the same inference-time scaling protocol as in Section~\ref{sec:exp_class_posterior}: for each sampling round, we maintain a candidate pool of trajectories generated from different random seeds, then select one trajectory per round. Since the backbone is unconditional, no class or text condition is injected into the ranker input. The ranker operates directly on diffusion-derived image representations and predicts scalar preference scores for candidate comparison.
-
-For supervision, we use fixed-prompt reward signals on final decoded images (e.g., ImageReward or CLIP-style similarity with prompt ``a photo of a human face'') to construct teacher targets. This keeps the reward definition aligned with unconditional face synthesis while preserving a unified training interface with the conditional setting.
-
-\paragraph{Baselines}
-We compare the following methods under matched candidate budgets: (i) base DDPM sampling without reranking, (ii) external-reward best-of-$N$ selection, (iii) \method-based best-of-$N$ selection, (iv) FK-Steering with external reward (DIFFERENCE / MAX), and (v) FK-Steering with \method as the potential model (DIFFERENCE / MAX). Following standard unconditional evaluation on CelebA-HQ style data, we report FID and IS against a held-out real-image reference set; we also report CLIPScore with the same fixed prompt as an auxiliary semantic metric.
-
-\paragraph{Results}
-Main unconditional DDPM results are shown in Table~\ref{tab:main_uncond_ddpm}.
-
-\begin{table}[htbp]
-\centering
-\caption{Unconditional DDPM (\texttt{google/ddpm-celebahq-256}) on CelebA-HQ-style evaluation. Lower FID is better; higher IS/CLIPScore is better.}
-\label{tab:main_uncond_ddpm}
-\begin{tabular}{lccccc}
-\toprule
-Method & Candidate / Particle Budget & FID$\downarrow$ & IS$\uparrow$ & CLIPScore$\uparrow$ & Latency (s/img)$\downarrow$ \\
-\midrule
-Base DDPM & 1 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
-Best-of-$N$ + CLIPScore & 16 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
-Best-of-$N$ + ImageReward & 16 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
-Best-of-$N$ + \method & 16 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
-FK (DIFFERENCE) + External Reward & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
-FK (MAX) + External Reward & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
-FK (DIFFERENCE) + \method & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
-FK (MAX) + \method & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
 \bottomrule
 \end{tabular}
 \end{table}

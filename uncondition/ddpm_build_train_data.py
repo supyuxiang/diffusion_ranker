@@ -27,12 +27,12 @@ def _sorted_rollout_pngs(d: Path) -> list[Path]:
 
     def _key(p: Path) -> int:
         s = p.stem
-        if s.isdigit():
+        if s.isdigit(): # 如果 s 是数字，则返回 int(s)
             return int(s)
-        for tok in s.split("_"):
+        for tok in s.split("_"): # 如果 s 不是数字，则分割 s 并返回第一个数字
             if tok.isdigit():
                 return int(tok)
-        raise ValueError(f"cannot parse index from {p.name}")
+        raise ValueError(f"cannot parse index from {p.name}") # 如果 s 不是数字，则抛出错误
 
     return sorted(paths, key=_key)
 
