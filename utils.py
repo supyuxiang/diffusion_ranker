@@ -114,7 +114,7 @@ Constants_default = {
     'optimizer':'adamw',
     'scheduler':'cosine',
     'ranker_type':'listwise',
-    'parallel_size':4,
+    'parallel_size':16,
 }
 
 

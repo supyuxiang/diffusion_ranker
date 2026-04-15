@@ -14,6 +14,22 @@ r"""
       --cached_rewards_json /path/reward_ls.json
 
 多键：``--layer_ratios 0.1,0.6`` ``--step_ratios 0,1``；不筛层/步：``--layer_ratios all`` ``--step_ratios all``。
+
+example:
+CUDA_VISIBLE_DEVICES=0 python3 -m ranker.train \
+                        --num_epochs 100 \
+                        --layer_ratios 0.6 \
+                        --step_ratios 0.0 \
+                        --output_dir /root/autodl-tmp/ranker_train_l06_s00 \
+                        --proj_dim 64 \
+                        --num_list_layers 2 \
+                        --num_list_heads 8 \
+                        --dropout 0.1 \
+                        --ranker_type listwise \
+                        --group_size 8 \
+                        --lr 1e-4 \
+                        --optimizer adamw \
+                        --seed 42 
 """
 
 from __future__ import annotations
@@ -199,6 +215,12 @@ def build_lr_scheduler(
         )
 
     if name == "cosine":
+        # warmup_epochs==0: 不能用 LinearLR(total_iters=0) + SequentialLR(milestones=[0])，
+        # PyTorch 会立刻切到余弦且第一步 lr 极小甚至为负；num_epochs==1 时 T_max=1 又碰巧接近 base_lr。
+        if warmup_epochs <= 0:
+            return CosineAnnealingLR(
+                optimizer, T_max=max(int(num_epochs), 1), eta_min=eta_min
+            )
         w = LinearLR(
             optimizer, start_factor=1e-8, end_factor=1.0, total_iters=warmup_epochs
         )
