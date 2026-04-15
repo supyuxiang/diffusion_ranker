@@ -1,15 +1,11 @@
 """
-Diffusion ranker：吃 **单个** 已选定的 (step ratio, layer ratio, pooling) 对应的 hidden，
-输出 reward / 排序 logits。
+Diffusion ranker
 
-**输入约定**（单条候选一张图）：
 
-- ``x`` shape ``(B, 1, hidden_dim)`` 或 ``(B, hidden_dim)``：数据侧只保留一种 (步, 层, pooling) 组合的一条向量。
-- ``hidden_dim`` 与 DiT 一致（如 XL 为 1152）。
-
-**Listwise**：同一上下文下 ``K`` 个候选，``x`` shape ``(B, K, 1, hidden_dim)`` 或 ``(B, K, hidden_dim)``，
-先对每个候选做与 pointwise 相同的单向量编码，再在候选维上做 ``TransformerEncoder``（与
-``language_ranker-main`` 里在候选序列上堆叠 TransformerBlock 的思路一致，此处用 batch_first API）。
+ranker_type:
+    - transformer
+    - mlp
+    - cross_attention
 """
 
 
