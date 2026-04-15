@@ -205,9 +205,8 @@ def split_batch_into_candidate_groups(
 ):
     sample_indices_ls = []
     batch_size = batch[0].size(0)
-    indices = torch.arange(batch_size)
     for i in range(num_candidate_groups):
-        group_indices = random.sample(indices, num_cand)
+        group_indices = random.sample(range(batch_size), num_cand)
         sample_indices_ls.append(group_indices)
     groups = [
         [batch[0][indices], batch[1][indices], batch[2][indices]] for indices in sample_indices_ls
@@ -233,6 +232,8 @@ def train_epoch(
     scheduler,
     train_loader,
     loss_fn,
+    num_candidate_groups: int,
+    num_cand: int,
 ) -> dict[str, float]:
     ranker.train()
     epoch_loss = epoch_mse = epoch_kl = 0.0
@@ -240,16 +241,17 @@ def train_epoch(
     pbar = tqdm(train_loader, desc="train", leave=False, total=len(train_loader))
     for batch in pbar:
         batch_loss = batch_mse = batch_kl = 0.0
-        groups = split_batch_into_candidate_groups(batch, args.num_candidate_groups, args.num_cand)
+        groups = split_batch_into_candidate_groups(batch, num_candidate_groups, num_cand)
         for group in groups:
             group_loss, group_mse, group_kl = process_single_candidate_group(ranker, loss_fn, group)
             batch_loss += group_loss
             batch_mse += group_mse
             batch_kl += group_kl
+        num_candidate_groups = max(num_candidate_groups, 1)
         pbar.set_postfix(
-            batch_loss=batch_loss / args.num_candidate_groups,
-            batch_mse_loss=batch_mse / args.num_candidate_groups,
-            batch_kl_loss=batch_kl / args.num_candidate_groups,
+            batch_loss=float(batch_loss.detach() / num_candidate_groups),
+            batch_mse_loss=float(batch_mse.detach() / num_candidate_groups),
+            batch_kl_loss=float(batch_kl.detach() / num_candidate_groups),
         )
         optimizer.zero_grad(set_to_none=True)
         batch_loss.backward()
@@ -336,9 +338,18 @@ def main() -> None:
             scheduler,
             train_loader,
             loss_fn,
+            args.num_candidate_groups,
+            args.num_cand,
         )
-        print(f"epoch {epoch + 1}/{args.num_epochs}  lr={scheduler.get_last_lr()[0]:.2e}  "
-            f"epoch_loss={o['epoch_loss']:.6f}  epoch_mse_loss={o['epoch_mse_loss']:.6f}  epoch_kl_loss={o['epoch_kl_loss']:.6f}")
+        lr_s = (
+            scheduler.get_last_lr()[0]
+            if scheduler is not None
+            else optimizer.param_groups[0]["lr"]
+        )
+        print(
+            f"epoch {epoch + 1}/{args.num_epochs}  lr={lr_s:.2e}  "
+            f"epoch_loss={o['epoch_loss']:.6f}  epoch_mse={o['epoch_mse']:.6f}  epoch_kl={o['epoch_kl']:.6f}"
+        )
         if (epoch + 1) % max(args.save_freq, 1) == 0:
             ckpt = {
                 "epoch": epoch + 1,

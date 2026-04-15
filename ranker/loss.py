@@ -30,4 +30,4 @@ class mse_kl_combined_loss(nn.Module):
         kl = kl_reward_ranker_loss(pred_scores, teacher_scores, self.tau)
         alpha = float(self.alpha)
         total = alpha * mse + (1.0 - alpha) * kl
-        return torch.tensor(total), torch.tensor(mse), torch.tensor(kl)
+        return total, mse, kl
