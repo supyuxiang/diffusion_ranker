@@ -2,10 +2,10 @@
 example:
 CUDA_VISIBLE_DEVICES=0 python /root/diffusion_ranker/dit_scaling_with_different_steps.py \
     --model_name dit-xl-2-256 \
-    --cfg 1.0 \
-    --batch_size 512 \
+    --cfg 1.5 \
+    --batch_size 128 \
     --num_gen 50000 \
-    --save_dir /root/autodl-tmp/outputs/dit_scaling_with_different_steps \
+    --save_dir /root/autodl-tmp/outputs/dit_scaling_with_different_steps_cfg1.5 \
     --imagenet_val /root/autodl-tmp/imagenet/val
 """
 
@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--save_dir",
         type=str,
-        default="/root/autodl-tmp/outputs/dit_scaling_with_different_steps",
+        default="/root/autodl-tmp/outputs/dit_scaling_with_different_steps_cfg1.25",
     )
     p.add_argument(
         "--imagenet_val",
