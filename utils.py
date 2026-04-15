@@ -958,6 +958,9 @@ def rollout_dit_perclass32_and_save_repr(
     set_seed(seed)
     pipe = dit_loader(model_name, device=device, dtype=dtype)
     pipe.set_progress_bar_config(disable=True)
+    # 强制离线，避免 ImageReward 初始化时 tokenizer 联网探测导致长时间无输出
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
     ensure_image_reward_on_path()
     try:
         from search.reward import load_imagereward
