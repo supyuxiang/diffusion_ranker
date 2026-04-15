@@ -5,12 +5,18 @@
 **每一层 DiT block**（layer ratio 覆盖全部 block）、**每一个 hook 步索引 0..T-1**（step ratio
 全覆盖）、pooling 为 **mean_dim1** 与 **last_token**（与 :class:`utils.DitRolloutReprCapture` 一致）。
 
-默认：``deno_steps=10``，``dtype=bf16``，``guidance_scale=1.0``。与 ``torch.compile`` 不兼容。
+默认：``deno_steps=10``，``dtype=bf16``，``guidance_scale=1.0``，``--repr_layout dense``。
+``dense`` 时 repr 键里 ``r`` 多为 ``i/(n_blocks-1)``（如 0.037037）；若要 ``0.1…1.0`` 与稀疏步，
+用 ``--repr_layout sparse``（与 ``DitRolloutReprCapture`` 类默认网格一致）。与 ``torch.compile`` 不兼容。
 
 示例::
 
     python3 /root/diffusion_ranker/ranker/rollout_trianing_data.py \
     --batch_size 256 --deno_steps 10 --guidance_scale 1.0 --dtype bf16
+
+    # 稀疏层/步（导出文件名里常见 s*_r0.1 等）::
+    python3 /root/diffusion_ranker/ranker/rollout_trianing_data.py \
+    --repr_layout sparse --batch_size 256 --deno_steps 10 --guidance_scale 1.0 --dtype bf16
 """
 
 from __future__ import annotations
@@ -59,6 +65,16 @@ def _all_step_ratio_ls(num_inference_steps: int) -> list[float]:
     if t <= 1:
         return [0.0]
     return [i / (t - 1) for i in range(t)]
+
+
+def _sparse_layer_ratios_default() -> tuple[float, ...]:
+    """与 ``utils.DitRolloutReprCapture`` 默认 ``layer_ratios`` 一致：0.1 … 1.0。"""
+    return tuple(0.1 * i for i in range(1, 11))
+
+
+def _sparse_step_ratio_ls_default() -> list[float]:
+    """与 ``DitRolloutReprCapture`` 默认 ``step_ratio_ls`` 一致。"""
+    return [0.0, 0.25, 0.5, 0.75, 1.0]
 
 
 def _output_dir(guidance_scale: float, deno_steps: int, images_per_class: int) -> Path:
@@ -174,6 +190,16 @@ def main() -> None:
         choices=("fp16", "bf16"),
         help="表征落盘 dtype（默认 bf16 与推理 bf16 一致）",
     )
+    p.add_argument(
+        "--repr_layout",
+        default="dense",
+        choices=("dense", "sparse"),
+        help=(
+            "dense：每个 DiT block 一层、每个去噪步都抓，键里 r 多为 i/(n_blocks-1)（如 0.037037）；"
+            "sparse：与 DitRolloutReprCapture 默认一致，层 0.1…1.0、步 0/0.25/0.5/0.75/1，"
+            "文件名多为 s*_r0.1 这类小数。"
+        ),
+    )
     args = p.parse_args()
 
     device = set_device()
@@ -184,8 +210,12 @@ def main() -> None:
     pipe.set_progress_bar_config(disable=True)
 
     n_blocks = len(pipe.transformer.transformer_blocks)
-    layer_ratios = _all_layer_ratios(n_blocks)
-    step_ratio_ls = _all_step_ratio_ls(args.deno_steps)
+    if args.repr_layout == "dense":
+        layer_ratios = _all_layer_ratios(n_blocks)
+        step_ratio_ls = _all_step_ratio_ls(args.deno_steps)
+    else:
+        layer_ratios = _sparse_layer_ratios_default()
+        step_ratio_ls = _sparse_step_ratio_ls_default()
 
     store_dtype = (
         torch.bfloat16 if args.repr_store_dtype == "bf16" else torch.float16
@@ -228,6 +258,7 @@ def main() -> None:
     print(f"representations saved -> {repr_path}")
     print(
         f"done -> {out_dir} ({n} images); "
+        f"repr_layout={args.repr_layout} "
         f"layers={len(layer_ratios)} steps={len(step_ratio_ls)} pooling=mean+last"
     )
 
