@@ -141,6 +141,7 @@ def main_logits() -> None:
         pooling_mode,
         batch_size=4,
     )
+    save_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(prompt_repr, save_path)
     print(f"Prompt representations saved to {save_path} shape={tuple(prompt_repr.shape)}")
 
@@ -158,6 +159,7 @@ def main_hidden_states():
         pooling_mode,
         batch_size=4,
     )
+    save_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(prompt_repr, save_path)
     print(f"Prompt representations saved to {save_path} shape={tuple(prompt_repr.shape)}")
 
