@@ -5,22 +5,27 @@ r"""
 依赖：与 ``ranker/train.py`` 一致的单键 DiT 表征（``DitRolloutReprCapture`` 的 ``mean``）+
 ``prompt_repr`` 表 ``(1000, D_prompt)``。
 
-示例::
+**默认**：search 阶段**只**从预计算候选池无放回抽样。未写 ``precomputed_*`` 时，自动使用与
+``search/dit_random_search_clipscore.py`` / ``search/rollout.py`` 相同的路径约定（由 ``--guidance_scale``
+与 ``--deno_steps`` 拼出）::
+
+  图：``/root/autodl-tmp/dit_candidates_50k_cfg{gs}_deno{T}/candidate_XXXX/``
+  repr：``/root/autodl-tmp/repr_candidate_deno{T}_cfg{gs}/idx{i}.pt``（与 ``fk_search/dit_ranker.py`` 示例一致）
+
+若要在每一轮 search 里临时用 DiT 采样候选，须显式加 ``--online_rollout_candidates``。
+
+最简示例（依赖上述默认目录已存在；``--repr_key`` 须与 rollout 抓取一致）::
 
   CUDA_VISIBLE_DEVICES=0 python3 search/dit_random_search_ranker.py \
-    --ranker_ckpt /root/autodl-tmp/ranker_ckpt_listwise_l06_s00/ranker_epoch100.pt \
-    --prompt_repr_pt /root/diffusion_ranker/ranker/prompt_repr_mean_pooling/from_hidden_states_ratio0.6.pt \
-    --repr_key s0_r0.6 \
+    --ranker_ckpt ... --prompt_repr_pt ... --repr_key s1_r0.6 \
     --output_dir /root/autodl-tmp/rs_ranker_out \
-    --num_samples 5000 \
-    --batch_size 32 \
-    --num_candidates 8 \
-    --init_random_samples 1024
+    --num_samples 5000 --batch_size 32 --num_candidates 8
 
-可选：预计算候选池（与旧脚本布局相同）::
+显式覆盖 suite：``--precomputed_suite_image_root`` + ``--precomputed_suite_repr_dir``。
 
-  --precomputed_suite_repr_dir ... --precomputed_suite_image_root ...
-  --precomputed_candidates_pt ... --precomputed_candidates_image_dir ...
+单 pt 模式：``--precomputed_candidates_pt`` + ``--precomputed_candidates_image_dir``。
+
+在线采样：``--online_rollout_candidates``（可配合 ``--init_random_samples``）。
 """
 
 from __future__ import annotations
@@ -533,6 +538,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--precomputed_suite_num_candidates", type=int, default=16)
     p.add_argument("--precomputed_suite_batch_index", type=int, default=0)
     p.add_argument("--init_suite_candidate_idx", type=int, default=0)
+    p.add_argument(
+        "--online_rollout_candidates",
+        action="store_true",
+        help="search 每轮用 DiT 现生成候选；默认关闭（须从 precomputed_* 池抽样）",
+    )
     return p.parse_args()
 
 
@@ -540,8 +550,32 @@ def _parse_float_list(s: str) -> tuple[float, ...]:
     return tuple(float(x.strip()) for x in s.split(",") if x.strip())
 
 
+def default_candidate_suite_paths(guidance_scale: float, deno_steps: int) -> tuple[str, str]:
+    """与 ``dit_random_search_clipscore`` / ``rollout.py`` / ``fk_search/dit_ranker`` 惯例一致。"""
+    gs, T = float(guidance_scale), int(deno_steps)
+    image_root = f"/root/autodl-tmp/dit_candidates_50k_cfg{gs}_deno{T}"
+    repr_dir = f"/root/autodl-tmp/repr_candidate_deno{T}_cfg{gs}"
+    return image_root, repr_dir
+
+
 def main() -> None:
     args = parse_args()
+
+    if (
+        not args.online_rollout_candidates
+        and not str(args.precomputed_candidates_pt).strip()
+        and not str(args.precomputed_suite_image_root).strip()
+        and not str(args.precomputed_suite_repr_dir).strip()
+    ):
+        ir, rd = default_candidate_suite_paths(args.guidance_scale, args.deno_steps)
+        args.precomputed_suite_image_root = ir
+        args.precomputed_suite_repr_dir = rd
+        print(
+            "未指定 precomputed_*，使用默认候选路径（与 clipscore/imagereward/rollout 一致）：\n"
+            f"  --precomputed_suite_image_root {ir}\n"
+            f"  --precomputed_suite_repr_dir {rd}"
+        )
+
     output_dir = Path(args.output_dir).expanduser().resolve()
     imagenet_val = Path(args.imagenet_val).expanduser().resolve()
     dit_path = Path(args.dit_path).expanduser().resolve()
@@ -560,8 +594,18 @@ def main() -> None:
     if use_suite and not str(args.precomputed_suite_repr_dir).strip():
         raise SystemExit("precomputed_suite_image_root 需要 precomputed_suite_repr_dir")
 
+    precomputed = use_pt_single or use_suite
+    if not args.online_rollout_candidates and not precomputed:
+        raise SystemExit(
+            "random search 默认从你事先 rollout 好的候选池里抽样（每轮无放回选 --num_candidates 条）。\n"
+            "请指定其一：\n"
+            "  --precomputed_candidates_pt ... --precomputed_candidates_image_dir ...\n"
+            "  或 --precomputed_suite_repr_dir ... --precomputed_suite_image_root ...\n"
+            "若要在 search 阶段每轮用 DiT 临时采样候选，请加：--online_rollout_candidates"
+        )
+
     init_from_suite = use_suite and args.init_random_samples > 0
-    need_dit = (not (use_pt_single or use_suite)) or (
+    need_dit = (args.online_rollout_candidates and not precomputed) or (
         args.init_random_samples > 0 and not init_from_suite
     )
     if need_dit and not dit_path.is_dir():
