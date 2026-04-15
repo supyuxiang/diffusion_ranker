@@ -7,8 +7,10 @@ import json
 
 
 def load_prompt_repr(prompt_repr_pt:Path=Path('/root/diffusion_ranker/ranker/prompt_repr_mean_pooling/from_logits.pt')):
-    prompt_repr = torch.load(prompt_repr_pt,map_location='cpu',weights_only=False)
-    return prompt_repr # 1000,repr_dim
+    obj = torch.load(prompt_repr_pt, map_location="cpu", weights_only=False)
+    if isinstance(obj, dict) and "tensor" in obj:
+        return obj["tensor"]
+    return obj  # (num_classes, repr_dim)
 
 
 class DiffusionRankerDataset(Dataset): # output: candidate_hidden, prompt_hidden, reward
@@ -20,13 +22,27 @@ class DiffusionRankerDataset(Dataset): # output: candidate_hidden, prompt_hidden
     
     def load_repr_and_reward(self):
         with open(self.reward_path,'r',encoding='utf-8') as f:
-            self.reward_ls = json.load(f) # 1000,1
-
+            self.reward_ls = json.load(f) 
         self.candidate_repr = torch.load(self.candidate_repr_path,map_location='cpu')['tensor'] 
         self.candidate_hidden_dim = self.candidate_repr.shape[1]
         assert len(self.reward_ls) == len(self.candidate_repr)
         
         self.prompt_repr = load_prompt_repr(self.prompt_repr_path)
+        if self.prompt_repr.dim() != 2:
+            raise ValueError(
+                f"prompt_repr 期望 2D (num_classes, D)，当前 shape={tuple(self.prompt_repr.shape)}"
+            )
+        n_cand = len(self.candidate_repr)
+        n_cls = self.prompt_repr.shape[0]
+        if n_cls != n_cand:
+            if n_cand % n_cls != 0:
+                raise ValueError(
+                    f"无法把 prompt ({n_cls} 行) 对齐到候选 ({n_cand} 行)："
+                    f"{n_cand} 不能被 {n_cls} 整除。"
+                )
+            k = n_cand // n_cls
+            # 类 0 的 prompt 重复 k 次，再接类 1 …（与按类成段的 candidate 顺序一致）
+            self.prompt_repr = self.prompt_repr.repeat_interleave(k, dim=0)
         self.prompt_hidden_dim = self.prompt_repr.shape[1]
         assert len(self.reward_ls) == len(self.prompt_repr)
 
