@@ -19,12 +19,13 @@ python /root/diffusion_ranker/ranker/train.py \
     --num_layers 2 \
     --dropout 0.1 \
     --optimizer adamw \
-    --scheduler cosine \
+    --lr_scheduler cosine \
     --warmup_ratio 0.03 \
     --lr_min_ratio 0.01 \
     --alpha 0.8 \
     --tau 1.0 \
     --seed 42 \
+    --num_candidate_groups 8 \
 
 
 """
