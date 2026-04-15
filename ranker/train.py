@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
 r"""
-用预计算的 ``repr.pt`` + 对应 rollout 图像训练 **Diffusion ranker**，教师为 **ImageReward**。
+``repr.pt`` + rollout 图训练 listwise ranker（教师 ImageReward 或 ``reward_ls.json``）。
 
-cd /root/diffusion_ranker && CUDA_VISIBLE_DEVICES=0 python3 -m ranker.train \
-  --repr_pt /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/repr.pt \
-  --image_dir /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10 \
-  --cached_rewards_json /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/reward_ls.json \
-  --output_dir /root/autodl-tmp/ranker_train_perclass32_deno10 \
-  --ranker_type listwise \
-  --group_size 8 \
-  --proj_dim 64 \
-  --num_list_layers 2 \
-  --num_epochs 50 \
-  --lr 1e-4 \
-  --optimizer adamw \
-  --seed 42 \
-  --listwise_tau 1.0 \
-  --alpha 0.3  
+**默认**：只选 **layer_ratio=0.6、step_ratio=0.0** 对应的一条 repr 键；数据路径指向
+``dit_training_data_perclass32_cfg1.0_deno10``。最小启动::
+
+    cd /root/diffusion_ranker && CUDA_VISIBLE_DEVICES=0 python3 -m ranker.train
+
+改输出目录或数据::
+
+    python3 -m ranker.train --output_dir /path/out \\
+      --repr_pt /path/repr.pt --image_dir /path/images \\
+      --cached_rewards_json /path/reward_ls.json
+
+多键：``--layer_ratios 0.1,0.6`` ``--step_ratios 0,1``；不筛层/步：``--layer_ratios all`` ``--step_ratios all``。
 """
 
 from __future__ import annotations
@@ -229,11 +226,25 @@ def build_lr_scheduler(
 
 def parse_args() -> argparse.Namespace:
     cd = Constants_default
-    p = argparse.ArgumentParser(description="Diffusion ranker + ImageReward (repr.pt + images)")
-    p.add_argument("--repr_pt", type=str, required=True, help="rollout 保存的 repr.pt")
-    p.add_argument("--image_dir", type=str, required=True, help="与 repr 中 image_save_names 对应的目录")
+    _data = "/root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10"
+    p = argparse.ArgumentParser(description="Diffusion ranker（repr.pt + 图；默认单键 layer=0.6 step=0）")
     p.add_argument(
-        "--output_dir", type=str, default=str(_ROOT / "outputs" / "diffusion_ranker_train")
+        "--repr_pt",
+        type=str,
+        default=f"{_data}/repr.pt",
+        help="repr.pt 路径",
+    )
+    p.add_argument(
+        "--image_dir",
+        type=str,
+        default=_data,
+        help="与 repr 中 image_save_names 一致的图目录",
+    )
+    p.add_argument(
+        "--output_dir",
+        type=str,
+        default="/root/autodl-tmp/ranker_train_l06_s00",
+        help="checkpoint 输出目录",
     )
     p.add_argument("--proj_dim", type=int, default=int(cd.get("proj_dim", 64)))
     p.add_argument(
@@ -302,16 +313,13 @@ def parse_args() -> argparse.Namespace:
         "--layer_ratios",
         type=str,
         default="0.6",
-        help=(
-            "逗号分隔 0~1 层比例；按 ``round(u*(n_blocks-1))`` 映射到 block，与步的 round 规则一致。"
-            "``all`` 表示不筛选"
-        ),
+        help="逗号分隔层比例，或 all=不筛层（默认 0.6）",
     )
     p.add_argument(
         "--step_ratios",
         type=str,
-        default="1.0",
-        help="逗号分隔 0~1，映射到步索引 round(u*(T-1))；默认 1.0 为最后一步；``all`` 表示不筛选",
+        default="0.0",
+        help="逗号分隔步比例，或 all=不筛步（默认 0.0=第 0 个去噪步）",
     )
     p.add_argument(
         "--pool_mode",
@@ -330,8 +338,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--cached_rewards_json",
         type=str,
-        default="",
-        help="预计算 ImageReward 分数 JSON（与 labeling 一致）；空则在线调用 ImageReward",
+        default=f"{_data}/reward_ls.json",
+        help="预计算教师分 JSON；空字符串则在线 ImageReward",
     )
     p.add_argument(
         "--max_groups_per_epoch",
