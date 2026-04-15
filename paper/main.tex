@@ -507,22 +507,39 @@ Cross-Attn & 128 & 4 & 4 & X.XX & XX.XX & X.XXX \\
 % Table 4 shows that increasing depth yields only modest gains with diminishing returns: on Dream, performance improves from 28.7\% ($M=1$) to 29.2\% ($M=4$), and on LLaDA it peaks at 37.7\% with $M=3$ (vs. 37.5\% at $M=1$). This suggests that most of the benefit comes from cross-sample comparison itself, and a small ranker (1--3 blocks) is often sufficient in practice.
 
 \paragraph{Training Hyperparameters}
-We ablate key training hyper-parameters for the ranker, including the learning rate, batch size, training steps, and the KL temperature (if used for softening targets). % The results are shown in Table 5. Unless stated otherwise, all ablations use the same dataset construction protocol and evaluate on the same held-out benchmark splits. Overall, the ranker is relatively insensitive within a reasonable learning-rate range. In terms of optimization, increasing the number of steps from 100 to 200 provides a clear gain (27.5\% $\to$ 28.7\%), while further training to 400 steps does not improve results, suggesting early saturation.
+We ablate key training hyper-parameters for the ranker, with explicit focus on \textbf{optimizer choice} and \textbf{learning rate}. We report optimizer/LR sensitivity in Table~\ref{tab:ablation_opt_lr}, and keep the remaining training hyper-parameters in Table~\ref{tab:ablation_hparams}. % Unless stated otherwise, all ablations use the same dataset construction protocol and evaluate on the same held-out benchmark splits.
 
 \begin{table}[htbp]
 \centering
-\caption{Ablation on training hyperparameters.}
+\caption{Ablation on optimizer and learning rate.}
+\label{tab:ablation_opt_lr}
+\begin{tabular}{lcccc}
+\toprule
+Setting & Optimizer & Learning Rate & Weight Decay & Main Metric$\uparrow$ \\
+\midrule
+Default & AdamW & 1e-4 & 1e-4 & XX.XX \\
+AdamW (low LR) & AdamW & 5e-5 & 1e-4 & XX.XX \\
+AdamW (high LR) & AdamW & 2e-4 & 1e-4 & XX.XX \\
+SGD (matched LR) & SGD (momentum=0.9) & 1e-4 & 1e-4 & XX.XX \\
+SGD (high LR) & SGD (momentum=0.9) & 5e-4 & 1e-4 & XX.XX \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Ablation on other training hyperparameters (with optimizer and LR fixed to AdamW + 1e-4 unless noted).}
 \label{tab:ablation_hparams}
 \begin{tabular}{lccccc}
 \toprule
-Setting & Learning Rate & Batch Size & Epochs & $\tau$ (KL Temp) & Main Metric$\uparrow$ \\
+Setting & Batch Size & Epochs & $\tau$ (KL Temp) & LR Scheduler & Main Metric$\uparrow$ \\
 \midrule
-Default & 1e-4 & 32 & 10 & 1.0 & XX.XX \\
-LR down & 5e-5 & 32 & 10 & 1.0 & XX.XX \\
-LR up & 2e-4 & 32 & 10 & 1.0 & XX.XX \\
-Large batch & 1e-4 & 64 & 10 & 1.0 & XX.XX \\
-Long train & 1e-4 & 32 & 20 & 1.0 & XX.XX \\
-Lower $\tau$ & 1e-4 & 32 & 10 & 0.5 & XX.XX \\
+Default & 32 & 10 & 1.0 & cosine & XX.XX \\
+Large batch & 64 & 10 & 1.0 & cosine & XX.XX \\
+Long train & 32 & 20 & 1.0 & cosine & XX.XX \\
+Lower $\tau$ & 32 & 10 & 0.5 & cosine & XX.XX \\
+No scheduler & 32 & 10 & 1.0 & none & XX.XX \\
+Linear scheduler & 32 & 10 & 1.0 & linear & XX.XX \\
 \bottomrule
 \end{tabular}
 \end{table}
