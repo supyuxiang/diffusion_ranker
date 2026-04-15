@@ -49,10 +49,10 @@ def _pool_seq(
 ) -> Tensor:
     """x: (B, seq, D); attention_mask: (B, seq) with 1 for real tokens."""
     if mode == "mean":
-        m = attention_mask.unsqueeze(-1).to(dtype=x.dtype)
-        num = (x * m).sum(dim=1)
-        den = m.sum(dim=1, keepdim=True).clamp(min=1).to(dtype=x.dtype)
-        return num / den
+        mask = attention_mask.unsqueeze(-1).to(dtype=x.dtype) # b,seq,1
+        mean_x = (x * mask).sum(dim=1) # b,D
+        num_tokens = mask.sum(dim=1, keepdim=True).clamp(min=1).to(dtype=x.dtype) # b,1
+        return mean_x / num_tokens
     if mode == "last":
         b = x.shape[0]
         last_idx = (attention_mask.sum(dim=1) - 1).clamp(min=0).long()
