@@ -24,45 +24,31 @@ import torch.nn.functional as F
 
 
 
-def build_qkv(
-    x:torch.Tensor,
-    num_heads:int,
-    d_k:int
-):
-    # x: l_x, d_x
-    d_x = x.size(-1)
-    w_q = nn.Linear(d_x,d_k,bias=False)
-    w_k = nn.Linear(d_x,d_k,bias=False)
-    w_v = nn.Linear(d_x,d_k,bias=False)
-    q,k,v = w_q(x),w_k(x),w_v(x) # -> l_x,d_k
-    assert d_k % num_heads == 0
-    head_dim = d_k // num_heads
-    q = q.view(l_x,num_heads,head_dim)
-    k = k.view(l_x,num_heads,head_dim)
-    v = v.view(l_x,num_heads,head_dim)
-    return q,k,v
+def scaled_dot_product_attention_multihead(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    多头版（最后一维是 **每个 head 的 head_dim**，不是总 embed_dim）::
 
-    
+        q: (L_q, num_heads, head_dim)
+        k: (L_k, num_heads, head_dim)
+        v: (L_k, num_heads, head_dim)
 
-def scaled_dot_product_attention(
-    q:torch.Tensor,
-    k:torch.Tensor,
-    v:torch.Tensor
-) -> tuple[torch.Tensor,torch.Tensor]:
+    每个 head：``scores = Q K^T / sqrt(head_dim)``，**不能**写成 ``Q @ K``（维度对不上）。
 
-    # q : l_q, num_heads, d_k
-    # k: l_k, num_heads, d_k
-    # v: l_k, num_heads, d_k
-    # 公式计算： softmax(q @ k.T /sqrt(d_k)) @ v -> l_q, d_k. l_q是query的长度，d_k是query的维度。。所以做一次attention就相当于把query的每个位置都和key的每个位置都计算了一次相似度，然后加权得到一个结果。
-    d_k = q.size(-1)
-    num_heads = q.size(1)
-    q,k,v = torch.transpose(q,0,1),torch.transpose(k,0,1),torch.transpose(v,0,1)
-    scores = q@k / math.sqrt(d_k) # num_heads, l_q, l_k
-    weights = F.softmax(scores,dim=-1)
-    out = weights@v # num_heads, l_q, d_k
-    out = out.transpose(0,1).contiguous().view(q.size(0),-1)
+    返回 ``out`` (L_q, num_heads * head_dim)，``weights`` (num_heads, L_q, L_k)。
+    """
+    l_q, num_heads, head_dim = q.shape
+    qh = q.transpose(0, 1)  # (H, L_q, D)
+    kh = k.transpose(0, 1)
+    vh = v.transpose(0, 1)
+    scores = qh @ kh.transpose(-2, -1) / math.sqrt(head_dim)
+    weights = F.softmax(scores, dim=-1)
+    out = weights @ vh
+    out = out.transpose(0, 1).contiguous().view(l_q, num_heads * head_dim)
     return out, weights
-
 
 
 def scaled_dot_product_attention(
@@ -85,23 +71,6 @@ def scaled_dot_product_attention(
     weights = F.softmax(scores, dim=-1)
     out = weights @ v  # (Lq, d_v)
     return out, weights
-
-def self_attention(
-    x:torch.Tensor,
-    num_heads:int,
-    dropout:float=0.1,
-    embed_dim:int=None,
-):
-    # x: l_x, d_x
-    d_x = x.size(-1)
-    assert d_x % num_heads == 0
-    head_dim = d_x //num_heads
-    q,k,v = build_qkv(x,num_heads,d_k=embed_dim)
-    out,weights = scaled_dot_product_attention(q,k,v) # 
-    out = out.view(l_x,d_x)
-    return out,weights
-
-
 
 
 def demo_self_attention() -> None:
