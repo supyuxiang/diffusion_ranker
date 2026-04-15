@@ -117,6 +117,20 @@ def layers_from_ratios(ratios: list[float], n_blocks: int) -> set[float]:
     return out
 
 
+def ratio_to_block_idx(ratio: float, n_blocks: int) -> int:
+    """
+    与 ``DitRolloutReprCapture`` 选 block 一致：``round(ratio * (n_blocks-1))`` 再 clamp。
+    用于按 **block 下标** 匹配键名里解析出的 ``r``（避免因 ``{r:g}`` 短小数与分数不完全相等）。
+    """
+    n = max(int(n_blocks), 1)
+    if n <= 1:
+        return 0
+    nb1 = n - 1
+    u = max(0.0, min(1.0, float(ratio)))
+    idx = int(round(u * nb1))
+    return max(0, min(n - 1, idx))
+
+
 def select_repr_keys(
     all_keys: list[str],
     *,
@@ -130,15 +144,13 @@ def select_repr_keys(
         n_bl = meta.get("n_transformer_blocks")
         if n_bl is None:
             n_bl = len({r for _, _, r in parsed})
+        n_bl = int(n_bl)
         user_lr = [float(x) for x in layer_ratios]
-        allowed_r = layers_from_ratios(user_lr, int(n_bl))
-        canon_tol = 1e-7
-        literal_tol = 1e-5
+        want_block = {ratio_to_block_idx(u, n_bl) for u in user_lr}
         parsed = [
             (k, s, r)
             for k, s, r in parsed
-            if any(abs(r - ar) < canon_tol for ar in allowed_r)
-            or any(abs(r - ulr) < literal_tol for ulr in user_lr)
+            if ratio_to_block_idx(r, n_bl) in want_block
         ]
     if step_ratios is not None:
         want = steps_from_ratios(step_ratios, num_steps)

@@ -69,7 +69,7 @@ def _all_step_ratio_ls(num_inference_steps: int) -> list[float]:
 
 def _sparse_layer_ratios_default() -> tuple[float, ...]:
     """与 ``utils.DitRolloutReprCapture`` 默认 ``layer_ratios`` 一致：0.1 … 1.0。"""
-    return tuple(0.1 * i for i in range(1, 11))
+    return tuple(i / 10.0 for i in range(1, 11))
 
 
 def _sparse_step_ratio_ls_default() -> list[float]:

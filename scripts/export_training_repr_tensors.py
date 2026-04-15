@@ -11,11 +11,9 @@
 
 输出（在 ``--output_root`` 下）::
 
-    mean/{repr_key}.pt
-    last/{repr_key}.pt
-
-其中 ``repr_key`` 与 ``repr.pt`` 内键一致，形如 ``s4_r0.037037``（``s``=去噪步索引，``r``=层比例），
-**不再**用 ``step_index/(T-1)`` 拼进文件名，以免与稀疏 ``step_ratio_ls`` 混淆。
+- **默认（``--name_style auto``）**：若同时按层/步筛选（如 ``--preset sparse``），文件名为约定比例：  
+  ``step_{步比}_layer_{层比}.pt``，例如 ``step_0.25_layer_0.3.pt``；dict 内仍含 ``repr_key`` 指向真实键。  
+- 全量导出或 ``--name_style repr``：文件名为 ``{repr_key}.pt``，与 ``repr.pt`` 键一致。
 
 每个文件 ``torch.load`` 后为 dict，至少含 ``tensor`` shape ``(N, H)``、``repr_key``、``step_index``、
 ``layer_ratio``、``step_ratio``（仅作派生元数据）、``n_images``、``hidden_dim``、``row_order`` 等。
@@ -51,10 +49,10 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from ranker.train import select_repr_keys
+from ranker.train import infer_num_steps, ratio_to_block_idx, select_repr_keys
 
 # 与 ``rollout_trianing_data.py --repr_layout sparse`` / ``DitRolloutReprCapture`` 默认网格一致
-_SPARSE_LAYER_RATIOS: list[float] = [0.1 * i for i in range(1, 11)]
+_SPARSE_LAYER_RATIOS: list[float] = [i / 10.0 for i in range(1, 11)]
 _SPARSE_STEP_RATIOS: list[float] = [0.0, 0.25, 0.5, 0.75, 1.0]
 
 
@@ -103,10 +101,64 @@ def _step_ratio(step_idx: int, num_inference_steps: int) -> float:
 
 
 def _filename_for_key(repr_key: str) -> str:
-    """文件名 = ``repr.pt`` 中的键名 + ``.pt``，与 ``s{步索引}_r{层比例}`` 一一对应。"""
+    """文件名 = ``repr.pt`` 中的键名 + ``.pt``。"""
     if "/" in repr_key or repr_key.startswith("."):
         raise ValueError(f"unsafe repr_key for filename: {repr_key!r}")
     return f"{repr_key}.pt"
+
+
+def _fmt_ratio_label(x: float) -> str:
+    """稳定短字符串：``0.25``、``1`` 等，避免科学计数。"""
+    t = f"{float(x):.6f}".rstrip("0").rstrip(".")
+    return t if t else "0"
+
+
+def _user_layer_ratio_for_repr_r(
+    r_key: float, layer_list: list[float], n_bl: int
+) -> float:
+    bi = ratio_to_block_idx(r_key, n_bl)
+    for u in layer_list:
+        if ratio_to_block_idx(u, n_bl) == bi:
+            return float(u)
+    raise RuntimeError(
+        f"无法在 layer_list 中为 r={r_key!r} (block_idx={bi}) 找到约定层比"
+    )
+
+
+def _user_step_ratio_for_index(
+    s_idx: int, step_list: list[float], num_steps: int
+) -> float:
+    t = max(int(num_steps), 1)
+    nb = max(t - 1, 0)
+    for v in step_list:
+        vv = max(0.0, min(1.0, float(v)))
+        si = int(round(vv * nb)) if nb else 0
+        if si == s_idx:
+            return float(v)
+    raise RuntimeError(
+        f"无法在 step_list 中为 step_index={s_idx} (T={t}) 找到约定步比"
+    )
+
+
+def _semantic_export_filename(
+    repr_key: str,
+    *,
+    layer_list: list[float],
+    step_list: list[float],
+    meta: dict,
+    num_steps: int,
+) -> str:
+    s_idx, r_key = _parse_repr_key(repr_key)
+    n_bl = meta.get("n_transformer_blocks")
+    if n_bl is None:
+        raise SystemExit("semantic 命名需要 repr.pt meta 含 n_transformer_blocks")
+    n_bl = int(n_bl)
+    u_layer = _user_layer_ratio_for_repr_r(r_key, layer_list, n_bl)
+    u_step = _user_step_ratio_for_index(s_idx, step_list, num_steps)
+    stem = f"step_{_fmt_ratio_label(u_step)}_layer_{_fmt_ratio_label(u_layer)}"
+    if "/" in stem or stem.startswith("."):
+        raise ValueError(f"unsafe semantic stem: {stem!r}")
+    return f"{stem}.pt"
 
 
 def main() -> None:
@@ -154,6 +206,12 @@ def main() -> None:
         "--purge_output_dirs",
         action="store_true",
         help="写入前删除 mean/、last/ 下全部 .pt，避免残留未筛选键",
+    )
+    p.add_argument(
+        "--name_style",
+        choices=("auto", "repr", "semantic"),
+        default="auto",
+        help="auto：同时有层/步筛选时用约定比例文件名 step_X_layer_Y.pt；否则用 repr 键名",
     )
     args = p.parse_args()
 
@@ -235,6 +293,19 @@ def main() -> None:
     else:
         all_keys = all_keys_raw
 
+    if args.name_style == "repr":
+        use_semantic_names = False
+    elif args.name_style == "semantic":
+        if layer_f is None or step_f is None:
+            raise SystemExit(
+                "--name_style semantic 需要同时指定层与步（例如 --preset sparse）"
+            )
+        use_semantic_names = True
+    else:
+        use_semantic_names = layer_f is not None and step_f is not None
+
+    num_steps_infer = infer_num_steps(all_keys_raw, meta)
+
     h0 = int(b0["repr"][all_keys_raw[0]]["mean"].shape[1])
     total_in_repr = sum(len(rec["image_save_names"]) for rec in batches)
     if total_in_repr != n:
@@ -282,7 +353,17 @@ def main() -> None:
                 f"key {key!r}: {missing} rows never filled (repr batches missing some png names?)"
             )
 
-        fname = _filename_for_key(key)
+        if use_semantic_names:
+            assert layer_f is not None and step_f is not None
+            fname = _semantic_export_filename(
+                key,
+                layer_list=layer_f,
+                step_list=step_f,
+                meta=meta,
+                num_steps=num_steps_infer,
+            )
+        else:
+            fname = _filename_for_key(key)
         s_idx, layer_r = _parse_repr_key(key)
         payload_base = {
             "tensor": None,
@@ -296,7 +377,16 @@ def main() -> None:
             "image_dir": str(image_dir),
             "repr_pt": str(repr_pt),
             "reward_json": str(reward_json),
+            "export_filename": fname,
+            "name_style": "semantic" if use_semantic_names else "repr",
         }
+        if use_semantic_names:
+            payload_base["user_layer_ratio"] = _user_layer_ratio_for_repr_r(
+                layer_r, layer_f, int(meta["n_transformer_blocks"])
+            )
+            payload_base["user_step_ratio"] = _user_step_ratio_for_index(
+                s_idx, step_f, num_steps_infer
+            )
         torch.save({**payload_base, "tensor": mean_buf}, mean_dir / fname)
         torch.save({**payload_base, "tensor": last_buf}, last_dir / fname)
 
