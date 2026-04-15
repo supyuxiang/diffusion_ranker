@@ -236,7 +236,27 @@ We conduct this experiment on ImageNet \(256\times256\). The diffusion backbone 
 For class-conditional posterior sampling, we compare against: (i) no reranking, (ii) heuristic reranking baselines, and (iii) external reward-model reranking when applicable. For each class, we generate \(N=16\) parallel trajectories and select one sample per method. We report Fr\'echet Inception Distance (FID), Inception Score (IS), and CLIPScore against the ImageNet validation set \citep{russakovsky2015imagenet}.
 
 \paragraph{Results}
-XXX
+Main quantitative results are summarized in Table~\ref{tab:main_class_cond}. We additionally report compute-efficiency comparisons in Table~\ref{tab:efficiency_overall}.
+
+\begin{table}[htbp]
+\centering
+\caption{Class-conditional posterior sampling on ImageNet-256. Fill in mean $\pm$ std over seeds. Lower FID is better; higher IS/CLIPScore is better.}
+\label{tab:main_class_cond}
+\begin{tabular}{lcccccc}
+\toprule
+Method & Reward / Verifier & Candidate Budget & FID$\downarrow$ & IS$\uparrow$ & CLIPScore$\uparrow$ & Latency (s/img)$\downarrow$ \\
+\midrule
+Base (no rerank) & -- & 1 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+Best-of-$N$ & CLIPScore & 16 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+Best-of-$N$ & ImageReward & 16 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+Best-of-$N$ & \method & 16 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+FK (DIFFERENCE) & External Reward & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+FK (MAX) & External Reward & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+FK (DIFFERENCE) & \method & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+FK (MAX) & \method & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsubsection{Unconditional DDPM generation}
 \label{sec:exp_uncond_ddpm}
@@ -250,7 +270,27 @@ For supervision, we use fixed-prompt reward signals on final decoded images (e.g
 We compare the following methods under matched candidate budgets: (i) base DDPM sampling without reranking, (ii) external-reward best-of-$N$ selection, (iii) \method-based best-of-$N$ selection, (iv) FK-Steering with external reward (DIFFERENCE / MAX), and (v) FK-Steering with \method as the potential model (DIFFERENCE / MAX). Following standard unconditional evaluation on CelebA-HQ style data, we report FID and IS against a held-out real-image reference set; we also report CLIPScore with the same fixed prompt as an auxiliary semantic metric.
 
 \paragraph{Results}
-XXX.
+Main unconditional DDPM results are shown in Table~\ref{tab:main_uncond_ddpm}.
+
+\begin{table}[htbp]
+\centering
+\caption{Unconditional DDPM (\texttt{google/ddpm-celebahq-256}) on CelebA-HQ-style evaluation. Lower FID is better; higher IS/CLIPScore is better.}
+\label{tab:main_uncond_ddpm}
+\begin{tabular}{lccccc}
+\toprule
+Method & Candidate / Particle Budget & FID$\downarrow$ & IS$\uparrow$ & CLIPScore$\uparrow$ & Latency (s/img)$\downarrow$ \\
+\midrule
+Base DDPM & 1 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+Best-of-$N$ + CLIPScore & 16 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+Best-of-$N$ + ImageReward & 16 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+Best-of-$N$ + \method & 16 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+FK (DIFFERENCE) + External Reward & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+FK (MAX) + External Reward & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+FK (DIFFERENCE) + \method & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+FK (MAX) + \method & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsubsection{Text-to-image generation}
 Large-scale diffusion models for text-conditioned image generation can generate high-quality images and effectively generalize to new prompts.
@@ -262,7 +302,27 @@ We use Stable Diffusion v1.5 \citep{rombach2022ldm}, a latent diffusion model, a
 We compare \method with best-of-N and FK-Steering (SMC). For fair comparison, we set the number of candidates for best-of-N or the number of particles for FK-Steering based on the number of function evaluations of the base diffusion model, and record the highest reward for each method per prompt.
 
 \paragraph{Results}
-XXX
+Text-to-image results are summarized in Table~\ref{tab:main_t2i}. We recommend reporting both prompt-following and preference-oriented metrics.
+
+\begin{table}[htbp]
+\centering
+\caption{Text-to-image results (e.g., DrawBench/GenEval subsets). Report mean over prompts and seeds.}
+\label{tab:main_t2i}
+\begin{tabular}{lcccccc}
+\toprule
+Method & Verifier Type & Budget & ImageReward$\uparrow$ & PickScore/HPS$\uparrow$ & CLIPScore$\uparrow$ & Runtime (s/prompt)$\downarrow$ \\
+\midrule
+Base & -- & 1 & XX.XX & XX.XX & XX.XX & X.XX \\
+Best-of-$N$ & CLIPScore & 10 & XX.XX & XX.XX & XX.XX & X.XX \\
+Best-of-$N$ & ImageReward & 10 & XX.XX & XX.XX & XX.XX & X.XX \\
+Best-of-$N$ & \method & 10 & XX.XX & XX.XX & XX.XX & X.XX \\
+FK (DIFFERENCE) & External Reward & 10 particles & XX.XX & XX.XX & XX.XX & X.XX \\
+FK (MAX) & External Reward & 10 particles & XX.XX & XX.XX & XX.XX & X.XX \\
+FK (DIFFERENCE) & \method & 10 particles & XX.XX & XX.XX & XX.XX & X.XX \\
+FK (MAX) & \method & 10 particles & XX.XX & XX.XX & XX.XX & X.XX \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 
 % We evaluate \method on \textbf{class-conditional ImageNet 256$\times$256 generation} using DiT-XL/2 \citep{peebles2023dit} as the backbone IDM. We compare our ranker against external reward models of varying scale: a frozen CLIP-based scorer, ImageReward, and larger VLM models. For each class, we generate $N=16$ parallel trajectories and select the best using each method. We report Fr\'echet Inception Distance (FID), Inception Score (IS), and CLIPScore against the ImageNet\citep{xu2023imagereward} validation set.
@@ -339,7 +399,7 @@ We first validate whether a middle-step ranker can provide useful selection sign
     \item \textbf{Mid-step (top-1) + last-step.} Apply the ranker at $t=T/2$, keep the top-1 trajectory, and duplicate it $N$ times. After completing denoising to $t=0$, apply the last-step ranker to select the final output.
 \end{itemize}
 
-We conduct these experiments using XXX on XXX, reporting XXX. As shown in the results (Table in supplementary), incorporating a middle-step ranker improves overall performance over using only the last-step ranker.
+We conduct these experiments using XXX on XXX, reporting XXX. Quantitative results are reported in Table~\ref{tab:midstep_conceptual}.
 % As shown in Table 2, incorporating a middle-step ranker improves overall performance over using only the last-step ranker. Moreover, selecting a diverse sub-set at the middle step (top-$N/2$) is slightly better than collapsing to a single trajectory (top-1), suggesting that early pruning is helpful but overly aggressive pruning can reduce downstream diversity and hurt final selection.
 
 FK-Steering is a particle-based diffusion sampling method that steers generation toward high-reward outputs via sequential importance resampling. Starting from $N$ particles at step $t = T$, the algorithm alternates between (i) proposing transitions using a proposal kernel (typically the diffusion transition), (ii) scoring particles with a potential function $G_{t}$ calculated by the reward model, and (iii) re-sampling particles according to their potential weights. We perform resampling once every 20 diffusion steps following FK-Steering.
@@ -363,7 +423,39 @@ and keep the rest of the FK-Steering procedure unchanged (proposal, re-weighting
 We compare (i) FK-Steering with our ranker (ours), (ii) FK-Steering with external reward evaluators (e.g., ImageReward/CLIP-style scorers), and (iii) FK-Steering without learned reranking. The rollout number \(C\) is set to 4 for all methods. We report FID, IS, and CLIPScore together with relative wall-clock latency per sample.
 
 \paragraph{Results}
-XXX.
+Main FK replacement results are summarized in Table~\ref{tab:fk_ranker_replace}.
+
+\begin{table}[htbp]
+\centering
+\caption{Conceptual middle-step selection study.}
+\label{tab:midstep_conceptual}
+\begin{tabular}{lcccc}
+\toprule
+Selection Strategy & FID$\downarrow$ & IS$\uparrow$ & Reward Metric$\uparrow$ & Relative Latency$\downarrow$ \\
+\midrule
+Last-step only & XX.XX & XX.XX & XX.XX & 1.00$\times$ \\
+Mid-step only & XX.XX & XX.XX & XX.XX & X.XX$\times$ \\
+Mid-step top-$N/2$ + last-step & XX.XX & XX.XX & XX.XX & X.XX$\times$ \\
+Mid-step top-1 + last-step & XX.XX & XX.XX & XX.XX & X.XX$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{FK-Steering with external reward vs. \method potential model.}
+\label{tab:fk_ranker_replace}
+\begin{tabular}{lccccc}
+\toprule
+Method & Potential & Reward Model in FK & FID$\downarrow$ & IS / Task Score$\uparrow$ & Latency (s/img)$\downarrow$ \\
+\midrule
+FK baseline & DIFFERENCE & External Reward & XX.XX & XX.XX & X.XXX \\
+FK baseline & MAX & External Reward & XX.XX & XX.XX & X.XXX \\
+FK + \method & DIFFERENCE & Ranker score & XX.XX & XX.XX & X.XXX \\
+FK + \method & MAX & Ranker score & XX.XX & XX.XX & X.XXX \\
+\bottomrule
+\end{tabular}
+\end{table}
 % We also observe that using MAX as the potential is consistently stronger than DIFFERENCE across all methods, consistent with prior findings (Singhal et al., 2025). Diffusion Ranker benefits the most from this choice, achieving the best MATH accuracy (38.4\%) and the best MBPP Pass@1 (55.2\%) while maintaining the lowest latency.
 
 \section{Ablation Study and Analysis}
@@ -374,14 +466,81 @@ In this section, we conduct ablation studies to understand which design choices 
 \paragraph{Hidden States Layer}
 We vary the extraction layer $l$ (from shallow to deep layers) while keeping all other settings fixed, and evaluate downstream selection performance. Intuitively, very shallow layers may not encode sufficient semantic information, while very deep layers may overfit to token-level prediction. 
 
+\begin{table}[htbp]
+\centering
+\caption{Ablation on hidden-state extraction position (layer ratio and step ratio).}
+\label{tab:ablation_layer_step}
+\begin{tabular}{cccccc}
+\toprule
+Layer Ratio & Step Ratio & FID$\downarrow$ & IS$\uparrow$ & Reward Metric$\uparrow$ & Spearman$\uparrow$ \\
+\midrule
+0.1 & 0.00 & XX.XX & XX.XX & XX.XX & X.XXX \\
+0.3 & 0.25 & XX.XX & XX.XX & XX.XX & X.XXX \\
+0.6 & 0.50 & XX.XX & XX.XX & XX.XX & X.XXX \\
+0.9 & 0.75 & XX.XX & XX.XX & XX.XX & X.XXX \\
+1.0 & 1.00 & XX.XX & XX.XX & XX.XX & X.XXX \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 %We report results in Table 4. Across both backbones, mid-layer features (ratio 0.6) consistently yield the strongest selection accuracy (Dream: 28.7\%, LLaDA: 37.5\%), while shallow representations (0.1) perform substantially worse (-8.3\% and -11.0\%). Meanwhile, extracting from the final layer (1.0) slightly degrades accuracy (-0.8\% and -0.5\%), supporting the hypothesis that top-layer states are more specialized to token prediction and less transferable for ranking.
 
 \paragraph{Number of Transformer Blocks}
 We vary the number of Transformer blocks $M$ in the cross-sample ranker. 
+
+\begin{table}[htbp]
+\centering
+\caption{Ablation on ranker architecture size.}
+\label{tab:ablation_arch}
+\begin{tabular}{lcccccc}
+\toprule
+Ranker Type & Hidden Dim & \#Layers & \#Heads & Params (M) & Main Metric$\uparrow$ & Latency$\downarrow$ \\
+\midrule
+MLP & 128 & 2 & -- & X.XX & XX.XX & X.XXX \\
+MLP & 256 & 4 & -- & X.XX & XX.XX & X.XXX \\
+Transformer & 64 & 2 & 4 & X.XX & XX.XX & X.XXX \\
+Transformer & 128 & 4 & 4 & X.XX & XX.XX & X.XXX \\
+Cross-Attn & 128 & 4 & 4 & X.XX & XX.XX & X.XXX \\
+\bottomrule
+\end{tabular}
+\end{table}
 % Table 4 shows that increasing depth yields only modest gains with diminishing returns: on Dream, performance improves from 28.7\% ($M=1$) to 29.2\% ($M=4$), and on LLaDA it peaks at 37.7\% with $M=3$ (vs. 37.5\% at $M=1$). This suggests that most of the benefit comes from cross-sample comparison itself, and a small ranker (1--3 blocks) is often sufficient in practice.
 
 \paragraph{Training Hyperparameters}
 We ablate key training hyper-parameters for the ranker, including the learning rate, batch size, training steps, and the KL temperature (if used for softening targets). % The results are shown in Table 5. Unless stated otherwise, all ablations use the same dataset construction protocol and evaluate on the same held-out benchmark splits. Overall, the ranker is relatively insensitive within a reasonable learning-rate range. In terms of optimization, increasing the number of steps from 100 to 200 provides a clear gain (27.5\% $\to$ 28.7\%), while further training to 400 steps does not improve results, suggesting early saturation.
+
+\begin{table}[htbp]
+\centering
+\caption{Ablation on training hyperparameters.}
+\label{tab:ablation_hparams}
+\begin{tabular}{lccccc}
+\toprule
+Setting & Learning Rate & Batch Size & Epochs & $\tau$ (KL Temp) & Main Metric$\uparrow$ \\
+\midrule
+Default & 1e-4 & 32 & 10 & 1.0 & XX.XX \\
+LR down & 5e-5 & 32 & 10 & 1.0 & XX.XX \\
+LR up & 2e-4 & 32 & 10 & 1.0 & XX.XX \\
+Large batch & 1e-4 & 64 & 10 & 1.0 & XX.XX \\
+Long train & 1e-4 & 32 & 20 & 1.0 & XX.XX \\
+Lower $\tau$ & 1e-4 & 32 & 10 & 0.5 & XX.XX \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Model-efficiency summary across verifiers.}
+\label{tab:efficiency_overall}
+\begin{tabular}{lcccc}
+\toprule
+Verifier & Parameters (M)$\downarrow$ & Extra FLOPs / sample$\downarrow$ & Latency (ms / sample)$\downarrow$ & Relative Cost$\downarrow$ \\
+\midrule
+CLIP (ViT-L/14) & 427.6 & XX.XG & XXXX & X.XX$\times$ \\
+ImageReward & 447.0 & XX.XG & XXXX & X.XX$\times$ \\
+\method (ours) & 0.59 & XX.XM & XX & 1.00$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \section{Conclusion}
 We propose \method, a lightweight reward modeling framework that reuses image diffusion models' internal hidden states to perform efficient best-of-$N$ selection. Across ImageNet, \method achieves near-parity with strong external reward models while using XXX\% of their parameters and reducing inference-time overhead by XXX\%. We further extend the ranker to predict rollout-based middle-step potentials, enabling fast reward-guided resampling without expensive Monte Carlo rollouts. Experiments support Diffusion Ranker as a practical drop-in alternative to heavyweight verifiers. We hope this work encourages future research on leveraging internal representations for scalable inference-time guidance and selection in diffusion models.
