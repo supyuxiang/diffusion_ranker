@@ -164,7 +164,15 @@ class DiffusionRanker_MLP(nn.Module):
     ):
         super(DiffusionRanker_MLP,self).__init__()
         self.hidden_dim = hidden_dim
-        self.linear_prompt = nn.Linear(prompt_hidden_dim,hidden_dim)
+        # self.linear_prompt = nn.Linear(prompt_hidden_dim,hidden_dim)
+        self.process_prompt = nn.Sequential(
+            nn.Linear(prompt_hidden_dim,hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim,hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
         self.linear_candidate = nn.Linear(candidate_hidden_dim,hidden_dim)
         self.criterion = criterion
         self.ffn = nn.Sequential(
@@ -195,7 +203,7 @@ class DiffusionRanker_MLP(nn.Module):
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
-        for module in self.linear_prompt.modules():
+        for module in self.process_prompt.modules():
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
@@ -210,7 +218,8 @@ class DiffusionRanker_MLP(nn.Module):
         # candidate_hstates: b,k,candidate_hidden_dim
         # prompt_hstates: b,prompt_hidden_dim
         if prompt_hstates is not None:
-            prompt_hstates = self.linear_prompt(prompt_hstates)
+            # prompt_hstates = self.linear_prompt(prompt_hstates)
+            prompt_hstates = self.process_prompt(prompt_hstates)
             # prompt_hstates: b,hidden_dim
             prompt_hstates = prompt_hstates.unsqueeze(1)
         else:
@@ -270,9 +279,9 @@ default_ranker = DiffusionRanker_Transformer(
 pointwise_ranker = DiffusionRanker_MLP(
     candidate_hidden_dim=1152,
     prompt_hidden_dim=3804,
-    hidden_dim=64,
+    hidden_dim=128,
     output_dim=1,
-    num_layers=2,
+    num_layers=8,
     dropout=0.1,
     half=True,
     criterion='cos_t1.0',
