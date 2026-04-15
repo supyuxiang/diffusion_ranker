@@ -923,7 +923,7 @@ def rollout_dit_perclass32_and_save_repr(
     device: torch.device | str | None = None,
     image_size: int = 256,
     pooling_mode: str = "mean",
-    mc: int = 4,
+    mc: int = 8,
     store_dtype: torch.dtype = torch.float16,
     jpeg_quality: int = 92,
     png_compress_level: int = 1,
