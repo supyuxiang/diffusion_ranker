@@ -80,8 +80,8 @@ def main() -> None:
     T = args.num_inference_steps
     last_step_idx = min(T - 1, max(0, round(float(args.step_ratio) * (T - 1))))
     n_blocks = len(pipe.transformer.transformer_blocks)
-    layer_block_idx = int(round(float(args.layer_ratio) * (n_blocks - 1)))
-    layer_block_idx = max(0, min(n_blocks - 1, layer_block_idx))
+    layer_block_idx = int(round(float(args.layer_ratio) * (n_blocks - 1))) # 7
+    layer_block_idx = max(0, min(n_blocks - 1, layer_block_idx)) # 7
 
     print(
         f"DiT blocks={n_blocks}  |  抓取 layer_ratio={args.layer_ratio} → block_idx={layer_block_idx}"

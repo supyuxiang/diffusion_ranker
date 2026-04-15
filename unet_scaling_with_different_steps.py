@@ -3,7 +3,7 @@ example:
 
     CUDA_VISIBLE_DEVICES=0 python /root/diffusion_ranker/unet_scaling_with_different_steps.py \
         --model_name google_ddpm-celebahq-256 \
-        --batch_size 512 \
+        --batch_size 256 \
         --num_gen 50000 \
         --save_dir /root/autodl-tmp/outputs/unet_scaling_with_different_steps \
         --real_dir /root/autodl-tmp/img_align_celeba_fid_ref_50k

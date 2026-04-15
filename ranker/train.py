@@ -18,7 +18,7 @@ python /root/diffusion_ranker/ranker/train.py \
     --num_attention_heads 4 \
     --num_layers 2 \
     --dropout 0.1 \
-    --optimizer adamw \
+    --optimizer sgd \
     --lr_scheduler cosine \
     --warmup_ratio 0.03 \
     --lr_min_ratio 0.01 \
@@ -26,7 +26,8 @@ python /root/diffusion_ranker/ranker/train.py \
     --tau 1.0 \
     --seed 42 \
     --num_candidate_groups 8 \
-    --ranker_type listwise 
+    --ranker_type pointwise  \
+    --has_prompt_hstates
 
 
 """
@@ -50,7 +51,7 @@ if str(_ROOT) not in sys.path:
 
 
 from ranker.loss import mse_kl_combined_loss
-from ranker.model import DiffusionRanker_Transformer
+from ranker.model import DiffusionRanker_Transformer, DiffusionRanker_MLP
 from ranker.dataset import diffusion_ranker_dataloader
 from utils import Constants_default, set_device, set_seed
 
@@ -190,6 +191,11 @@ def set_args() -> argparse.Namespace:
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--num_cand", type=int, default=10)
     p.add_argument("--num_candidate_groups", type=int, default=8)
+    p.add_argument(
+        "--has_prompt_hstates",
+        action="store_true",
+        help="传入则从 prompt_repr 取 prompt；不传则 False（勿写 --has_prompt_hstates True，store_true 不接收值）",
+    )
     return p.parse_args()
 
 
@@ -206,7 +212,12 @@ def split_batch_into_candidate_groups(
         group_indices = random.sample(range(batch_size), num_cand)
         sample_indices_ls.append(group_indices)
     groups = [
-        [batch[0][indices], batch[1][indices], batch[2][indices]] for indices in sample_indices_ls
+        [
+            batch[0][indices],
+            batch[1][indices] if batch[1] is not None else None,
+            batch[2][indices],
+        ]
+        for indices in sample_indices_ls
     ]
     return groups
 
@@ -223,7 +234,7 @@ def process_single_candidate_group(
     # Ranker 约定：candidate (B, K, D_c)，prompt (B, D_p)；分组切片得到的是 (K, D)
     if candidate_hstates.dim() == 2:
         candidate_hstates = candidate_hstates.unsqueeze(0)  # (1, K, D_c)
-    if prompt_hstates.dim() == 2:
+    if prompt_hstates is not None and prompt_hstates.dim() == 2:
         # 同一 listwise 组共用一个上下文向量（多行 prompt 通常来自同 class 重复，取首行即可）
         prompt_hstates = prompt_hstates[:1]  # (1, D_p)
 
@@ -259,7 +270,9 @@ def train_epoch(
         batch_c, batch_p, batch_r = batch
         batch = (
             batch_c.to(device=device, dtype=dtype, non_blocking=True),
-            batch_p.to(device=device, dtype=dtype, non_blocking=True),
+            batch_p.to(device=device, dtype=dtype, non_blocking=True)
+            if batch_p is not None
+            else None,
             batch_r.to(device=device, dtype=dtype, non_blocking=True),
         )
         batch_loss = batch_mse = batch_kl = 0.0
@@ -319,6 +332,7 @@ def main() -> None:
         prompt_repr_path,
         args.batch_size,
         shuffle=True,
+        has_prompt_hstates=args.has_prompt_hstates,
     )
     print(f"train_loader built")
 
@@ -340,6 +354,7 @@ def main() -> None:
             output_dim=1,
             num_layers=args.num_layers,
             dropout=args.dropout,
+            half=True,
         ).to(device)
         ranker.criterion = 'cos_t1.0'
     else:

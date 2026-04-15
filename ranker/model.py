@@ -163,6 +163,7 @@ class DiffusionRanker_MLP(nn.Module):
         criterion=None,
     ):
         super(DiffusionRanker_MLP,self).__init__()
+        self.hidden_dim = hidden_dim
         self.linear_prompt = nn.Linear(prompt_hidden_dim,hidden_dim)
         self.linear_candidate = nn.Linear(candidate_hidden_dim,hidden_dim)
         self.criterion = criterion
@@ -208,12 +209,23 @@ class DiffusionRanker_MLP(nn.Module):
     def forward(self,candidate_hstates,prompt_hstates):
         # candidate_hstates: b,k,candidate_hidden_dim
         # prompt_hstates: b,prompt_hidden_dim
-        prompt_hstates = self.linear_prompt(prompt_hstates)
+        if prompt_hstates is not None:
+            prompt_hstates = self.linear_prompt(prompt_hstates)
+            # prompt_hstates: b,hidden_dim
+            prompt_hstates = prompt_hstates.unsqueeze(1)
+        else:
+            prompt_hstates = torch.zeros(
+                candidate_hstates.shape[0],
+                1,
+                self.hidden_dim,
+                device=candidate_hstates.device,
+                dtype=candidate_hstates.dtype,
+            ) # b,1,hidden_dim 
+
         candidate_hstates = self.linear_candidate(candidate_hstates)
         # candidate_hstates: b,k,hidden_dim
-        # prompt_hstates: b,hidden_dim
-        prompt_hstates = prompt_hstates.unsqueeze(1)
         # prompt_hstates: b,1,hidden_dim
+        
         x = torch.cat((prompt_hstates,candidate_hstates),dim=1) # b,k+1,hidden_dim
         for layer in self.layers:
             x = x + layer(x)

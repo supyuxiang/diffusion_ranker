@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
 from pathlib import Path
@@ -14,10 +16,11 @@ def load_prompt_repr(prompt_repr_pt:Path=Path('/root/diffusion_ranker/ranker/pro
 
 
 class DiffusionRankerDataset(Dataset): # output: candidate_hidden, prompt_hidden, reward
-    def __init__(self,candidate_repr_path:Path,reward_path:Path,prompt_repr_path:Path):
+    def __init__(self,candidate_repr_path:Path,reward_path:Path,prompt_repr_path:Path,has_prompt_hstates:bool=False):
         self.candidate_repr_path = candidate_repr_path
         self.reward_path = reward_path
         self.prompt_repr_path = prompt_repr_path
+        self.has_prompt_hstates = has_prompt_hstates
         self.load_repr_and_reward()
     
     def load_repr_and_reward(self):
@@ -51,24 +54,34 @@ class DiffusionRankerDataset(Dataset): # output: candidate_hidden, prompt_hidden
         return len(self.reward_ls)
     
     def __getitem__(self,idx):
-        return self.candidate_repr[idx],self.prompt_repr[idx],self.reward_ls[idx]
+        if self.has_prompt_hstates:
+            return self.candidate_repr[idx],self.prompt_repr[idx],self.reward_ls[idx]
+        else:
+            return self.candidate_repr[idx],None,self.reward_ls[idx]
 
-def collect(batch:list[tuple[torch.Tensor,torch.Tensor,float]]):
-    batch_candidate_hstates, batch_prompt_hstates, batch_rewards = [],[],[]
+def collect(batch: list[tuple[torch.Tensor, torch.Tensor | None, float]]):
+    batch_candidate_hstates, batch_prompt_hstates, batch_rewards = [], [], []
     for item in batch:
-        candidate_hstates,prompt_hstates,reward = item
+        candidate_hstates, prompt_hstates, reward = item
         batch_candidate_hstates.append(candidate_hstates)
         batch_prompt_hstates.append(prompt_hstates)
         batch_rewards.append(reward)
     # 每条样本是 (D,) 向量，须 stack 成 (B, D)；用 cat 会变成一维 (B*D,)，与 reward (B,1) 不对齐且会误触发越界索引
     batch_candidate_hstates = torch.stack(batch_candidate_hstates, dim=0)
-    batch_prompt_hstates = torch.stack(batch_prompt_hstates, dim=0)
-    batch_rewards = torch.tensor(batch_rewards).view(-1,1) # B,1
-    return batch_candidate_hstates,batch_prompt_hstates,batch_rewards
+    if batch_prompt_hstates[0] is None:
+        if not all(p is None for p in batch_prompt_hstates):
+            raise ValueError("collate: 同一 batch 内 prompt 须全为 None 或全为 Tensor")
+        batch_prompt_out = None
+    else:
+        if any(p is None for p in batch_prompt_hstates):
+            raise ValueError("collate: 同一 batch 内 prompt 须全为 None 或全为 Tensor")
+        batch_prompt_out = torch.stack(batch_prompt_hstates, dim=0)
+    batch_rewards = torch.tensor(batch_rewards).view(-1, 1)  # B,1
+    return batch_candidate_hstates, batch_prompt_out, batch_rewards
 
 
-def diffusion_ranker_dataloader(candidate_repr_path:Path,reward_path:Path,prompt_repr_path:Path,batch_size:int,shuffle:bool=True):
-    train_dataset = DiffusionRankerDataset(candidate_repr_path,reward_path,prompt_repr_path)
+def diffusion_ranker_dataloader(candidate_repr_path:Path,reward_path:Path,prompt_repr_path:Path,batch_size:int,shuffle:bool=True,has_prompt_hstates:bool=False):
+    train_dataset = DiffusionRankerDataset(candidate_repr_path,reward_path,prompt_repr_path,has_prompt_hstates)
     train_loader = DataLoader(train_dataset,batch_size=batch_size,shuffle=shuffle,collate_fn=collect)
     return train_loader
 
