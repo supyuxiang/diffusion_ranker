@@ -11,11 +11,14 @@
 
 输出（在 ``--output_root`` 下）::
 
-    mean/step_ratio{sr}_layer_ratio{r}.pt
-    last/step_ratio{sr}_layer_ratio{r}.pt
+    mean/{repr_key}.pt
+    last/{repr_key}.pt
 
-每个文件 ``torch.load`` 后为 dict，至少含 ``tensor`` shape ``(N, H)``、``repr_key``、``n_images``、
-``hidden_dim``、``row_order`` 说明字段。
+其中 ``repr_key`` 与 ``repr.pt`` 内键一致，形如 ``s4_r0.037037``（``s``=去噪步索引，``r``=层比例），
+**不再**用 ``step_index/(T-1)`` 拼进文件名，以免与稀疏 ``step_ratio_ls`` 混淆。
+
+每个文件 ``torch.load`` 后为 dict，至少含 ``tensor`` shape ``(N, H)``、``repr_key``、``step_index``、
+``layer_ratio``、``step_ratio``（仅作派生元数据）、``n_images``、``hidden_dim``、``row_order`` 等。
 
 性能 / 内存：对 ``repr.pt`` 优先 ``mmap=True`` 加载；对 ``batches`` 只预计算一次每张图对应的行号，
 每个 key 内用整段 ``tensor`` 索引写入，避免 Python 逐行循环与重复的 ``.float().cpu()`` 路径判断。
@@ -82,11 +85,11 @@ def _step_ratio(step_idx: int, num_inference_steps: int) -> float:
     return float(step_idx) / float(t - 1)
 
 
-def _filename_for_key(meta: dict, repr_key: str) -> str:
-    s, r = _parse_repr_key(repr_key)
-    t = int(meta.get("num_inference_steps") or 1)
-    sr = _step_ratio(s, t)
-    return f"step_ratio{sr:g}_layer_ratio{r:g}.pt"
+def _filename_for_key(repr_key: str) -> str:
+    """文件名 = ``repr.pt`` 中的键名 + ``.pt``，与 ``s{步索引}_r{层比例}`` 一一对应。"""
+    if "/" in repr_key or repr_key.startswith("."):
+        raise ValueError(f"unsafe repr_key for filename: {repr_key!r}")
+    return f"{repr_key}.pt"
 
 
 def main() -> None:
@@ -202,7 +205,7 @@ def main() -> None:
                 f"key {key!r}: {missing} rows never filled (repr batches missing some png names?)"
             )
 
-        fname = _filename_for_key(meta, key)
+        fname = _filename_for_key(key)
         s_idx, layer_r = _parse_repr_key(key)
         payload_base = {
             "tensor": None,

@@ -3,9 +3,8 @@
 将 ``repr_candidate_deno10_cfg1.0`` 风格目录下多个 ``idx*.pt`` 按 key 合并为按图顺序的表征文件。
 
 - 在**同目录**下创建 ``mean/``、``last/`` 子目录。
-- 每个 repr key（如 ``s0_r0.1``）对应两个文件，文件名：
-  ``step_ratio{step_ratio}_layer_ratio{layer_ratio}.pt``
-  其中 ``step_ratio = step_index / max(T-1,1)``，``layer_ratio`` 为 key 中的 ``r``（与 rollout meta 一致）。
+- 每个 repr key（如 ``s0_r0.1``）对应两个文件，文件名：``{repr_key}.pt``（与 ``repr.pt`` 内键名一致），
+  例如 ``s4_r0.037037.pt``；**不再**用 ``step_index/(T-1)`` 作为文件名前缀。
 - 默认每个 ``.pt`` 为字典，含 ``tensor (N,H)`` 及 ``repr_key``、``step_ratio``、``layer_ratio`` 等。
 - ``--as_list`` 时额外写入 ``repr_list``：每张图一个 ``(H,)`` tensor，顺序与 ``tensor`` 行一致。
 
@@ -159,14 +158,16 @@ def main() -> None:
 
         assert mean_cat.shape == last_cat.shape
 
-        fname = _filename_for_key(meta0, key)
+        fname = _filename_for_key(key)
+        s_idx, layer_r = _parse_repr_key(key)
         payload_mean = {
             "tensor": mean_cat,
             "n_images": int(mean_cat.shape[0]),
             "hidden_dim": int(mean_cat.shape[1]),
             "repr_key": key,
-            "step_ratio": _step_ratio(_parse_repr_key(key)[0], int(meta0.get("num_inference_steps") or 1)),
-            "layer_ratio": _parse_repr_key(key)[1],
+            "step_index": s_idx,
+            "layer_ratio": layer_r,
+            "step_ratio": _step_ratio(s_idx, int(meta0.get("num_inference_steps") or 1)),
             "source_idx_pt": [f.name for f in pt_files],
         }
         if args.as_list:
