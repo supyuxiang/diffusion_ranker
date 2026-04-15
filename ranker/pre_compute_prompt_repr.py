@@ -14,7 +14,7 @@ import gc
 import torch
 from torch import Tensor
 from transformers import AutoModelForCausalLM, AutoTokenizer
-
+from tqdm import tqdm
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 from utils import labels_1k
@@ -70,7 +70,7 @@ def get_repr(
     max_length: int = 1024,
     device: torch.device | str | None = None,
 ) -> Tensor:
-    assert tokenize_type in ("LLM_encoder", "LLM_logits",'LLM_hidden_states')
+    assert tokenize_type in ("LLM_logits","LLM_hidden_states")
     assert pooling_mode in ("mean", "last")
 
     model_dir = Path(model_dir)
@@ -93,7 +93,7 @@ def get_repr(
 
     outs: list[Tensor] = []
     with torch.inference_mode():
-        for start in range(0, len(formatted_prompt_ls), batch_size):
+        for start in tqdm(range(0, len(formatted_prompt_ls), batch_size),desc="Computing prompt representations"):
             batch_texts = formatted_prompt_ls[start : start + batch_size]
             enc = tokenizer(
                 batch_texts,
@@ -104,12 +104,21 @@ def get_repr(
             )
             enc = {k: v.to(device) for k, v in enc.items()}
             if tokenize_type == "LLM_logits":
-                seq = model(**enc).logits
+                seq = model(**enc).logits # b,sq_len,vocab_size
             elif tokenize_type == "LLM_hidden_states":
-                pass
-            else:
-                pass
-            pooled = _pool_seq(seq, enc["attention_mask"], pooling_mode)
+                o = model(
+                    **enc,
+                    output_hidden_states=True,
+                )
+                hiddens = o.hidden_states
+                layer_ratio = 0.6
+                layer_idx = round(layer_ratio * model.config.num_hidden_layers)
+                seq = hiddens[layer_idx].copy() # b,sq_len,hidden_dim
+                del hiddens,o
+                gc.collect()
+                torch.cuda.empty_cache()
+
+            pooled = _pool_seq(seq, enc["attention_mask"], pooling_mode) 
             outs.append(pooled.float().cpu())
             del enc,seq,pooled
             gc.collect()
@@ -118,8 +127,8 @@ def get_repr(
     return torch.cat(outs, dim=0)
 
 
-def main() -> None:
-    save_path = ROOT_DIR / "ranker" / "prompt_repr.pt"
+def main_logits() -> None:
+    save_path = ROOT_DIR / "ranker" / "prompt_repr_mean_pooling/from_logits.pt"
     model_dir = Path("/root/autodl-tmp/Qwen2.5-7B-Instruct")
     tokenize_type = "LLM_logits"
     pooling_mode = "mean"
@@ -135,6 +144,24 @@ def main() -> None:
     torch.save(prompt_repr, save_path)
     print(f"Prompt representations saved to {save_path} shape={tuple(prompt_repr.shape)}")
 
+def main_hidden_states():
+    save_path = ROOT_DIR / "ranker" / "prompt_repr_mean_pooling/from_hidden_states_ratio0.6.pt"
+    model_dir = Path("/root/autodl-tmp/Qwen2.5-7B-Instruct")
+    tokenize_type = "LLM_hidden_states"
+    pooling_mode = "mean"
+    layer_ratio = 0.6
+    class_ids = list(range(1000))
+    prompt_repr = get_repr(
+        class_ids,
+        model_dir,
+        tokenize_type,
+        pooling_mode,
+        batch_size=4,
+    )
+    torch.save(prompt_repr, save_path)
+    print(f"Prompt representations saved to {save_path} shape={tuple(prompt_repr.shape)}")
+
 
 if __name__ == "__main__":
-    main()
+    main_logits()
+    main_hidden_states()
