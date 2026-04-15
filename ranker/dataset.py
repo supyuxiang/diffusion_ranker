@@ -60,8 +60,9 @@ def collect(batch:list[tuple[torch.Tensor,torch.Tensor,float]]):
         batch_candidate_hstates.append(candidate_hstates)
         batch_prompt_hstates.append(prompt_hstates)
         batch_rewards.append(reward)
-    batch_candidate_hstates = torch.cat(batch_candidate_hstates,dim=0) # B,K,hidden_dim
-    batch_prompt_hstates = torch.cat(batch_prompt_hstates,dim=0) # B,hidden_dim
+    # 每条样本是 (D,) 向量，须 stack 成 (B, D)；用 cat 会变成一维 (B*D,)，与 reward (B,1) 不对齐且会误触发越界索引
+    batch_candidate_hstates = torch.stack(batch_candidate_hstates, dim=0)
+    batch_prompt_hstates = torch.stack(batch_prompt_hstates, dim=0)
     batch_rewards = torch.tensor(batch_rewards).view(-1,1) # B,1
     return batch_candidate_hstates,batch_prompt_hstates,batch_rewards
 

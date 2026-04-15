@@ -4,10 +4,10 @@ example:
 
 export CUDA_VISIBLE_DEVICES=0
 python /root/diffusion_ranker/ranker/train.py \
-    --num_epochs 100 \
-    --output_dir /root/autodl-tmp/ranker_ckpt_listwise_l06_s00 \
+    --num_epochs 10 \
+    --output_dir /root/autodl-tmp/ranker_ckpt_listwise_l06_s1 \
     --image_dir /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10 \
-    --candidate_repr_pt /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/mean/step_0_layer_0.6.pt \
+    --candidate_repr_pt /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/mean/step_1_layer_0.6.pt \
     --prompt_repr_pt /root/diffusion_ranker/ranker/prompt_repr_mean_pooling/from_hidden_states_ratio0.6.pt \
     --reward_path /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/reward_ls.json \
     --batch_size 32 \
@@ -218,7 +218,23 @@ def process_single_candidate_group(
     group,
 ):
     candidate_hstates, prompt_hstates, rewards = group
-    logits = ranker(candidate_hstates, prompt_hstates)
+
+    # breakpoint()
+    # Ranker 约定：candidate (B, K, D_c)，prompt (B, D_p)；分组切片得到的是 (K, D)
+    if candidate_hstates.dim() == 2:
+        candidate_hstates = candidate_hstates.unsqueeze(0)  # (1, K, D_c)
+    if prompt_hstates.dim() == 2:
+        # 同一 listwise 组共用一个上下文向量（多行 prompt 通常来自同 class 重复，取首行即可）
+        prompt_hstates = prompt_hstates[:1]  # (1, D_p)
+
+    logits = ranker(candidate_hstates, prompt_hstates)  # (1, K)
+    # loss 里 KL 在 dim=0 上对「候选维」做 softmax，须为 (K, 1)
+    logits = logits.transpose(0, 1).contiguous()
+    rewards = rewards.view(-1, 1)
+    if logits.shape[0] != rewards.shape[0]:
+        raise ValueError(
+            f"logits 与 reward 候选数不一致: {logits.shape} vs {rewards.shape}"
+        )
     group_loss, group_mse, group_kl = loss_fn(logits, rewards)
     return group_loss, group_mse, group_kl
 
