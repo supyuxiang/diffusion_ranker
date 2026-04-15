@@ -13,14 +13,15 @@ r"""
 
 example::
 
-    python3 /root/diffusion_ranker/fk_search/dit_clipscore.py \\
-        --output_dir /root/autodl-tmp/fk_search_clipscore \\
-        --num_samples 50000 \\
-        --deno_steps 10 \\
-        --guidance_scale 1.0 \\
-        --num_candidates 16 \\
-        --tau 0.1 \\
-        --fk_resample
+python3 /root/diffusion_ranker/fk_search/dit_clipscore.py \
+  --output_dir /root/autodl-tmp/fk_search_clipscore \
+  --num_samples 50000 \
+  --deno_steps 10 \
+  --guidance_scale 1.0 \
+  --num_candidates 16 \
+  --tau 0.1 \
+  --fk_resample \
+  --pick sample
 """
 
 from __future__ import annotations
