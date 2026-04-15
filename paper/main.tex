@@ -1,0 +1,538 @@
+\documentclass{article}
+
+\usepackage{neurips_2026}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsfonts}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{nicefrac}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{xspace}
+\usepackage{natbib}
+
+
+\author{%
+  Anonymous Authors \\
+  Anonymous Institution \\
+  \texttt{anonymous@anonymous.edu}
+}
+
+\newcommand{\method}{\text{Diffusion Ranker}\xspace}
+\newcommand{\score}{\mathrm{Score}}
+\newcommand{\decode}{\mathrm{Decode}}
+\newcommand{\topk}{\mathrm{Top}\text{-}K}
+\newcommand{\tbd}{\textcolor{blue}{XX.X}}
+\newcommand{\tbdp}{\textcolor{blue}{XX.X\%}}
+\newcommand{\naentry}{\textemdash}
+\newcommand{\best}[1]{\textbf{#1}}
+\newcommand{\second}[1]{\underline{#1}}
+\newcommand{\meanstd}[2]{#1 {\scriptsize$\pm$ #2}}
+\newcommand{\meanci}[3]{#1 {\scriptsize[#2, #3]}}
+\newcommand{\wins}[2]{#1 {\scriptsize(#2)}}
+\newcommand{\fillin}[1]{\textcolor{blue}{[#1]}}
+
+
+\title{\method: Lightweight Reward Modeling from Internal States for Parallel Scaling in Image Diffusion Models}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Inference-time parallel scaling---generating $N$ candidate trajectories and selecting the best---is an effective way to improve diffusion model outputs. Its practical impact, however, is limited by two bottlenecks: expensive external reward models for final selection, and high-latency Monte Carlo rollouts for estimating intermediate potentials during guided resampling. We introduce \textbf{\method}, a lightweight framework that repurposes a diffusion model's \textbf{internal hidden states as a reward signal}. Instead of treating the generator as a black box, \method applies a small cross-sample Transformer over latent features to rank candidates, enabling strong best-of-$N$ selection with minimal overhead. We further extend the ranker to predict rollout-based potentials from intermediate representations, replacing repeated simulations with a single forward pass for efficient reward-guided resampling. On ImageNet, \method matches large external reward models while using only XXX\% of their parameters and reducing inference latency by XXX\%. Concretely, our ranker has about 0.59M parameters, compared with about 447M for ImageReward and 427.6M for CLIP (ViT-L/14). These results suggest that internal representations provide a scalable alternative to external verifiers for both final selection and middle-step guidance. \footnote{Our code will be released upon paper publication.}
+
+\end{abstract}
+
+
+
+\section{Introduction}
+
+Image diffusion models (IDMs) have become a dominant paradigm for image generation \citep{ho2020ddpm,nichol2021improved,rombach2022ldm,saharia2022imagen,podell2023sdxl}. They generate outputs through an iterative denoising process that gradually recovers images from noise. Because generation unfolds over multiple denoising steps, prior work has largely focused on inference-time scaling by increasing the number of steps or using more compute per step, improving sample quality at the cost of higher latency. More recently, a complementary direction has gained traction: parallel scaling, where one generates multiple trajectories in parallel and selects the best.
+
+Parallel scaling can be highly effective, but its success is ultimately limited by the selection mechanism. Current practice faces two major bottlenecks. First, selecting the best final generation among parallel candidates typically relies on an external reward model (e.g., GPT-2- or Llama-based verifiers \citep{liu2024}), which is often expensive to evaluate and may require substantial preference data to train. Second, when extending selection to middle steps of diffusion trajectories for reward-guided resampling, the quality of an intermediate state is often estimated via Monte Carlo rollouts, introducing substantial additional diffusion computation and making steering excessively inefficient.
+
+These challenges motivate two research questions:
+
+\textbf{RQ1: How to design a lightweight reward model for diffusion models?}
+
+\textbf{RQ2: How to design an efficient reward estimation method for middle steps in diffusion models?}
+
+To address RQ1, we propose \method, a lightweight reward model that reuses the diffusion model's intermediate hidden states. Instead of treating the IDM as a black box and scoring only the final image, \method pools hidden-state representations from each trajectory and applies a small cross-sample Transformer to compare candidates in latent space, producing scores for efficient best-of-N selection. Experiments show that our ranker is much stronger than small external reward models, and achieves performance comparable to large reward models while being substantially more efficient, validating the feasibility of using internal hidden states as a reward signal.
+
+To address RQ2, we extend \method to middle step potential estimation. We train a middle step ranker to predict rollout-based potentials directly from hidden states at middle step, replacing costly Monte Carlo evaluation and enabling efficient reward-guided resampling. This allows our ranker to serve as a drop-in replacement for the reward model inside iterative resampling methods such as FK-Steering \citep{singhal2025fk}.
+
+In conclusion, our main contributions are:
+\begin{itemize}
+    \item We introduce \method, a lightweight reward model for selecting diffusion trajectories using internal hidden states.
+    \item We extend the ranker to efficiently estimate middle step potentials, substantially reducing the latency of reward-guided resampling.
+    \item We demonstrate strong empirical results across multiple IDM backbones on ImageNet. Our framework is competitive with large reward models while using 0.59M parameters (vs. 447M for ImageReward and 427.6M for CLIP ViT-L/14), reducing computational overhead during both training and inference.
+\end{itemize}
+
+\section{Related Work and Preliminaries}
+
+\subsection{Diffusion Models in Image Generation}
+
+Diffusion models define a generative process via a Markov chain that progressively adds noise to data $\mathbf{x}_{0}\sim p_{\text{data}}(\mathbf{x})$, referred to as the forward process,
+ \citep{ho2020ddpm,nichol2021improved}.
+
+\begin{equation}
+    \mathbf{x}_{t} = \sqrt{\alpha_{t}}\,\mathbf{x}_{t-1} + \sqrt{1-\alpha_{t}}\,\epsilon,\quad\epsilon\sim\mathcal{N}(0,I),
+\end{equation}
+
+where $t\in\{1,\ldots,T\}$ indexes discrete time steps, and $\{\alpha_{t}\}_{t=1}^{T}$ defines a noise schedule. The noise schedule is chosen such that at $t=T$, the marginal distribution of the samples resembles a simple fixed distribution, such as standard Gaussian, $p(\mathbf{x}_{T})=\mathcal{N}(0,I)$. A learned reverse process iteratively denoises samples:
+\begin{equation}
+    p_{\theta}(\mathbf{x}_{t-1}\mid\mathbf{x}_{t}) = \mathcal{N}(\mathbf{x}_{t-1};\mu_{\theta}(\mathbf{x}_{t},t),\sigma_{t}^{2}I),
+\end{equation}
+
+where $\sigma_{t}$ is the posterior variance calculated from the forward noise schedule and $\mu_{\theta}$ is parameterized typically by neural networks and optimized by minimizing the variational bound on the data likelihood or via denoising score matching. The generative process induces a distribution:
+
+\begin{equation}\label{eq:1}
+p_{\theta}(\mathbf{x}_{0},\ldots,\mathbf{x}_{T-1},\mathbf{x}_{T}) = p(\mathbf{x}_{T})\prod_{t=1}^{T}p_{\theta}(\mathbf{x}_{t-1}\mid\mathbf{x}_{t}),\quad p(\mathbf{x}_{T}) = \mathcal{N}(0,I).
+\end{equation}
+
+Subsequent systems improved backbone quality, conditioning fidelity, and scale \citep{saharia2022imagen,podell2023sdxl}. Recent work focuses on inference-time scaling via noise-space search guided by reward signals.
+
+\subsection{Parallel Scaling in Diffusion Models.}
+
+Inference-time scaling has recently become a central theme in language and diffusion modeling. For image diffusion, recent work studies how to scale test-time compute beyond simply increasing denoising steps, for example via noise search, particle-based steering, or verifier-guided procedures \citep{ma2025inferencetimescaling,singhal2025fk}. In diffusion language models, trajectory-level refinement and particle Gibbs sampling further suggest that extra compute can be profitably allocated to search and selection \citep{zhang2025pgdlm}. Our method is inspired by this line of thinking but specializes it to image diffusion with explicit beam-like branching, intermediate preview decoding, and interchangeable rankers.
+
+\subsection{Reward Model in Parallel Decoding.}
+
+Rankers and reward models have become standard tools for post hoc candidate selection in multimodal generation. CLIP provides a robust frozen image-text similarity signal \citep{radford2021clip}. Learned image reward models extend this idea by predicting human preferences from prompt-image pairs \citep{xu2023imagereward}. These models are usually applied at the end of generation, after independent samples are produced. Our work instead uses ranking \emph{during} generation to determine which latent trajectories deserve more compute.
+
+A recent work views language models as recommender systems and re-ranks sampled outputs using feature engineering techniques from recommender systems \citep{zhang2025recommender}. However, this line of work primarily scores the final output and does not provide an efficient way to estimate middle step potentials along a diffusion trajectory. In contrast, \method enables lightweight reward estimation for middle-step guidance by leveraging the diffusion model's internal hidden states and shifting Monte Carlo rollouts from inference time to training.
+
+\section{\method in Parallel Scaling}
+
+Image Diffusion Models (IDMs), such as DiT \citep{peebles2023dit} and Latent Diffusion \citep{rombach2022ldm}, operate through an iterative denoising process in latent space. Given a conditioning signal $c$ (e.g., a class label for class-conditional generation or a caption), the model gradually recovers a clean latent $\mathbf{z}_0$ from Gaussian noise $\mathbf{z}_T \sim \mathcal{N}(0, \mathbf{I})$ over $T$ reverse diffusion steps. The final image is obtained by decoding $\mathbf{z}_0$ with a pretrained VAE. This multi-step refinement allows the model to progressively improve structural and semantic coherence. Parallel sampling---generating $N$ independent trajectories and selecting the best---has emerged as an effective inference-time scaling strategy. However, its effectiveness is strictly capped by the quality of the selection mechanism.
+
+In this section, we introduce \method, a framework designed to unlock the full potential of parallel scaling for IDMs. Unlike existing approaches that treat the model as a black box and rely on heavy external verifiers (e.g., ImageReward, aesthetic scorers), our framework exploits the latent representations produced during the diffusion process. By analyzing the internal hidden states of the IDM, \method evaluates the potential of each trajectory using the model's own internal state. Through a small-scale cross-sample Transformer ranker, we achieve efficient and accurate best-of-$N$ selection with minimal overhead.
+
+\subsection{Parallel Scaling in Image Diffusion Models}
+
+\paragraph{Parallel Trajectory Generation.}
+
+An Image Diffusion Model (IDM), parameterized by $\theta$, generates a trajectory through a sequence of $T$ denoising steps in latent space. In a parallel scaling regime, we sample $N$ independent trajectories simultaneously, each conditioned on the same input $c$ (e.g., a class label or image caption):
+
+\begin{equation}
+    \mathcal{Z} = \{\mathbf{z}_1^{(0)}, \mathbf{z}_2^{(0)}, \ldots, \mathbf{z}_N^{(0)}\}, \quad \text{where } \mathbf{z}_i^{(0)} \sim P_{\theta}(\mathbf{z}^{(0)} \mid c).
+\end{equation}
+
+Each trajectory $\mathbf{z}_i$ results from the reverse diffusion process $\mathbf{z}_i^{(T)} \to \mathbf{z}_i^{(T-1)} \to \cdots \to \mathbf{z}_i^{(0)}$, where $\mathbf{z}_i^{(T)}$ is Gaussian noise and $\mathbf{z}_i^{(0)}$ is the clean latent. The corresponding decoded images are $\mathcal{Y} = \{y_1, y_2, \ldots, y_N\}$ with $y_i = \text{Decode}(\mathbf{z}_i^{(0)})$. The upper bound of parallel scaling is determined by the oracle best-of-$N$ selection: if we could always pick the highest-quality sample, performance would improve monotonically with $N$. Thus, the selection mechanism is critical.
+
+\paragraph{Selection Mechanism.}
+
+Better selection unlocks better performance with parallel scaling. Current practice typically employs an external reward model $R_{\phi}$ (e.g., ImageReward \citep{xu2023imagereward}, CLIP-based scorers, or aesthetic predictors). This model assigns a scalar score $s_i$ to each generated image:
+
+\begin{equation}
+    s_i = R_{\phi}(c, y_i), \quad \forall i \in \{1, \ldots, N\}.
+\end{equation}
+
+The final output $\hat{y}$ is selected by $\hat{y} = \arg\max_{y_i \in \mathcal{Y}} s_i$.
+
+Although external reward models align well with human preferences, they suffer from several well-documented limitations:
+\begin{enumerate}
+    \item They are computationally expensive to evaluate and often require substantial preference data for training.
+    \item They are sensitive to image perturbations, such as adversarial noise.
+    \item Both external reward models and simple heuristics (e.g., CLIPScore, BIPScore) base their decisions solely on the final decoded image. Formally, $R_{\phi}$ operates only on $(c, y) \in \mathcal{C} \times \mathcal{I}$, where $\mathcal{I}$ is the image space.
+\end{enumerate}
+The root cause underlying these limitations is the systematic disregard for the rich internal latent space $\mathcal{H}$ of the image diffusion model (IDM). By operating directly on the final outputs, these approaches discard the intermediate representations produced during the generative process. Across the $T$ denoising steps, the model yields a sequence of hidden states $\mathbf{H}_i = \{\mathbf{h}_i^{(T)}, \mathbf{h}_i^{(T-1)}, \ldots, \mathbf{h}_i^{(0)}\}$ for each trajectory $i$, which encode crucial uncertainty and structural signals. We conjecture that $R_{\phi}$ suffers from information loss by ignoring $\mathbf{H}_i$. Therefore, we introduce a lightweight ranker that exploits these intermediate hidden states to guide selection.
+
+
+\subsection{Ranker: Evaluating Samples by Model Hidden States}
+\label{sec:ranker}
+
+\method is designed to be a lightweight observer of the generation process and provide more fine-gained reward signal. Unlike external reward models that require a full forward pass of a separate high-parameter model, our ranker reuses the computations already performed by the IDM.
+
+\paragraph{Latent Feature Extraction.}
+
+From each of the $N$ parallel trajectories generated by the IDM, we extract the hidden states from a chosen transformer layer $\ell$ at the \emph{final} denoising step $t=t_{final}$. In architectures such as DiT \citep{peebles2023dit}, the input latent is divided into patches, and the output of layer $\ell$ can be arranged as a spatial feature map $\mathbf{H}_i^{(\ell)} \in \mathbb{R}^{L \times D}$, where $L$ is the number of patch tokens and $D$ is the hidden dimension. To obtain a compact vector for ranking, we apply global average pooling across the token dimension:
+\begin{equation}
+    \mathbf{h}_i^{(\ell)} = \frac{1}{L} \sum_{j=1}^{L} \mathbf{H}_i^{(\ell)}[j] \in \mathbb{R}^{D}.
+\label{eq:h}
+\end{equation}
+This pooled representation aggregates global information from the entire latent space while preserving the abstraction of layer $\ell$. Although the last layer is a common choice, representation learning studies suggest that mid-layer features can be more transferable for downstream tasks \citep{skean2024does}. We treat the layer index $\ell$ as a tunable hyperparameter and provide an ablation in Section~\ref{sec:ablation}.
+
+\paragraph{Transformer-based Ranking Architecture.}
+
+A key insight of our approach is that quality in image generation across different denoising processes is often relative. Instead of scoring each trajectory independently, our ranker employs a cross-sample Transformer that enables comparisons across the $N$ trajectories in a shared latent space before assigning final scores. This design allows the model to leverage collective information, leading to more reliable preference estimation.
+
+The input to the ranker is the set of pooled feature vectors $\mathcal{H} = \{\mathbf{h}_1^{(\ell)}, \mathbf{h}_2^{(\ell)}, \ldots, \mathbf{h}_N^{(\ell)}\}$. We treat these $N$ vectors as a sequence of tokens with no inherent order; thus we omit positional encodings to preserve permutation invariance. The sequence is first projected to a lower-dimensional ranker space:
+\begin{equation}
+    \mathbf{x}_i = \mathbf{W}_{\text{proj}} \mathbf{h}_i^{(\ell)} + \mathbf{b}_{\text{proj}} \in \mathbb{R}^{d_r},
+    \label{eq:x_i}
+\end{equation}
+where $d_r \ll D$ is the ranker dimension. For conditional tasks, we additionally encode the condition text into a prompt feature $\mathbf{p}_i$ (details in Section~\ref{sec:exp_class_posterior}) and fuse it with the trajectory token:
+\begin{equation}
+    \mathbf{x}_i' = \mathbf{x}_i + \mathbf{W}_{p}\mathbf{p}_i.
+\label{eq:x_cond}
+\end{equation}
+The fused tokens $\{\mathbf{x}_1', \ldots, \mathbf{x}_N'\}$ then pass through $M$ layers of standard Transformer encoder blocks. After the Transformer layers, we obtain contextualized representations $\{\tilde{\mathbf{x}}_1, \ldots, \tilde{\mathbf{x}}_N\}$. A lightweight scoring head $f_{\psi}$ maps each $\tilde{\mathbf{x}}_i$ to a scalar preference score:
+\begin{equation}
+    s_i = f_{\psi}(\tilde{\mathbf{x}}_i) \in \mathbb{R}, \quad \forall i \in \{1,\ldots,N\}.
+    \label{eq:s_i}
+\end{equation}
+During inference, the trajectory with the highest score is selected. The ranker is intentionally minimal ($M=1$--$4$ layers, $d_r \approx 64$), adding less than 1\% to total inference latency.
+
+\paragraph{Training Objective.}
+
+We train the ranker with a weighted objective that combines pointwise score regression and listwise distribution matching. For each generated image $y_i$, we obtain a teacher score $R_i = R^{\text{ref}}(c_i, y_i)$ from the task-specific reward source (e.g., classifier log-likelihood in class-conditional posterior sampling, or ImageReward in text-to-image). The ranker predicts logits $s_i$ for the same candidate set.
+
+\begin{equation}
+    \mathcal{L}_{\text{total}} = \alpha \mathcal{L}_{\text{MSE}} + (1-\alpha) \mathcal{L}_{\text{KL}},
+\end{equation}
+where $\alpha \in [0,1]$ controls the trade-off.
+
+\begin{equation}
+    \mathcal{L}_{\text{MSE}} = \frac{1}{N} \sum_{i=1}^{N}(s_i - R_i)^2.
+\end{equation}
+
+\begin{equation}
+    q_i = \frac{\exp(R_i/\tau)}{\sum_{j=1}^{N}\exp(R_j/\tau)}, \qquad
+    p_i = \frac{\exp(s_i/\tau)}{\sum_{k=1}^{N}\exp(s_k/\tau)},
+    \label{eq:q_i}
+\end{equation}
+\begin{equation}
+    \mathcal{L}_{\text{KL}} = D_{\mathrm{KL}}(q \| p),
+\end{equation}
+where $\tau$ is a temperature. This objective preserves both absolute score calibration (MSE) and relative ranking consistency (KL).
+
+\paragraph{Inference-Time Selection.}
+
+At inference time, the ranker processes all $N$ candidate trajectories in a single forward pass. After the IDM completes the $T$ reverse sampling steps, we extract the pooled hidden features $\mathbf{h}_i^{(\ell)}$ for each trajectory and pass them through the ranker to produce scores $\{s_1, \ldots, s_N\}$. The final prediction is
+\begin{equation}
+\hat{y} = y_{\arg\max_{i} s_i}.
+\label{eq:selection}
+\end{equation}
+Because the ranker operates on compact feature vectors and uses only a few Transformer layers, its computational cost is negligible compared to the diffusion process itself.
+
+
+\subsection{Experiments}
+
+\subsubsection{Class-conditional posterior sampling}
+\label{sec:exp_class_posterior}
+
+We evaluate \method on class-conditional posterior sampling:
+\begin{equation}
+    p(\mathbf{x}\mid c) \propto p_{\theta}(\mathbf{x})\,p(c\mid \mathbf{x}),
+\end{equation}
+where \(p_{\theta}(\mathbf{x})\) is a pretrained unconditional ImageNet prior and \(p(c\mid \mathbf{x})\) is a pretrained ImageNet classifier. Following FK-style steering, we use
+\begin{equation}
+    r(\mathbf{x})=\log p(c\mid \mathbf{x})
+\end{equation}
+as the reward signal for both teacher target construction and evaluation in this subsection.
+
+\paragraph{Setting}
+We conduct this experiment on ImageNet \(256\times256\). The diffusion backbone is an unconditional ImageNet prior, and each run conditions on one target class \(c\in\{0,\dots,999\}\). To construct condition features for the ranker, we convert each class id to a text prompt (e.g., ``a photo of a \emph{class-name}''), feed it to a frozen language model, and use the resulting hidden-state representation as \(\mathbf{p}_i\). We then fuse \(\mathbf{p}_i\) with diffusion hidden-state features as in Equation~\ref{eq:x_cond}. We generate \(N\) parallel trajectories per class and train rankers from internal hidden states using classifier-based targets derived from \(r(\mathbf{x})=\log p(c\mid \mathbf{x})\). For middle-step supervision, rollout targets are also computed with the same classifier reward to keep training and inference objectives aligned.
+
+\paragraph{Baselines}
+For class-conditional posterior sampling, we compare against: (i) no reranking, (ii) heuristic reranking baselines, and (iii) external reward-model reranking when applicable. For each class, we generate \(N=16\) parallel trajectories and select one sample per method. We report Fr\'echet Inception Distance (FID), Inception Score (IS), and CLIPScore against the ImageNet validation set \citep{russakovsky2015imagenet}.
+
+\paragraph{Results}
+XXX
+
+\subsubsection{Text-to-image generation}
+Large-scale diffusion models for text-conditioned image generation can generate high-quality images and effectively generalize to new prompts.
+
+\paragraph{Setting}
+We use Stable Diffusion v1.5 \citep{rombach2022ldm}, a latent diffusion model, as the prior over $512 \times 512$ images $\mathbf{x} \sim p_{\theta}(\mathbf{x} \mid \mathbf{y})$ where $\mathbf{y}$ denotes the text prompt. We evaluate on two different settings: (a) \textbf{DrawBench} \citep{saharia2022photorealistic}, which is a comprehensive benchmark of 200 prompts, with ImageReward \citep{xu2023imagereward} $\mathrm{r}(\mathbf{x}, \mathbf{y})$ that encodes prompt accuracy as well as human preferences; and (b) following \citet{black2023consistency}, we use 45 common animals from the ImageNet-1000 dataset as prompts, with the \textbf{LAION} aesthetics predictor \citep{schuhmann2022laion} $\mathrm{r}(\mathbf{x})$ that encodes aesthetic quality of an image but does not check for prompt accuracy.
+
+\paragraph{Baseline}
+We compare \method with best-of-N and FK-Steering (SMC). For fair comparison, we set the number of candidates for best-of-N or the number of particles for FK-Steering based on the number of function evaluations of the base diffusion model, and record the highest reward for each method per prompt.
+
+\paragraph{Results}
+XXX
+
+
+% We evaluate \method on \textbf{class-conditional ImageNet 256$\times$256 generation} using DiT-XL/2 \citep{peebles2023dit} as the backbone IDM. We compare our ranker against external reward models of varying scale: a frozen CLIP-based scorer, ImageReward, and larger VLM models. For each class, we generate $N=16$ parallel trajectories and select the best using each method. We report Fr\'echet Inception Distance (FID), Inception Score (IS), and CLIPScore against the ImageNet\citep{xu2023imagereward} validation set.
+
+% Our ranker is trained on a held-out subset of ImageNet classes, using ImageReward\cite{xu2023imagereward} to construct soft targets $q_i$ as in Equation~\ref{eq:q_i}. At inference, we apply the ranker to the pooled hidden states from the final denoising step. Results (Table~X) show that \method achieves FID/IS/CLIPScore comparable to selection with large external reward models while using under 1\% of their parameters and adding negligible latency. We provide full experimental details and ablations in Section\ref{sec:ablation} and the Appendix.
+
+\section{Ranker in Middle-Step Potential Estimation}
+
+In this section, building on recently proposed reward-guided resampling for MDMs \citep{singhal2025fk,dang2025inference}, we extend our ranker to estimate middle-step potentials, reducing the latency introduced by external reward models in these methods.
+
+\subsection{Background: Reward-Guided Resampling}
+
+Recent works, such as Feynman–Kac (FK) Steering \citep{singhal2025fk} and Particle Gibbs Sampling for Diffusion Models (PG-DLM) \citep{dang2025inference}, have introduced frameworks for guiding diffusion models toward high-reward outputs. These methods generally follow a common paradigm:
+
+\begin{itemize}
+    \item \textbf{Parallel Generation.} Maintain $N$ independent particles (trajectories) throughout the denoising process, $t = T \to 0$.
+    \item \textbf{Intermediate Evaluation.} At specified intervals, evaluate a potential function $V(y^{(t)})$ for each particle.
+    \item \textbf{Resampling.} Replicate promising particles with high potential and discard those with low potential.
+\end{itemize}
+
+A key bottleneck in these frameworks is estimating $V(y^{(t)})$. For image generation tasks without ground-truth intermediate rewards, these methods typically rely on Monte Carlo (MC) rollouts: from an intermediate step $t$, they sample $C$ complete trajectories to the final step $0$ and score them with an external reward model. The potential is then
+
+\begin{align}
+    V(y^{(t)}) \approx \frac{1}{C} \sum_{j=1}^{C} R_{\phi}(\text{Rollout}_{j}(y^{(t)})).
+    \label{eq:V}
+\end{align}
+
+Computing the potential at a single interval requires $N \times C$ additional diffusion processes and reward model calling. Although several acceleration tricks have been proposed, this procedure still incurs substantial latency, making it impractical for real-time deployment.
+
+\subsection{Training Rankers for Middle-Step Potentials}
+
+We propose to replace the MC-based potential $V(y^{(t)})$ with our lightweight \method. Rather than simulating the future at inference time, we integrate the rollout procedure into training and learn to predict rollout outcomes directly from the model's internal hidden states at step $t$.
+
+\paragraph{Data Collection.}
+To train the middle-step ranker, we collect trajectories and record hidden states $\mathbf{H}_i^{(l,t)}$ at multiple diffusion steps (e.g., $t \in \{0, T/16, 2T/16, \dots, 15T/16\}$). For each intermediate step $t$, we run $M$ MC rollouts to compute a ground-truth potential target $y_i(t)$ as the mean accuracy (or reward) over the $M$ rollouts. The rollout reward is obtained by the judge of the final generated image using ImageReward.
+
+\paragraph{Architecture.}
+We use the same Transformer-based architecture described in Section~\ref{sec:ranker}. However, the ranker now takes hidden states $\mathbf{H}_i^{(l,t)}$ as input. To capture temporal information, we add a time-step embedding to the pooled features $\mathbf{h}_i^{(l,t)}$ (obtained via Equation~\ref{eq:h}) before feeding them into the ranker. Specifically, we project the diffusion step $t$ using a sinusoidal embedding and add it to the projected feature $\mathbf{x}_i$ from Equation~\ref{eq:x_i}:
+\begin{equation}
+    \mathbf{x}_i^{(t)} = \mathbf{x}_i + \text{Embed}(t).
+\end{equation}
+The rest of the ranker (Transformer encoder and scoring head) remains unchanged.
+
+\paragraph{Training Objective.}
+We train the middle-step ranker with the same weighted loss form. Let $s_i^{(t)}$ be the predicted score and $y_i(t)$ the rollout-based target potential at step $t$. We define
+\begin{equation}
+    p_i(t) = \frac{\exp(s_i^{(t)} / \tau)}{\sum_{k=1}^{N} \exp(s_k^{(t)} / \tau)}, \qquad
+    q_i(t) = \frac{\exp(y_i(t) / \tau)}{\sum_{k=1}^{N} \exp(y_k(t) / \tau)}.
+\end{equation}
+
+\begin{equation}
+    \mathcal{L}_{\text{total}}(t) = \alpha \mathcal{L}_{\text{MSE}}(t) + (1-\alpha) \mathcal{L}_{\text{KL}}(t),
+\end{equation}
+with
+\begin{equation}
+    \mathcal{L}_{\text{MSE}}(t)=\frac{1}{N}\sum_{i=1}^{N}(s_i^{(t)}-y_i(t))^2, \qquad
+    \mathcal{L}_{\text{KL}}(t)=D_{\mathrm{KL}}\bigl(q(t) \| p(t)\bigr).
+    \label{eq:kl_loss}
+\end{equation}
+
+This keeps the training objective consistent between final-step ranking and middle-step potential estimation.
+
+\subsection{Conceptual Experiments}
+
+We first validate whether a middle-step ranker can provide useful selection signals before integrating it into a full resampling pipeline. Concretely, we train and evaluate rankers at two diffusion steps: the final step $t=0$ and a middle step $t=T/2$. Given $N$ parallel trajectories, we compare the following selection strategies:
+
+\begin{itemize}
+    \item \textbf{Last-step only.} Apply the ranker at $t=0$ to select the best sample from the $N$ final trajectories.
+
+    \item \textbf{Mid-step only.} Apply the ranker at $t=T/2$ and keep only the top-1 trajectory (i.e., no further selection at the end).
+
+    \item \textbf{Mid-step (top-$N/2$) + last-step.} Apply the ranker at $t=T/2$, keep the top $N/2$ trajectories, and duplicate them to restore $N$ particles. After completing denoising to $t=0$, apply the last-step ranker to select the final output.
+
+    \item \textbf{Mid-step (top-1) + last-step.} Apply the ranker at $t=T/2$, keep the top-1 trajectory, and duplicate it $N$ times. After completing denoising to $t=0$, apply the last-step ranker to select the final output.
+\end{itemize}
+
+We conduct these experiments using XXX on XXX, reporting XXX. As shown in the results (Table in supplementary), incorporating a middle-step ranker improves overall performance over using only the last-step ranker.
+% As shown in Table 2, incorporating a middle-step ranker improves overall performance over using only the last-step ranker. Moreover, selecting a diverse sub-set at the middle step (top-$N/2$) is slightly better than collapsing to a single trajectory (top-1), suggesting that early pruning is helpful but overly aggressive pruning can reduce downstream diversity and hurt final selection.
+
+FK-Steering is a particle-based diffusion sampling method that steers generation toward high-reward outputs via sequential importance resampling. Starting from $N$ particles at step $t = T$, the algorithm alternates between (i) proposing transitions using a proposal kernel (typically the diffusion transition), (ii) scoring particles with a potential function $G_{t}$ calculated by the reward model, and (iii) re-sampling particles according to their potential weights. We perform resampling once every 20 diffusion steps following FK-Steering.
+
+In FK-Steering, the reward model is incorporated into the potential. Two commonly used potentials are DIFFERENCE and MAX, both defined in terms of intermediate rewards $r_{\phi}(x_{t})$:
+
+\begin{itemize}
+    \item \textbf{DIFFERENCE:} $G_{t}(x_{t},x_{t+1}) = \exp(\lambda(r_{\phi}(x_{t}) - r_{\phi}(x_{t+1})))$ prefers particles that have increasing rewards.
+    \item \textbf{MAX:} $G_{t}(x_{T},\ldots,x_{t}) = \exp(\lambda\max_{s=t}^{T}r_{\phi}(x_{s}))$ prefers particles that have the highest rewards.
+\end{itemize}
+
+We evaluate our middle-step ranker as a drop-in replacement for the reward model inside these potentials. Concretely, we replace $r_{\phi}(x_{t})$ with a ranker score computed from the IDM hidden states at step $t$,
+
+\begin{equation}
+    r_{\phi}(x_{t}) \leftarrow \hat{r}(x_{t}) = \text{Ranker}(H^{(l,t)}),
+\end{equation}
+
+and keep the rest of the FK-Steering procedure unchanged (proposal, re-weighting, and resampling).
+
+\paragraph{Setup}
+We compare (i) FK-Steering with our ranker (ours), (ii) FK-Steering with external reward evaluators (e.g., ImageReward/CLIP-style scorers), and (iii) FK-Steering without learned reranking. The rollout number \(C\) is set to 4 for all methods. We report FID, IS, and CLIPScore together with relative wall-clock latency per sample.
+
+\paragraph{Results}
+XXX.
+% We also observe that using MAX as the potential is consistently stronger than DIFFERENCE across all methods, consistent with prior findings (Singhal et al., 2025). Diffusion Ranker benefits the most from this choice, achieving the best MATH accuracy (38.4\%) and the best MBPP Pass@1 (55.2\%) while maintaining the lowest latency.
+
+\section{Ablation Study and Analysis}
+\label{sec:ablation}
+
+In this section, we conduct ablation studies to understand which design choices of Diffusion Ranker matter most, including the hidden-state extraction layer, the number of Transformer blocks, and key training hyperparameters. Unless stated otherwise, we use XXX as the backbone IDM and ImageNet as the evaluation dataset.
+
+\paragraph{Hidden States Layer}
+We vary the extraction layer $l$ (from shallow to deep layers) while keeping all other settings fixed, and evaluate downstream selection performance. Intuitively, very shallow layers may not encode sufficient semantic information, while very deep layers may overfit to token-level prediction. 
+
+%We report results in Table 4. Across both backbones, mid-layer features (ratio 0.6) consistently yield the strongest selection accuracy (Dream: 28.7\%, LLaDA: 37.5\%), while shallow representations (0.1) perform substantially worse (-8.3\% and -11.0\%). Meanwhile, extracting from the final layer (1.0) slightly degrades accuracy (-0.8\% and -0.5\%), supporting the hypothesis that top-layer states are more specialized to token prediction and less transferable for ranking.
+
+\paragraph{Number of Transformer Blocks}
+We vary the number of Transformer blocks $M$ in the cross-sample ranker. 
+% Table 4 shows that increasing depth yields only modest gains with diminishing returns: on Dream, performance improves from 28.7\% ($M=1$) to 29.2\% ($M=4$), and on LLaDA it peaks at 37.7\% with $M=3$ (vs. 37.5\% at $M=1$). This suggests that most of the benefit comes from cross-sample comparison itself, and a small ranker (1--3 blocks) is often sufficient in practice.
+
+\paragraph{Training Hyperparameters}
+We ablate key training hyper-parameters for the ranker, including the learning rate, batch size, training steps, and the KL temperature (if used for softening targets). % The results are shown in Table 5. Unless stated otherwise, all ablations use the same dataset construction protocol and evaluate on the same held-out benchmark splits. Overall, the ranker is relatively insensitive within a reasonable learning-rate range. In terms of optimization, increasing the number of steps from 100 to 200 provides a clear gain (27.5\% $\to$ 28.7\%), while further training to 400 steps does not improve results, suggesting early saturation.
+
+\section{Conclusion}
+We propose \method, a lightweight reward modeling framework that reuses image diffusion models' internal hidden states to perform efficient best-of-$N$ selection. Across ImageNet, \method achieves near-parity with strong external reward models while using XXX\% of their parameters and reducing inference-time overhead by XXX\%. We further extend the ranker to predict rollout-based middle-step potentials, enabling fast reward-guided resampling without expensive Monte Carlo rollouts. Experiments support Diffusion Ranker as a practical drop-in alternative to heavyweight verifiers. We hope this work encourages future research on leveraging internal representations for scalable inference-time guidance and selection in diffusion models.
+
+\section*{Impact Statement}
+This paper presents work whose goal is to advance the field of Machine Learning. There are many potential societal consequences of our work, none of which we feel must be specifically highlighted here.
+
+
+\begin{thebibliography}{99}
+
+\bibitem[Black et~al.(2023)Black, Janner, Du, Levine, and Mordatch]{black2023consistency}
+Kevin Black, Michael Janner, Yilun Du, Sergey Levine, and Igor Mordatch.
+\newblock Consistency models.
+\newblock In \emph{International Conference on Machine Learning}, 2023.
+
+\bibitem[Dang et~al.(2025)Dang, Han, Xu, Xu, Srivastava, and Ermon]{dang2025inference}
+M.~Dang, J.~Han, M.~Xu, K.~Xu, A.~Srivastava, and S.~Ermon.
+\newblock Inference-time scaling of diffusion language models with particle Gibbs sampling.
+\newblock \emph{arXiv preprint arXiv:2507.08390}, 2025.
+
+\bibitem[Dhariwal and Nichol(2021)]{dhariwal2021diffusion}
+Prafulla Dhariwal and Alexander Nichol.
+\newblock Diffusion models beat GANs on image synthesis.
+\newblock In \emph{Advances in Neural Information Processing Systems}, 2021.
+
+\bibitem[Ho et~al.(2020)Ho, Jain, and Abbeel]{ho2020ddpm}
+Jonathan Ho, Ajay Jain, and Pieter Abbeel.
+\newblock Denoising diffusion probabilistic models.
+\newblock In \emph{Advances in Neural Information Processing Systems}, 2020.
+
+\bibitem[Ho and Salimans(2022)]{ho2022cfg}
+Jonathan Ho and Tim Salimans.
+\newblock Classifier-free diffusion guidance.
+\newblock \emph{arXiv preprint arXiv:2207.12598}, 2022.
+
+\bibitem[Nichol and Dhariwal(2021)]{nichol2021improved}
+Alex Nichol and Prafulla Dhariwal.
+\newblock Improved denoising diffusion probabilistic models.
+\newblock In \emph{International Conference on Machine Learning}, 2021.
+
+\bibitem[Peebles and Xie(2023)]{peebles2023dit}
+William Peebles and Saining Xie.
+\newblock Scalable diffusion models with transformers.
+\newblock In \emph{International Conference on Computer Vision}, 2023.
+
+\bibitem[Podell et~al.(2023)Podell, English, Lacey, Blattmann, Dockhorn, Muller, Penna, and Rombach]{podell2023sdxl}
+Dustin Podell, Zion English, Kyle Lacey, Andreas Blattmann, Tim Dockhorn, Jonas Muller, Joe Penna, and Robin Rombach.
+\newblock {SDXL}: Improving latent diffusion models for high-resolution image synthesis.
+\newblock \emph{arXiv preprint arXiv:2307.01952}, 2023.
+
+\bibitem[Radford et~al.(2021)Radford, Kim, Hallacy, Ramesh, Goh, Agarwal, Sastry, Askell, Mishkin, Clark, et~al.]{radford2021clip}
+Alec Radford, Jong~Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, et~al.
+\newblock Learning transferable visual models from natural language supervision.
+\newblock In \emph{International Conference on Machine Learning}, 2021.
+
+\bibitem[Rombach et~al.(2022)Rombach, Blattmann, Lorenz, Esser, and Ommer]{rombach2022ldm}
+Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Bjorn Ommer.
+\newblock High-resolution image synthesis with latent diffusion models.
+\newblock In \emph{IEEE/CVF Conference on Computer Vision and Pattern Recognition}, 2022.
+
+\bibitem[Russakovsky et~al.(2015)]{russakovsky2015imagenet}
+Olga Russakovsky, Jia Deng, Hao Su, Jonathan Krause, Sanjeev Satheesh, Sean Ma, Zhiheng Huang, Andrej Karpathy, Aditya Khosla, Michael Bernstein, et~al.
+\newblock ImageNet large scale visual recognition challenge.
+\newblock \emph{International Journal of Computer Vision}, 115(3):211--252, 2015.
+
+\bibitem[Saharia et~al.(2022)Saharia, Chan, Saxena, Li, Whang, Denton, Ghasemipour, Gontijo-Lopes, Ayan, Salimans, et~al.]{saharia2022imagen}
+Chitwan Saharia, William Chan, Saurabh Saxena, Lala Li, Jay Whang, Emily Denton, Seyed~Kamyar Ghasemipour, Raphael Gontijo-Lopes, Burcu Ayan, Tim Salimans, et~al.
+\newblock Photorealistic text-to-image diffusion models with deep language understanding.
+\newblock In \emph{Advances in Neural Information Processing Systems}, 2022.
+
+\bibitem[Saharia et~al.(2022)Saharia, Chan, Chang, Lee, Ho, Salimans, et~al.]{saharia2022photorealistic}
+Chitwan Saharia, William Chan, Huiwen Chang, Chris A. Lee, Jonathan Ho, Tim Salimans, et~al.
+\newblock Photorealistic text-to-image diffusion models with deep language understanding.
+\newblock In \emph{Advances in Neural Information Processing Systems}, 2022.
+
+\bibitem[Schuhmann et~al.(2022)Schuhmann, Vencu, Beaumont, Kaczmarczyk, Mullis, Katta, Coombes, Jitsev, and Komatsuzaki]{schuhmann2022laion}
+Christoph Schuhmann, Romain Vencu, Richard Beaumont, Robert Kaczmarczyk, Clayton Mullis, Aarush Katta, Theo Coombes, Jenia Jitsev, and Aran Komatsuzaki.
+\newblock LAION-5B: An open large-scale dataset for training next generation image-text models.
+\newblock In \emph{Advances in Neural Information Processing Systems}, 2022.
+
+\bibitem[Singhal et~al.(2025)Singhal, Horvitz, Teehan, Ren, Yu, Mckeown, and Ranganath]{singhal2025fk}
+R.~Singhal, Z.~Horvitz, R.~Teehan, M.~Ren, Z.~Yu, K.~Mckeown, and R.~Ranganath.
+\newblock A general framework for inference-time scaling and steering of diffusion models.
+\newblock In \emph{International Conference on Machine Learning}, 2025.
+
+\bibitem[Skean et~al.(2024)Skean, Arefin, LeCun, and Shwartz-Ziv]{skean2024does}
+O.~Skean, M.~R.~Arefin, Y.~LeCun, and R.~Shwartz-Ziv.
+\newblock Does representation matter? Exploring intermediate layers in large language models.
+\newblock \emph{arXiv preprint arXiv:2412.09563}, 2024.
+
+\bibitem[Song et~al.(2021)Song, Meng, and Ermon]{song2021ddim}
+Jiaming Song, Chenlin Meng, and Stefano Ermon.
+\newblock Denoising diffusion implicit models.
+\newblock In \emph{International Conference on Learning Representations}, 2021.
+
+\bibitem[Ma et~al.(2025)]{ma2025inferencetimescaling}
+N.~Ma, S.~Tong, H.~Jia, H.~Hu, Y.-C.~Su, M.~Zhang, X.~Yang, Y.~Li, T.~Jaakkola, X.~Jia, and S.~Xie.
+\newblock Inference-time scaling for diffusion models beyond scaling denoising steps.
+\newblock \emph{arXiv preprint arXiv:2501.09732}, 2025.
+
+\bibitem[Xu et~al.(2023)Xu, Liu, Zhang, Liu, Sun, and Schuurmans]{xu2023imagereward}
+Jiazheng Xu, Xiao Liu, Yuxin Zhang, Yichen Liu, Yiming Sun, and Dale Schuurmans.
+\newblock ImageReward: Learning and evaluating human preferences for text-to-image generation.
+\newblock In \emph{Advances in Neural Information Processing Systems}, 2023.
+
+\bibitem[Zhang et~al.(2025)]{zhang2025pgdlm}
+Anonymous Authors.
+\newblock Inference-time scaling of diffusion language models with particle Gibbs sampling.
+\newblock In \emph{Advances in Neural Information Processing Systems}, 2025.
+
+\bibitem[Zhang et~al.(2025)]{zhang2025recommender}
+Anonymous Authors.
+\newblock Re-ranking sampled outputs using recommender system techniques.
+\newblock \emph{arXiv}, 2025.
+
+\bibitem[Liu et~al.(2024)]{liu2024}
+Anonymous Authors.
+\newblock GPT-2/Llama-based verifiers for generation.
+\newblock \emph{arXiv}, 2024.
+
+\end{thebibliography}
+
+\appendix
+
+\section{Hyperparameter settings}
+
+In the sampling process, we generate 16 candidates for each initial state. During training, we perform a grid search over the parameter ranges specified in Table~\ref{tab:hyperparameters}.
+
+\begin{table}[htbp]
+\centering
+\caption{The hyperparameter list}
+\label{tab:hyperparameters}
+\begin{tabular}{ll}
+\toprule
+\textbf{Hyperparameter} & \textbf{Value} \\
+\midrule
+\multicolumn{2}{l}{\textbf{Sampling}} \\
+\midrule
+Sampling Temperature & 0.2 \\
+Sampling Max Length & 768 \\
+Sampling Criterion & Entropy \\
+Entropy Temperature & 0.2 \\
+\midrule
+\multicolumn{2}{l}{\textbf{Ranker Training}} \\
+\midrule
+Batch Size & [32, 64] \\
+Epoch & [1, 2, 4] \\
+Optimizer & AdamW \\
+AdamW LR & [$1\times 10^{-5}$, $2\times 10^{-5}$, $1\times 10^{-4}$, $2\times 10^{-4}$] \\
+AdamW Betas & (0.9, 0.999) \\
+Weight Decay & $1\times 10^{-4}$ \\
+LR Schedule & (Constant, Cosine Decay) \\
+Projection Dimension & 64 \\
+\midrule
+\multicolumn{2}{l}{\textbf{Reward Model Training}} \\
+\midrule
+Batch Size & [32, 64] \\
+Epoch & 1 \\
+Optimizer & AdamW \\
+AdamW LR & [$5\times 10^{-5}$, $5\times 10^{-4}$] \\
+AdamW Betas & (0.9, 0.999) \\
+Weight Decay & $1\times 10^{-4}$ \\
+LR Schedule & (Constant, Cosine Decay) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\end{document}
