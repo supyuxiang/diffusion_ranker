@@ -118,6 +118,18 @@ def parse_args() -> argparse.Namespace:
         default=CLIP_HF_LOCAL_DIR,
         help="既用于 image embedding，也可用于 clipscore teacher",
     )
+    p.add_argument(
+        "--repr_root",
+        type=Path,
+        default=None,
+        help="可选：DDPM rollout 表征根目录（含 candidate_xxxx/<repr_key>.pt）",
+    )
+    p.add_argument(
+        "--repr_key",
+        type=str,
+        default="s9_r0.6",
+        help="当 --repr_root 提供时使用的表征键名（例如 s9_r0.6）",
+    )
     p.add_argument("--embed_batch_size", type=int, default=128)
     p.add_argument("--score_batch_size", type=int, default=64)
     p.add_argument("--seed", type=int, default=42)
@@ -138,9 +150,15 @@ def main() -> None:
     out_pt = args.output_pt.expanduser().resolve()
     out_pt.parent.mkdir(parents=True, exist_ok=True)
 
+    use_repr = args.repr_root is not None
+    repr_root = args.repr_root.expanduser().resolve() if use_repr else None
+    need_clip = (not use_repr) or (args.teacher == "clipscore")
+    clip = None
+    processor = None
     clip_dir = args.clip_model_dir.expanduser().resolve()
-    clip = CLIPModel.from_pretrained(str(clip_dir), local_files_only=True).to(device).float().eval()
-    processor = CLIPProcessor.from_pretrained(str(clip_dir), local_files_only=True)
+    if need_clip:
+        clip = CLIPModel.from_pretrained(str(clip_dir), local_files_only=True).to(device).float().eval()
+        processor = CLIPProcessor.from_pretrained(str(clip_dir), local_files_only=True)
 
     rm_model = None
     if args.teacher == "imagereward":
@@ -169,9 +187,21 @@ def main() -> None:
 
         local_emb_chunks: list[torch.Tensor] = []
         local_reward_chunks: list[torch.Tensor] = []
-        for st in range(0, len(sel_paths), int(args.embed_batch_size)):
-            batch_paths = sel_paths[st : st + int(args.embed_batch_size)]
-            local_emb_chunks.append(_clip_image_embedding(clip, processor, batch_paths, device))
+        if use_repr:
+            repr_pt = repr_root / f"candidate_{cand_idx:04d}" / f"{args.repr_key}.pt"
+            if not repr_pt.is_file():
+                raise FileNotFoundError(f"missing repr file: {repr_pt}")
+            robj = torch.load(repr_pt, map_location="cpu", weights_only=False)
+            rten = robj["tensor"] if isinstance(robj, dict) and "tensor" in robj else robj
+            if not isinstance(rten, torch.Tensor) or rten.dim() != 2:
+                raise ValueError(f"{repr_pt}: expected 2D tensor repr, got {type(rten)} {getattr(rten, 'shape', None)}")
+            if rten.shape[0] < len(all_paths):
+                raise ValueError(f"{repr_pt}: repr rows {rten.shape[0]} < image count {len(all_paths)}")
+            local_emb_chunks.append(rten[sel_img_idx].float().cpu())
+        else:
+            for st in range(0, len(sel_paths), int(args.embed_batch_size)):
+                batch_paths = sel_paths[st : st + int(args.embed_batch_size)]
+                local_emb_chunks.append(_clip_image_embedding(clip, processor, batch_paths, device))
         for st in range(0, len(sel_paths), int(args.score_batch_size)):
             batch_paths = sel_paths[st : st + int(args.score_batch_size)]
             if args.teacher == "clipscore":
@@ -214,9 +244,11 @@ def main() -> None:
         "candidate_idx": candidate_idx,
         "image_idx": image_idx,
         "source_paths": source_path_ls,
-        "repr_key": "ddpm_clip_image",
+        "repr_key": str(args.repr_key) if use_repr else "ddpm_clip_image",
         "meta": {
             "candidates_root": str(args.candidates_root.expanduser().resolve()),
+            "repr_root": str(repr_root) if use_repr else None,
+            "repr_key": str(args.repr_key) if use_repr else None,
             "num_candidates": int(args.num_candidates),
             "max_per_candidate": int(args.max_per_candidate),
             "teacher": str(args.teacher),
