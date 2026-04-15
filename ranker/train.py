@@ -9,6 +9,9 @@ python /root/diffusion_ranker/ranker/train.py \
     --image_dir /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10 \
     --candidate_repr_pt /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/mean/step_0_layer_0.6.pt \
     --prompt_repr_pt /root/diffusion_ranker/ranker/prompt_repr_mean_pooling/from_logits.pt \
+    --reward_path /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/reward_ls.json \
+    --batch_size 32 \
+    --num_cand 10 \
     --input_dim_candidate 1024 \
     --input_dim_prompt 768 \
     --hidden_dim 64 \
@@ -156,7 +159,6 @@ def set_args() -> argparse.Namespace:
         default="",
         help="可选：预计算类别 prompt 向量 ``(1000, D)``；空则 prompt 位置用全零（与 model 中 else 分支一致）",
     )
-    p.add_argument("--group_size", type=int, default=int(cd.get("parallel_size", 8)))
     p.add_argument("--num_epochs", type=int, default=int(cd.get("num_epochs", 100)))
     p.add_argument("--lr", type=float, default=float(cd.get("lr", 1e-4)))
     p.add_argument("--weight_decay", type=float, default=float(cd.get("weight_decay", 1e-4)))
@@ -187,8 +189,42 @@ def set_args() -> argparse.Namespace:
     p.add_argument("--input_dim_candidate", type=int, default=1024)
     p.add_argument("--input_dim_prompt", type=int, default=768)
     p.add_argument("--hidden_dim", type=int, default=64)
+    p.add_argument("--reward_path", type=str, default="/root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/reward_ls.json")
+    p.add_argument("--batch_size", type=int, default=32)
+    p.add_argument("--num_cand", type=int, default=10)
+    p.add_argument("--num_candidate_groups", type=int, default=8)
     return p.parse_args()
 
+
+
+
+def split_batch_into_candidate_groups(
+    batch,
+    num_candidate_groups,
+    num_cand,
+):
+    sample_indices_ls = []
+    batch_size = batch[0].size(0)
+    indices = torch.arange(batch_size)
+    for i in range(num_candidate_groups):
+        group_indices = random.sample(indices, num_cand)
+        sample_indices_ls.append(group_indices)
+    groups = [
+        [batch[0][indices], batch[1][indices], batch[2][indices]] for indices in sample_indices_ls
+    ]
+    return groups
+
+
+
+def process_single_candidate_group(
+    ranker,
+    loss_fn,
+    group,
+):
+    candidate_hstates, prompt_hstates, rewards = group
+    logits = ranker(candidate_hstates, prompt_hstates)
+    group_loss, group_mse, group_kl = loss_fn(logits, rewards)
+    return group_loss, group_mse, group_kl
 
 
 def train_epoch(
@@ -199,33 +235,42 @@ def train_epoch(
     loss_fn,
 ) -> dict[str, float]:
     ranker.train()
-    sum_loss = sum_mse = sum_kl = 0.0
-    n_steps = 0
+    epoch_loss = epoch_mse = epoch_kl = 0.0
+    n_batch = 0
     pbar = tqdm(train_loader, desc="train", leave=False, total=len(train_loader))
     for batch in pbar:
-        candidate_hstates, prompt_hstates, rewards = batch
-        logits = ranker(candidate_hstates, prompt_hstates)
-        total_loss, mse, kl = loss_fn(logits, rewards)
-        optimizer.zero_grad(set_to_none=True)
-        total_loss.backward()
-        optimizer.step()
-        sum_loss += float(total_loss.detach())
-        sum_mse += float(mse.detach())
-        sum_kl += float(kl.detach())
-        n_steps += 1
+        batch_loss = batch_mse = batch_kl = 0.0
+        groups = split_batch_into_candidate_groups(batch, args.num_candidate_groups, args.num_cand)
+        for group in groups:
+            group_loss, group_mse, group_kl = process_single_candidate_group(ranker, loss_fn, group)
+            batch_loss += group_loss
+            batch_mse += group_mse
+            batch_kl += group_kl
         pbar.set_postfix(
-            total_loss=sum_loss / n_steps,
-            mse_loss=sum_mse / n_steps,
-            kl_loss=sum_kl / n_steps,
+            batch_loss=batch_loss / args.num_candidate_groups,
+            batch_mse_loss=batch_mse / args.num_candidate_groups,
+            batch_kl_loss=batch_kl / args.num_candidate_groups,
         )
-        
+        optimizer.zero_grad(set_to_none=True)
+        batch_loss.backward()
+        optimizer.step()
+        n_batch += 1
+        epoch_loss += float(batch_loss.detach())
+        epoch_mse += float(batch_mse.detach())
+        epoch_kl += float(batch_kl.detach())
+    epoch_loss /= n_batch
+    epoch_mse /= n_batch
+    epoch_kl /= n_batch
+
     out = {
-        "total_loss": sum_loss / n_steps,
-        "mse_loss": sum_mse / n_steps,
-        "kl_loss": sum_kl / n_steps,
+        "epoch_loss": epoch_loss,
+        "epoch_mse": epoch_mse,
+        "epoch_kl": epoch_kl,
     }
+
     if scheduler is not None:
         scheduler.step()
+
     return out
 
 
@@ -235,17 +280,12 @@ def main() -> None:
     args = set_args()
     set_seed(args.seed)
     device = set_device()
-    ir_device = args.ir_device.strip() or str(device)
 
     candidate_repr_path = Path(args.candidate_repr_pt).expanduser().resolve()
     prompt_repr_path = Path(args.prompt_repr_pt).expanduser().resolve()
-    image_root = Path(args.image_dir).expanduser().resolve()
-    out_dir = Path(args.output_dir).expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    reward_by_name: dict[str, float] | None = None
-    reward_path = (args.cached_rewards_json or "").strip()
-    assert reward_path
+    reward_path = Path(args.reward_path).expanduser().resolve()
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # build dataoader
     train_loader = diffusion_ranker_dataloader(
@@ -298,15 +338,15 @@ def main() -> None:
             loss_fn,
         )
         print(f"epoch {epoch + 1}/{args.num_epochs}  lr={scheduler.get_last_lr()[0]:.2e}  "
-            f"total_loss={o['total_loss']:.6f}  mse_loss={o['mse_loss']:.6f}  kl_loss={o['kl_loss']:.6f}")
+            f"epoch_loss={o['epoch_loss']:.6f}  epoch_mse_loss={o['epoch_mse_loss']:.6f}  epoch_kl_loss={o['epoch_kl_loss']:.6f}")
         if (epoch + 1) % max(args.save_freq, 1) == 0:
             ckpt = {
                 "epoch": epoch + 1,
                 "model_state_dict": ranker.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
             }
-            torch.save(ckpt, out_dir / f"ranker_epoch{epoch + 1}.pt")
-            print(f"checkpoint saved -> {out_dir / f'ranker_epoch{epoch + 1}.pt'}")
+            torch.save(ckpt, output_dir / f"ranker_epoch{epoch + 1}.pt")
+            print(f"checkpoint saved -> {output_dir / f'ranker_epoch{epoch + 1}.pt'}")
 
     
 
