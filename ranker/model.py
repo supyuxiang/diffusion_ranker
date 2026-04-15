@@ -102,8 +102,9 @@ class DiffusionRanker_Transformer(nn.Module):
         candidate_hstates = self.linear_candidate(candidate_hstates)  # (B, K, hidden_dim)
 
         if prompt_hstates is not None:
+            # prompt_hstates: (B, K, input_dim_prompt) -> linear -> (B, K, hidden_dim)
             prompt_hstates = self.linear_prompt(prompt_hstates)  # (B, hidden_dim)
-            prompt_hstates = prompt_hstates.unsqueeze(0)  # (1, B, hidden_dim)
+            prompt_hstates = prompt_hstates.unsqueeze(0) # (1, B, hidden_dim)
         else:
             # 与有 prompt 时相同占位形状，便于与 (K, B, H) 在 dim=1 对齐；须用 B 而非 K
             prompt_hstates = torch.zeros(
@@ -114,7 +115,6 @@ class DiffusionRanker_Transformer(nn.Module):
                 dtype=candidate_hstates.dtype,
             )
         
-
 
         candidate_hstates = candidate_hstates.permute(
             1,0,2
@@ -186,17 +186,28 @@ class DiffusionRanker_MLP(nn.Module):
 
 
 
+default_ranker = DiffusionRanker_Transformer(
+    input_dim_candidate=1152,
+    input_dim_prompt=4000,
+    hidden_dim=64,
+    num_heads=2,
+    dropout=0.1,
+    num_layers=2,
+    half=True
+)
+# 0.43M
+
+
 
 if __name__ == "__main__":
-   ranker = DiffusionRanker_Transformer(
-    input_dim_candidate=1152,
-    input_dim_prompt=1152,
-    hidden_dim=1152,
-    num_heads=12,
-    dropout=0.1,
-    num_layers=12,
-    half=True
-   )
-   ranker.forward(
-    candidate_hstates=torch.randn(4,8,1152),
-   )
+   print(default_ranker.count_params())
+   dtype = next(default_ranker.parameters()).dtype
+   candidate_hstates = torch.randn(4, 16, 1152, dtype=dtype)
+   prompt_hstates = torch.randn(4, 4000, dtype=dtype)
+   logits = default_ranker.forward(candidate_hstates, prompt_hstates)
+   print(logits)
+   print(logits.shape) # 4,16
+   prob = F.softmax(logits,dim=-1)
+   print(prob)
+   best_idx = torch.argmax(prob,dim=-1)
+   print(best_idx)
