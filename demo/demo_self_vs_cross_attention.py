@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 r"""
-极简演示：**scaled dot-product attention**、**self-attention**、**cross-attention**。
+极简演示：**scaled dot-product attention**、**self-attention**、**带 mask 的 self-attention（因果）**、**cross-attention**。
 
 与 ``ranker/model.py`` 里 ``TransformerBlock`` 的关系：
 
@@ -159,8 +159,8 @@ class CrossAttention(nn.Module):
     def forward(
         self, x: torch.Tensor, memory: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        q = self.q_proj(x)
-        return self.mha(q, memory, memory, need_weights=True, average_attn_weights=True)
+        q = self.q_proj(x) # b,l_x,embed_dim
+        return self.mha(q, memory, memory, need_weights=True, average_attn_weights=True) # b,l_x,embed_dim
 
 
 def cross_attention(
