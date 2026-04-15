@@ -11,7 +11,7 @@ def load_prompt_repr(prompt_repr_pt:Path=Path('/root/diffusion_ranker/ranker/pro
     return prompt_repr # 1000,repr_dim
 
 
-class DiffusionRankerDataset(Dataset):
+class DiffusionRankerDataset(Dataset): # output: candidate_hidden, prompt_hidden, reward
     def __init__(self,repr_pt:Path,reward_path:Path,prompt_repr:Tensor):
         self.repr_pt = repr_pt
         self.reward_path = reward_path
