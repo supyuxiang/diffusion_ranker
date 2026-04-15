@@ -73,6 +73,128 @@ def scaled_dot_product_attention(
     return out, weights
 
 
+def mask_self_attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    attn_mask: torch.Tensor | None = None,
+    is_causal: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    **带 mask 的 self-attention**（单头、无 ``W_q/W_k/W_v``，与 ``scaled_dot_product_attention`` 同一形状约定）。
+
+    - ``q, k, v`` 形状与 ``scaled_dot_product_attention`` 相同：``(Lq, d_k)``、``(Lk, d_k)``、``(Lk, d_v)``。
+      典型 **self-attention** 下 ``Lq == Lk`` 且 ``q,k,v`` 同源。
+
+    - ``is_causal=True``（decoder 常用）：位置 ``i`` 只能 attend ``j <= i``，在 scores 上对 **上三角**
+     （不含对角）加 ``-inf`` 后再 softmax。
+
+    - ``attn_mask``：与 ``scores`` 同形状 ``(Lq, Lk)`` 的 **加性** mask（``0`` 表示不挡，
+      ``-inf`` 表示禁止该 (query, key) 对）。与 ``is_causal`` 不要同时为 True（会 assert）。
+
+    返回 ``(out, weights)``，``weights`` 为 softmax 后的 ``(Lq, Lk)``。
+    """
+    if is_causal and attn_mask is not None:
+        raise ValueError("is_causal 与自定义 attn_mask 请二选一")
+
+    d_k = q.size(-1)
+    scores = q @ k.T / math.sqrt(d_k)  # (Lq, Lk)
+
+    if is_causal:
+        l_q, l_k = q.size(0), k.size(0)
+        if l_q != l_k:
+            raise ValueError("因果 self-attention 需要 Lq == Lk")
+        causal = torch.triu(
+            torch.full(
+                (l_q, l_k),
+                float("-inf"),
+                dtype=scores.dtype,
+                device=scores.device,
+            ),
+            diagonal=1,
+        )
+        scores = scores + causal
+    elif attn_mask is not None:
+        if attn_mask.shape != scores.shape:
+            raise ValueError(f"attn_mask 形状须为 {tuple(scores.shape)}，现为 {tuple(attn_mask.shape)}")
+        scores = scores + attn_mask.to(dtype=scores.dtype, device=scores.device)
+
+    weights = F.softmax(scores, dim=-1)
+    out = weights @ v
+    return out, weights
+
+
+class CrossAttention(nn.Module):
+    """
+    标准 **cross-attention**（decoder 风格）：Q 来自 ``x``，K/V 来自 ``memory``。
+
+    - ``x``: ``(B, L_q, d_query)``
+    - ``memory``: ``(B, L_k, d_memory)``
+    - 内部投影到同一 ``embed_dim`` 后调用 ``nn.MultiheadAttention``（``batch_first=True``）。
+    """
+
+    def __init__(
+        self,
+        d_query: int,
+        d_memory: int,
+        embed_dim: int,
+        num_heads: int,
+        *,
+        dropout: float = 0.0,
+    ) -> None:
+        super().__init__()
+        if embed_dim % num_heads != 0:
+            raise ValueError("embed_dim 必须整除 num_heads")
+        self.q_proj = nn.Linear(d_query, embed_dim)
+        self.mha = nn.MultiheadAttention(
+            embed_dim,
+            num_heads,
+            dropout=dropout,
+            batch_first=True,
+            kdim=d_memory,
+            vdim=d_memory,
+        )
+
+    def forward(
+        self, x: torch.Tensor, memory: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        q = self.q_proj(x)
+        return self.mha(q, memory, memory, need_weights=True, average_attn_weights=True)
+
+
+def cross_attention(
+    x: torch.Tensor,
+    memory: torch.Tensor,
+    num_heads: int,
+    d_k: int,
+    layer: CrossAttention,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """
+    对 ``CrossAttention`` 模块的薄封装（权重在 ``layer`` 里，避免每次调用新建随机参数）。
+
+    - ``x``: ``(B, L_x, d_query)``（须与构造 ``layer`` 时的 ``d_query`` 一致）
+    - ``memory``: ``(B, L_memory, d_memory)``
+    - ``d_k``: 与 ``layer`` 的 ``embed_dim`` 一致；传入用于 **assert** 形状，避免误用
+
+    返回 ``(out, attn_weights)``，``out`` 形状 ``(B, L_x, embed_dim)``。
+    """
+    if x.dim() != 3 or memory.dim() != 3:
+        raise ValueError("x 与 memory 须为 (B, L, D)")
+    if x.shape[0] != memory.shape[0]:
+        raise ValueError("batch 维须相同")
+    if x.shape[-1] != layer.q_proj.in_features:
+        raise ValueError("x 最后一维须等于 CrossAttention 的 d_query")
+    if memory.shape[-1] != layer.mha.kdim:
+        raise ValueError("memory 最后一维须等于 CrossAttention 的 d_memory")
+    embed_dim = layer.q_proj.out_features
+    if embed_dim != d_k:
+        raise ValueError(f"d_k={d_k} 须等于 CrossAttention 的 embed_dim={embed_dim}")
+    if num_heads != layer.mha.num_heads:
+        raise ValueError("num_heads 须与构造 CrossAttention 时一致")
+    return layer(x, memory)
+
+
 def demo_self_attention() -> None:
     print("=== Self-attention：Q、K、V 都来自同一条序列 X ===\n")
     # 3 个 token，每个 4 维（玩具维度）
@@ -125,6 +247,24 @@ def demo_cross_attention() -> None:
     )
 
 
+def demo_masked_self_attention() -> None:
+    print("=== 因果 mask self-attention（decoder）：``mask_self_attention(..., is_causal=True)`` ===\n")
+    x = torch.tensor(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ]
+    )
+    q = k = v = x
+    out, w = mask_self_attention(q, k, v, is_causal=True)
+    print("因果 softmax 权重（上三角应为 0）：\n", w)
+    print("\n输出：\n", out)
+    print(
+        "\n含义：第 0 行只看 key0；第 2 行只看 key0..2，看不到「未来」位置。\n"
+    )
+
+
 def demo_ranker_style_concat_is_self_attn() -> None:
     print(
         "=== 与 DiffusionRanker_Transformer 一致的做法："
@@ -151,4 +291,5 @@ def demo_ranker_style_concat_is_self_attn() -> None:
 if __name__ == "__main__":
     demo_self_attention()
     demo_cross_attention()
+    demo_masked_self_attention()
     demo_ranker_style_concat_is_self_attn()
