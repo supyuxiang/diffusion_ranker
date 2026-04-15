@@ -26,6 +26,7 @@ python /root/diffusion_ranker/ranker/train.py \
     --tau 1.0 \
     --seed 42 \
     --num_candidate_groups 8 \
+    --ranker_type listwise 
 
 
 """
@@ -111,6 +112,13 @@ def set_args() -> argparse.Namespace:
         type=str,
         default=f"{_data}/repr.pt",
         help="repr.pt 路径",
+    )
+    p.add_argument(
+        "--ranker_type",
+        type=str,
+        default='listwise',
+        choices=('listwise', 'pointwise'),
+        help="ranker_type",
     )
     p.add_argument(
         "--image_dir",
@@ -298,15 +306,29 @@ def main() -> None:
     )
     print(f"train_loader built")
 
-    ranker = DiffusionRanker_Transformer(
-        input_dim_candidate=args.input_dim_candidate,
-        input_dim_prompt=args.input_dim_prompt,
-        hidden_dim=args.hidden_dim,
-        num_heads=args.num_attention_heads,
-        dropout=args.dropout,
-        num_layers=args.num_layers,
-        half=True,
-    ).to(device)
+    if args.ranker_type == 'listwise':
+        ranker = DiffusionRanker_Transformer(
+            input_dim_candidate=args.input_dim_candidate,
+            input_dim_prompt=args.input_dim_prompt,
+            hidden_dim=args.hidden_dim,
+            num_heads=args.num_attention_heads,
+            dropout=args.dropout,
+            num_layers=args.num_layers,
+            half=True,
+        ).to(device)
+    elif args.ranker_type == 'pointwise':
+        ranker = DiffusionRanker_MLP(
+            candidate_hidden_dim=args.input_dim_candidate,
+            prompt_hidden_dim=args.input_dim_prompt,
+            hidden_dim=args.hidden_dim,
+            output_dim=1,
+            num_layers=args.num_layers,
+            dropout=args.dropout,
+        ).to(device)
+        ranker.criterion = 'cos_t1.0'
+    else:
+        raise ValueError(f"unknown ranker_type: {args.ranker_type}")
+
 
     optimizer = get_optimizer(
         ranker,
