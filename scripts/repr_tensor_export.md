@@ -19,11 +19,11 @@ python3 scripts/export_training_repr_tensors.py \
 
 | 路径 | 含义 |
 |------|------|
-| `mean/step_ratio{sr}_layer_ratio{r}.pt` | 该 `(step, layer)` 下，对 token 维做 **mean pooling** 后的向量，按图顺序堆成矩阵 |
-| `last/step_ratio{sr}_layer_ratio{r}.pt` | 同上，但使用 **last token** 向量 |
+| `mean/{repr_key}.pt` | 文件名与 `repr.pt` 内键一致，如 `s4_r0.037037.pt`；该键下 **mean pooling** 向量按图顺序堆成 `(N,H)` |
+| `last/{repr_key}.pt` | 同上，**last token** 向量 |
 
-- `{sr}`、`{r}` 来自 `repr.pt` 的 `meta` 与原始 repr 键（见下）。
-- 每个 `(step_index, layer_ratio)` 组合对应 **一对** 文件（`mean` 与 `last` 各一）。
+- `repr_key` 形如 `s{step_index}_r{layer_ratio}`；**不再**用 `step_index/(T-1)` 作为文件名前缀（该比值仍可在 dict 的 `step_ratio` 字段查看）。
+- 每个 repr 键对应 **一对** 文件（`mean` 与 `last` 各一）。
 
 ## `torch.load(...)` 得到的对象
 

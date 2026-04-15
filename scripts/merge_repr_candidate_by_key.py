@@ -72,12 +72,10 @@ def _step_ratio(step_idx: int, num_inference_steps: int) -> float:
     return float(step_idx) / float(t - 1)
 
 
-def _filename_for_key(meta: dict, repr_key: str) -> str:
-    s, r = _parse_repr_key(repr_key)
-    t = int(meta.get("num_inference_steps") or 1)
-    sr = _step_ratio(s, t)
-    # 文件名避免空格；g 格式足够区分
-    return f"step_ratio{sr:g}_layer_ratio{r:g}.pt"
+def _filename_for_key(repr_key: str) -> str:
+    if "/" in repr_key or repr_key.startswith("."):
+        raise ValueError(f"unsafe repr_key for filename: {repr_key!r}")
+    return f"{repr_key}.pt"
 
 
 def _natural_idx_pt_files(repr_dir: Path) -> list[Path]:
