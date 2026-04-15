@@ -16,8 +16,6 @@ python3 "${PY_ENTRY}" \
   --output_dir "${OUT_DIR}" \
   --num_samples 50000 \
   --search_batch_size 32 \
-  --deno_steps 10 \
-  --guidance_scale 1.0 \
   --num_candidates 10 \
   --tau 0.1 \
   --potential difference \

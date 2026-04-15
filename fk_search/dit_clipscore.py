@@ -11,6 +11,7 @@ from pathlib import Path
 import torch
 from PIL import Image
 from tqdm import tqdm
+from transformers import CLIPModel, CLIPProcessor
 
 _ROOT = Path(__file__).resolve().parent.parent
 _SEARCH = _ROOT / "search"
@@ -21,19 +22,34 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 import dit_random_search_ranker as dsr
 from utils import (
-    compute_clipscore,
+    CLIP_HF_LOCAL_DIR,
     compute_fid_is_from_dirs,
     imagenet_label2text_for_clipscore,
     set_seed,
 )
 
 
-def _pil_to_uint8_tensor(images: list[Image.Image]) -> torch.Tensor:
-    import numpy as np
+class ClipScorer:
+    def __init__(self, clip_model_dir: str | None, device: torch.device) -> None:
+        clip_path = (
+            Path(clip_model_dir).expanduser().resolve()
+            if clip_model_dir is not None
+            else CLIP_HF_LOCAL_DIR.resolve()
+        )
+        self.model = CLIPModel.from_pretrained(str(clip_path), local_files_only=True).to(device).float().eval()
+        self.processor = CLIPProcessor.from_pretrained(str(clip_path), local_files_only=True)
+        self.device = device
 
-    arr = np.stack([np.asarray(im.convert("RGB"), dtype=np.uint8) for im in images], axis=0)
-    t = torch.from_numpy(arr).permute(0, 3, 1, 2).contiguous()
-    return t
+    @torch.inference_mode()
+    def score(self, images: list[Image.Image], prompts: list[str]) -> float:
+        inputs = self.processor(text=prompts, images=images, return_tensors="pt", padding=True)
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        out = self.model(**inputs)
+        image_embeds = out.image_embeds / out.image_embeds.norm(dim=-1, keepdim=True)
+        text_embeds = out.text_embeds / out.text_embeds.norm(dim=-1, keepdim=True)
+        sim = (image_embeds * text_embeds).sum(dim=-1)
+        score = torch.clamp(sim * 100.0, min=0.0)
+        return float(score.mean().item())
 
 
 def _update_fk_state(
@@ -83,6 +99,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -106,6 +123,7 @@ def main() -> None:
     img_counter = int(args.n_init)
 
     k = len(pool)
+    clip_scorer = ClipScorer(args.clip_model_dir, device)
     log_belief = torch.zeros(k, dtype=torch.float64)
     prev_scores: torch.Tensor | None = None
     running_max: torch.Tensor | None = None
@@ -124,14 +142,7 @@ def main() -> None:
             labels_s = labels_f[:n_this]
             del repr_f
             prompts = imagenet_label2text_for_clipscore([int(x) for x in labels_s])
-            img_t = _pil_to_uint8_tensor(imgs_s)
-            s = compute_clipscore(
-                img_t,
-                prompts,
-                clip_model_dir=args.clip_model_dir,
-                device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-                clip_batch_size=min(64, n_this),
-            )
+            s = clip_scorer.score(imgs_s, prompts)
             scores[j] = float(s)
             round_entries.append((imgs_s, labels_s))
 
@@ -180,7 +191,7 @@ def main() -> None:
         encoding="utf-8",
     )
     if imagenet_val.is_dir():
-        m = compute_fid_is_from_dirs(output_dir, imagenet_val, torch.device("cuda" if torch.cuda.is_available() else "cpu"), batch_size=int(args.metrics_batch_size))
+        m = compute_fid_is_from_dirs(output_dir, imagenet_val, device, batch_size=int(args.metrics_batch_size))
         (output_dir / "final_metrics.json").write_text(
             json.dumps({k: float(v) for k, v in m.items()}, indent=2), encoding="utf-8"
         )
