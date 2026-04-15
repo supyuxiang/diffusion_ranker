@@ -21,14 +21,18 @@ CUDA_VISIBLE_DEVICES=0 python3 -m ranker.train \
                         --layer_ratios 0.6 \
                         --step_ratios 0.0 \
                         --output_dir /root/autodl-tmp/ranker_train_l06_s00 \
-                        --proj_dim 64 \
+                        --proj_dim 128 \
                         --num_list_layers 2 \
                         --num_list_heads 8 \
                         --dropout 0.1 \
                         --ranker_type listwise \
-                        --group_size 8 \
+                        --group_size 16 \
                         --lr 1e-4 \
                         --optimizer adamw \
+                        --scheduler cosine \
+                        --warmup_ratio 0.03 \
+                        --listwise_tau 1.0 \
+                        --alpha 0.8 \
                         --seed 42 
 """
 
@@ -322,7 +326,7 @@ def parse_args() -> argparse.Namespace:
         default=str(cd.get("scheduler", "cosine")),
         choices=("cosine", "linear", "none"),
     )
-    p.add_argument("--warmup_ratio", type=float, default=0.0)
+    p.add_argument("--warmup_ratio", type=float, default=0.03)
     p.add_argument(
         "--lr_min_ratio",
         type=float,
@@ -330,7 +334,7 @@ def parse_args() -> argparse.Namespace:
         help="余弦/线性衰减末端 lr / 初始 lr",
     )
     p.add_argument("--listwise_tau", type=float, default=1.0)
-    p.add_argument("--alpha", type=float, default=0.3, help="MSE 权重；KL 权重为 1-alpha")
+    p.add_argument("--alpha", type=float, default=0.8, help="MSE 权重；KL 权重为 1-alpha")
     p.add_argument(
         "--layer_ratios",
         type=str,
