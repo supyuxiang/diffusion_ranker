@@ -70,7 +70,7 @@ def get_repr(
     max_length: int = 1024,
     device: torch.device | str | None = None,
 ) -> Tensor:
-    assert tokenize_type in ("LLM_encoder", "LLM_logits")
+    assert tokenize_type in ("LLM_encoder", "LLM_logits",'LLM_hidden_states')
     assert pooling_mode in ("mean", "last")
 
     model_dir = Path(model_dir)
@@ -105,9 +105,10 @@ def get_repr(
             enc = {k: v.to(device) for k, v in enc.items()}
             if tokenize_type == "LLM_logits":
                 seq = model(**enc).logits
+            elif tokenize_type == "LLM_hidden_states":
+                pass
             else:
-                out = model(**enc, output_hidden_states=True)
-                seq = out.hidden_states[-1]
+                pass
             pooled = _pool_seq(seq, enc["attention_mask"], pooling_mode)
             outs.append(pooled.float().cpu())
 
