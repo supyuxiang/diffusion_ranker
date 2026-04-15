@@ -925,6 +925,7 @@ def rollout_dit_perclass32_and_save_repr(
     image_size: int = 256,
     pooling_mode: str = "mean",
     mc: int = 8,
+    save_mc_images: bool = False,
     store_dtype: torch.dtype = torch.float16,
     jpeg_quality: int = 92,
     png_compress_level: int = 1,
@@ -934,7 +935,8 @@ def rollout_dit_perclass32_and_save_repr(
     并在对应 step 处做 MC 补全评估 reward。
 
     产物：
-    - 图像：``image_output_dir/image_{global_idx:05d}_{label:05d}_mc{j:02d}.png``（按 sample 顺序，每个 sample 连续 mc 张）
+    - 图像：仅当 ``save_mc_images=True`` 时保存到
+      ``image_output_dir/image_{global_idx:05d}_{label:05d}_mc{j:02d}.png``。
     - 表征+reward：``repr_output_pt``（同顺序 ``tensor``、``reward``）
     - 返回：``tensor``，shape = ``(1000 * per_class, hidden_dim)``
     """
@@ -951,7 +953,8 @@ def rollout_dit_perclass32_and_save_repr(
 
     image_output_dir = Path(image_output_dir).expanduser().resolve()
     repr_output_pt = Path(repr_output_pt).expanduser().resolve()
-    image_output_dir.mkdir(parents=True, exist_ok=True)
+    if save_mc_images:
+        image_output_dir.mkdir(parents=True, exist_ok=True)
     repr_output_pt.parent.mkdir(parents=True, exist_ok=True)
 
     if device is None:
@@ -1181,29 +1184,29 @@ def rollout_dit_perclass32_and_save_repr(
                     mc_index=mc_i,
                     batch_idx=batch_idx,
                 )
-                # 先落图，再算 reward，避免目录长时间无文件看起来像“卡住”。
-                to_save: list[tuple[Path, Image.Image]] = []
-                for i, (label, img) in enumerate(zip(batch_labels_ls, batch_images)):
-                    img = _prepare_pil_for_save(img, image_size)
-                    save_path = image_output_dir / (
-                        f"image_{(img_counter + i):05d}_{int(label):05d}_mc{mc_i:02d}.png"
-                    )
-                    to_save.append((save_path, img.copy()))
-
-                with ThreadPoolExecutor(max_workers=_ROLLOUT_SAVE_WORKERS) as ex:
-                    futures = [
-                        ex.submit(
-                            _save_pil_task,
-                            path,
-                            im,
-                            fmt="png",
-                            jpeg_quality=jpeg_quality,
-                            png_compress_level=png_compress_level,
+                if save_mc_images:
+                    to_save: list[tuple[Path, Image.Image]] = []
+                    for i, (label, img) in enumerate(zip(batch_labels_ls, batch_images)):
+                        img = _prepare_pil_for_save(img, image_size)
+                        save_path = image_output_dir / (
+                            f"image_{(img_counter + i):05d}_{int(label):05d}_mc{mc_i:02d}.png"
                         )
-                        for path, im in to_save
-                    ]
-                    for fut in as_completed(futures):
-                        fut.result()
+                        to_save.append((save_path, img.copy()))
+
+                    with ThreadPoolExecutor(max_workers=_ROLLOUT_SAVE_WORKERS) as ex:
+                        futures = [
+                            ex.submit(
+                                _save_pil_task,
+                                path,
+                                im,
+                                fmt="png",
+                                jpeg_quality=jpeg_quality,
+                                png_compress_level=png_compress_level,
+                            )
+                            for path, im in to_save
+                        ]
+                        for fut in as_completed(futures):
+                            fut.result()
                 # 图像已落盘后再做 ImageReward 打分
                 for i, (prompt, img) in enumerate(zip(batch_prompts, batch_images)):
                     reward_sum[i] += float(rm_model.score(prompt, img))
@@ -1213,7 +1216,9 @@ def rollout_dit_perclass32_and_save_repr(
                     f"mc {mc_i + 1}/{int(mc)} done."
                 )
 
-                del batch_images, to_save
+                if save_mc_images:
+                    del to_save
+                del batch_images
             reward_chunks.append(reward_sum / float(mc))
             img_counter += batch_n
             batch_reward_mean = float((reward_sum / float(mc)).mean().item())
@@ -1244,7 +1249,7 @@ def rollout_dit_perclass32_and_save_repr(
         raise RuntimeError(f"repr tensor 行数 {repr_tensor.shape[0]} != 期望 {num_samples}")
     if reward_tensor.shape[0] != num_samples:
         raise RuntimeError(f"reward tensor 行数 {reward_tensor.shape[0]} != 期望 {num_samples}")
-    if img_counter != num_samples:
+    if save_mc_images and img_counter != num_samples:
         raise RuntimeError(f"保存图像数 {img_counter} != 期望 {num_samples}")
 
     torch.save(
@@ -1263,6 +1268,7 @@ def rollout_dit_perclass32_and_save_repr(
             "num_inference_steps": int(num_inference_steps),
             "guidance_scale": float(guidance_scale),
             "mc": int(mc),
+            "save_mc_images": bool(save_mc_images),
             "seed": int(seed),
             "dtype": str(dtype),
             "image_dir": str(image_output_dir),

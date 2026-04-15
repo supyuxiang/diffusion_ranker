@@ -128,6 +128,7 @@ def main() -> None:
                 dtype=args.dtype,
                 pooling_mode=args.pooling_mode,
                 mc=args.mc,
+                save_mc_images=False,
             )
             payload = torch.load(repr_pt, map_location="cpu", weights_only=False)
             reward_t = payload["reward"]
