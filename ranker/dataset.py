@@ -6,7 +6,7 @@ import json
 
 
 
-def load_prompt_repr(prompt_repr_pt:Path=Path('/root/diffusion_ranker/ranker/prompt_repr.pt')):
+def load_prompt_repr(prompt_repr_pt:Path=Path('/root/diffusion_ranker/ranker/prompt_repr_mean_pooling/from_logits.pt')):
     prompt_repr = torch.load(prompt_repr_pt,map_location='cpu',weights_only=False)
     return prompt_repr # 1000,repr_dim
 
