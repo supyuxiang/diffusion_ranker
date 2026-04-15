@@ -1,7 +1,17 @@
+from __future__ import annotations
 
+import argparse
+import random
+from pathlib import Path
 
+import torch
 
-
+from ranker.loss import mse_kl_combined_loss
+from ranker.repr_training_common import (
+    RankerReprGroupDataset,
+    forward_listwise_transformer_ranker,
+    iter_training_groups,
+)
 
 
 @torch.inference_mode()
@@ -22,12 +32,15 @@ def eval_epoch(
     max_groups: int = 32,
     epoch: int = 0,
 ) -> dict[str, float]:
+    if ranker_type != "listwise":
+        raise RuntimeError("eval 当前仅支持 listwise（DiffusionRanker_Transformer）")
     model.eval()
     dataset.set_epoch(epoch)
     sum_tot = sum_mse = sum_kl = 0.0
     n_steps = 0
     eval_rng = random.Random(args.seed + 17_971 + epoch)
-    for tok_cpu, t_scores_ir in iter_training_groups(
+    prompt_table = getattr(args, "prompt_table", None)
+    for tok_cpu, t_scores_ir, class_id in iter_training_groups(
         dataset,
         pt_obj,
         selected_keys,
@@ -43,10 +56,9 @@ def eval_epoch(
     ):
         tok = tok_cpu.to(device, non_blocking=True)
         t_scores = t_scores_ir.to(device)
-        if ranker_type == "listwise":
-            logits = model(tok.unsqueeze(0)).squeeze(0)
-        else:
-            logits = model(tok)
+        logits = forward_listwise_transformer_ranker(
+            model, tok, class_id, prompt_table=prompt_table
+        )
         loss, mse_v, kl_v = mse_kl_combined_loss(
             logits, t_scores, args.listwise_tau, args.alpha
         )

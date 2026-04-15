@@ -56,7 +56,7 @@ from dit_random_search_common import (
     init_random_samples,
     rollout_dit_batch_with_repr,
 )
-from ranker.model import ListwiseDiffusionRanker, PointwiseDiffusionRanker
+from ranker.model import DiffusionRanker_Transformer
 from reward import (
     extract_features_from_images,
     fid_features_to_statistics,
@@ -220,26 +220,43 @@ def load_diffusion_ranker(
         raise ValueError(f"{ckpt_path}: missing selected_repr_keys")
     meta_ckpt: dict = dict(ckpt.get("meta") or {})
     args_ckpt = ckpt.get("args") or {}
-    listwise = any(k.startswith("list_encoder") for k in state)
-    if listwise:
-        w = state["candidate_encoder.proj.weight"]
-        hidden_dim, proj_dim = w.shape[1], w.shape[0]
+
+    if "linear_candidate.weight" in state:
+        wc = state["linear_candidate.weight"]
+        hidden_internal, input_dim_candidate = int(wc.shape[0]), int(wc.shape[1])
+        wp = state["linear_prompt.weight"]
+        input_dim_prompt = int(wp.shape[1])
         layer_ids: list[int] = []
         for k in state:
-            if k.startswith("list_encoder.layers."):
+            if k.startswith("layers.") and len(k.split(".")) > 1:
                 parts = k.split(".")
-                if len(parts) > 3 and parts[2].isdigit():
-                    layer_ids.append(int(parts[2]))
+                if parts[1].isdigit():
+                    layer_ids.append(int(parts[1]))
         nl = (max(layer_ids) + 1) if layer_ids else int(args_ckpt.get("num_list_layers", 2))
-        model = ListwiseDiffusionRanker(
-            hidden_dim,
-            proj_dim=proj_dim,
-            num_list_layers=nl,
+        nh = int(args_ckpt.get("num_list_heads", 8))
+        dropout = float(args_ckpt.get("dropout", 0.1))
+        half = not bool(args_ckpt.get("ranker_float32", False))
+        model = DiffusionRanker_Transformer(
+            input_dim_candidate=input_dim_candidate,
+            input_dim_prompt=input_dim_prompt,
+            hidden_dim=hidden_internal,
+            num_heads=nh,
+            dropout=dropout,
+            num_layers=nl,
+            half=half,
+        )
+        listwise = True
+    elif any(k.startswith("list_encoder") for k in state):
+        raise ValueError(
+            f"{ckpt_path}: 旧版 ListwiseDiffusionRanker 权重；请用 DiffusionRanker_Transformer 重新训练 ranker/train.py"
+        )
+    elif "encoder.proj.weight" in state:
+        raise ValueError(
+            f"{ckpt_path}: 旧版 Pointwise 权重；当前 ranker 推理仅支持 DiffusionRanker_Transformer"
         )
     else:
-        w = state["encoder.proj.weight"]
-        hidden_dim, proj_dim = w.shape[1], w.shape[0]
-        model = PointwiseDiffusionRanker(hidden_dim, proj_dim=proj_dim)
+        raise ValueError(f"{ckpt_path}: 无法从 state_dict 识别 ranker 结构（缺 linear_candidate.weight）")
+
     model.load_state_dict(state, strict=True)
     model.to(device)
     model.eval()
@@ -253,13 +270,13 @@ def mean_batch_ranker_score(
     *,
     listwise: bool,
 ) -> float:
-    """tokens: ``(B, N, H)`` CPU；listwise 时按 K=1 展成 listwise 输入。"""
+    """tokens: ``(B, N, H)``；与训练一致：token 维 mean 后 ``(B,1,H)`` 送入 DiffusionRanker_Transformer。"""
+    _ = listwise
     with torch.no_grad():
         x = tokens.to(device=device, dtype=torch.float32)
-        if listwise:
-            logits = model(x.unsqueeze(1)).squeeze(-1).squeeze(-1)
-        else:
-            logits = model(x)
+        w = next(model.parameters())
+        cand = x.mean(dim=1).unsqueeze(1).to(dtype=w.dtype)
+        logits = model(cand, None)
         return float(logits.float().mean().item())
 
 

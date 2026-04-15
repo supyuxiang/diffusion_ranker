@@ -25,16 +25,10 @@ import argparse
 import json
 import random
 import sys
-import urllib.request
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
 import torch
-import torch.nn.functional as F
-from PIL import Image
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, LambdaLR, SequentialLR
-from torch.utils.data import Dataset
 from tqdm import tqdm
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -43,39 +37,33 @@ if str(_ROOT) not in sys.path:
 
 
 
-from ranker.model import *
-from ranker.utils import Constants_default, ensure_image_reward_on_path, set_device, set_seed, labels_1k
-from ranker.loss import mse_kl_combined_loss
-from ranker.dataset import DiffusionRankerDataset
 from ranker.eval_ranker import eval_epoch
-from utils import get_optimizer, get_scheduler
+from ranker.loss import mse_kl_combined_loss
+from ranker.model import DiffusionRanker_Transformer
+from ranker.repr_training_common import (
+    RankerReprGroupDataset,
+    build_flat_indices,
+    bucket_by_class,
+    forward_listwise_transformer_ranker,
+    iter_training_groups,
+    load_imagenet_labels,
+    load_prompt_repr_table,
+    load_reward_lookup_from_json,
+    tokens_for_sample,
+)
+from utils import Constants_default, ensure_image_reward_on_path, set_device, set_seed
+
+
+def _args_dict_for_save(ns: argparse.Namespace) -> dict:
+    d = dict(vars(ns))
+    d.pop("prompt_table", None)
+    return d
 
 
 
 
 
 
-
-
-
-
-
-
-def load_reward_lookup_from_json(json_path: Path, image_dir: Path) -> dict[str, float]:
-    """``labeling.py`` 写出的 ``reward_ls.json``：与按全局序号排序的 ``image_*_*.png`` 逐行对齐。"""
-    json_path = json_path.expanduser().resolve()
-    image_dir = image_dir.expanduser().resolve()
-    raw = json.loads(json_path.read_text(encoding="utf-8"))
-    paths = sorted(
-        image_dir.glob("image_*_*.png"),
-        key=lambda p: int(p.stem.split("_")[1]),
-    )
-    if len(raw) != len(paths):
-        raise ValueError(
-            f"cached rewards len={len(raw)} != sorted rollout images len={len(paths)} "
-            f"under {image_dir}"
-        )
-    return {p.name: float(s) for p, s in zip(paths, raw)}
 
 
 
@@ -159,105 +147,6 @@ def select_repr_keys(
     return [k for k, _, _ in parsed]
 
 
-@dataclass
-class FlatIndex:
-    batch_idx: int
-    idx_in_batch: int
-    label: int
-    image_name: str
-
-
-def build_flat_indices(pt_obj: dict) -> list[FlatIndex]:
-    batches = pt_obj["batches"]
-    out: list[FlatIndex] = []
-    for b, rec in enumerate(batches):
-        labels = rec["labels"]
-        names = rec["image_save_names"]
-        for i in range(len(labels)):
-            out.append(
-                FlatIndex(
-                    batch_idx=b,
-                    idx_in_batch=i,
-                    label=int(labels[i]),
-                    image_name=str(names[i]),
-                )
-            )
-    return out
-
-
-def tokens_for_sample(
-    pt_obj: dict,
-    fi: FlatIndex,
-    selected_keys: list[str],
-    *,
-    pool_mode: str = "mean",
-) -> torch.Tensor:
-    """
-    按 ``pool_mode`` 从 ``repr[k]`` 取向量，在 token 维拼接（顺序与 ``selected_keys`` 一致）。
-
-    - ``mean``：每 key 仅 ``mean``，形状 ``(N_keys, H)``
-    - ``last``：每 key 仅 ``last``
-    - ``both``：每 key 先 ``mean`` 再 ``last``，形状 ``(2 * N_keys, H)``（与旧版一致）
-    """
-    mode = (pool_mode or "mean").strip().lower()
-    if mode not in ("mean", "last", "both"):
-        raise ValueError(f"pool_mode must be mean|last|both, got {pool_mode!r}")
-
-    rec = pt_obj["batches"][fi.batch_idx]
-    rd = rec["repr"]
-    parts: list[torch.Tensor] = []
-    for k in selected_keys:
-        if mode in ("mean", "both"):
-            parts.append(rd[k]["mean"][fi.idx_in_batch].float())
-        if mode in ("last", "both"):
-            parts.append(rd[k]["last"][fi.idx_in_batch].float())
-    if not parts:
-        raise RuntimeError("tokens_for_sample: empty parts (check pool_mode / selected_keys)")
-    return torch.stack(parts, dim=0)
-
-
-def bucket_by_class(indices: list[FlatIndex]) -> dict[int, list[FlatIndex]]:
-    buckets: dict[int, list[FlatIndex]] = {}
-    for fi in indices:
-        buckets.setdefault(fi.label, []).append(fi)
-    return buckets
-
-
-class RankerReprGroupDataset(Dataset):
-    """按 ImageNet 类分组；``__getitem__`` 返回同类 ``group_size`` 条的 ``FlatIndex``。"""
-
-    def __init__(
-        self,
-        buckets: dict[int, list[FlatIndex]],
-        group_size: int,
-        *,
-        classes: list[int] | None = None,
-        seed: int = 0,
-    ) -> None:
-        self.group_size = group_size
-        self.classes = sorted(
-            c
-            for c, lst in buckets.items()
-            if len(lst) >= group_size and (classes is None or c in set(classes))
-        )
-        self.buckets = buckets
-        self.seed = seed
-        self._epoch = 0
-
-    def set_epoch(self, epoch: int) -> None:
-        self._epoch = epoch
-
-    def __len__(self) -> int:
-        return len(self.classes)
-
-    def __getitem__(self, idx: int) -> list[FlatIndex]:
-        c = self.classes[idx]
-        rng = random.Random(self.seed + self._epoch * 100_003 + idx)
-        lst = list(self.buckets[c])
-        rng.shuffle(lst)
-        return lst[: self.group_size]
-
-
 def build_optimizer(
     model: torch.nn.Module,
     name: str,
@@ -326,82 +215,6 @@ def build_lr_scheduler(
     raise ValueError(f"unknown lr_scheduler: {name}")
 
 
-def teacher_scores_for_group(
-    teacher,
-    labels: list[str],
-    image_paths: list[Path],
-    class_ids: list[int],
-    ir_device: str,
-) -> torch.Tensor:
-    scores: list[float] = []
-    for p, lab in zip(image_paths, class_ids):
-        img = Image.open(p).convert("RGB")
-        prompt = prompt_for_class(lab, labels)
-        scores.append(float(teacher.score(prompt, img)))
-    return torch.tensor(scores, dtype=torch.float32, device=ir_device)
-
-
-def cached_scores_for_group(
-    group_fi: list[FlatIndex],
-    reward_by_name: dict[str, float],
-) -> torch.Tensor:
-    out: list[float] = []
-    for fi in group_fi:
-        name = fi.image_name
-        if name not in reward_by_name:
-            raise KeyError(f"no cached score for image_save_names entry {name!r}")
-        out.append(reward_by_name[name])
-    return torch.tensor(out, dtype=torch.float32, device="cpu")
-
-
-def iter_training_groups(
-    dataset: RankerReprGroupDataset,
-    pt_obj: dict,
-    selected_keys: list[str],
-    image_root: Path,
-    reward_by_name: dict[str, float] | None,
-    teacher,
-    labels: list[str],
-    prompt_template: str,
-    ir_device: str,
-    max_groups: int | None,
-    shuffle_rng: random.Random | None = None,
-    *,
-    pool_mode: str = "mean",
-) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
-    n = len(dataset)
-    order = list(range(n))
-    rng = shuffle_rng if shuffle_rng is not None else random.Random()
-    rng.shuffle(order)
-    for j, idx in enumerate(order):
-        if max_groups is not None and j >= max_groups:
-            break
-        group_fi: list[FlatIndex] = dataset[idx]
-        paths = [image_root / fi.image_name for fi in group_fi]
-        for p in paths:
-            if not p.is_file():
-                raise FileNotFoundError(f"missing image: {p}")
-        tok = torch.stack(
-            [
-                tokens_for_sample(pt_obj, fi, selected_keys, pool_mode=pool_mode)
-                for fi in group_fi
-            ],
-            dim=0,
-        )
-        class_ids = [fi.label for fi in group_fi]
-        with torch.inference_mode():
-            if reward_by_name is not None:
-                t_scores = cached_scores_for_group(group_fi, reward_by_name)
-            else:
-                assert teacher is not None
-                t_scores = teacher_scores_for_group(
-                    teacher, labels, prompt_template, paths, class_ids, ir_device
-                )
-        yield tok, t_scores
-
-
-
-
 def parse_args() -> argparse.Namespace:
     cd = Constants_default
     p = argparse.ArgumentParser(description="Diffusion ranker + ImageReward (repr.pt + images)")
@@ -412,17 +225,40 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--proj_dim", type=int, default=int(cd.get("proj_dim", 64)))
     p.add_argument(
-        "--num_layers",
+        "--num_list_layers",
         type=int,
         default=2,
-        help="ListwiseDiffusionRanker 内 TransformerEncoder 层数",
+        help="DiffusionRanker_Transformer 内 TransformerBlock 层数",
+    )
+    p.add_argument(
+        "--num_list_heads",
+        type=int,
+        default=8,
+        help="MultiheadAttention 头数（须整除 --proj_dim 即内部 hidden_dim）",
+    )
+    p.add_argument(
+        "--dropout",
+        type=float,
+        default=0.1,
+        help="TransformerBlock 内 dropout",
+    )
+    p.add_argument(
+        "--prompt_repr_pt",
+        type=str,
+        default="",
+        help="可选：预计算类别 prompt 向量 ``(1000, D)``；空则 prompt 位置用全零（与 model 中 else 分支一致）",
+    )
+    p.add_argument(
+        "--ranker_float32",
+        action="store_true",
+        help="ranker 不用 bfloat16（默认与 model.half=True 一致）",
     )
     p.add_argument(
         "--ranker_type",
         type=str,
         default="listwise",
         choices=("listwise", "pointwise"),
-        help="默认 listwise",
+        help="仅实现 listwise（DiffusionRanker_Transformer）；pointwise 未接好 model",
     )
     p.add_argument("--group_size", type=int, default=int(cd.get("parallel_size", 8)))
     p.add_argument("--num_epochs", type=int, default=int(cd.get("num_epochs", 100)))
@@ -479,6 +315,24 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="ImageReward 所在设备；默认与训练 device 相同",
     )
+    p.add_argument(
+        "--cached_rewards_json",
+        type=str,
+        default="",
+        help="预计算 ImageReward 分数 JSON（与 labeling 一致）；空则在线调用 ImageReward",
+    )
+    p.add_argument(
+        "--max_groups_per_epoch",
+        type=int,
+        default=0,
+        help="每个 epoch 最多训练多少个类组；0 表示用全部类",
+    )
+    p.add_argument(
+        "--prompt_template",
+        type=str,
+        default="a photo of a {class_name}",
+        help="在线 ImageReward 时的文本模板（需含 {class_name}）",
+    )
     p.add_argument("--save_freq", type=int, default=1, help="每 N 个 epoch 存 checkpoint")
     return p.parse_args()
 
@@ -502,6 +356,8 @@ def train_epoch(
     ranker_type: str,
     epoch: int,
 ) -> dict[str, float]:
+    if ranker_type != "listwise":
+        raise RuntimeError("当前仅支持 listwise：请使用 model.DiffusionRanker_Transformer（见 --ranker_type）")
     model.train()
     dataset.set_epoch(epoch)
     max_g = args.max_groups_per_epoch if args.max_groups_per_epoch > 0 else None
@@ -510,7 +366,8 @@ def train_epoch(
 
     sum_tot = sum_mse = sum_kl = 0.0
     n_steps = 0
-    for tok_cpu, t_scores_ir in tqdm(
+    prompt_table: torch.Tensor | None = getattr(args, "prompt_table", None)
+    for tok_cpu, t_scores_ir, _class_id in tqdm(
         iter_training_groups(
             dataset,
             pt_obj,
@@ -531,10 +388,9 @@ def train_epoch(
     ):
         tok = tok_cpu.to(device, non_blocking=True)
         t_scores = t_scores_ir.to(device)
-        if ranker_type == "listwise":
-            logits = model(tok.unsqueeze(0)).squeeze(0)
-        else:
-            logits = model(tok)
+        logits = forward_listwise_transformer_ranker(
+            model, tok, _class_id, prompt_table=prompt_table
+        )
         loss, mse_v, kl_v = mse_kl_combined_loss(
             logits, t_scores, args.listwise_tau, args.alpha
         )
@@ -606,14 +462,35 @@ def main() -> None:
     hidden_dim = int(tok0.shape[-1])
 
     ranker_type = args.ranker_type.lower()
-    if ranker_type == "listwise":
-        model = ListwiseDiffusionRanker(
-            hidden_dim,
-            proj_dim=args.proj_dim,
-            num_list_layers=args.num_list_layers,
-        ).to(device)
-    else:
-        model = PointwiseDiffusionRanker(hidden_dim, proj_dim=args.proj_dim).to(device)
+    if ranker_type != "listwise":
+        raise SystemExit(
+            "当前仅支持 --ranker_type listwise（使用 model.DiffusionRanker_Transformer）；"
+            "pointwise 未与你的 model.py 对齐。"
+        )
+
+    args.prompt_table = None
+    pr_path = (args.prompt_repr_pt or "").strip()
+    if pr_path:
+        args.prompt_table = load_prompt_repr_table(Path(pr_path).expanduser().resolve())
+        nrows = int(args.prompt_table.shape[0])
+        if nrows < 1000:
+            print(f"注意: prompt 表仅 {nrows} 行，请保证 class_id 不越界")
+
+    prompt_dim = int(args.prompt_table.shape[1]) if args.prompt_table is not None else hidden_dim
+    if args.proj_dim % args.num_list_heads != 0:
+        raise SystemExit(
+            f"--proj_dim ({args.proj_dim}) 必须整除 --num_list_heads ({args.num_list_heads})"
+        )
+
+    model = DiffusionRanker_Transformer(
+        input_dim_candidate=hidden_dim,
+        input_dim_prompt=prompt_dim,
+        hidden_dim=args.proj_dim,
+        num_heads=args.num_list_heads,
+        dropout=args.dropout,
+        num_layers=args.num_list_layers,
+        half=not args.ranker_float32,
+    ).to(device)
 
     labels = load_imagenet_labels()
     buckets = bucket_by_class(flat)
@@ -653,6 +530,7 @@ def main() -> None:
             reward_by_name,
             teacher,
             labels,
+            args.prompt_template,
             ir_device,
             dataset_tr,
             args,
@@ -666,12 +544,12 @@ def main() -> None:
             f"epoch {epoch + 1}/{args.num_epochs}  lr={lr_s:.2e}  "
             f"loss={stats['loss']:.6f}  mse={stats['mse']:.6f}  kl={stats['kl']:.6f}"
         )
-        if (epoch + 1) % max(args.save_every, 1) == 0:
+        if (epoch + 1) % max(args.save_freq, 1) == 0:
             ckpt = {
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
-                "args": vars(args),
+                "args": _args_dict_for_save(args),
                 "selected_repr_keys": selected_keys,
                 "pool_mode": pool_mode,
                 "meta": meta,
@@ -687,6 +565,7 @@ def main() -> None:
         reward_by_name,
         teacher,
         labels,
+        args.prompt_template,
         ir_device,
         dataset_tr,
         args,
@@ -698,7 +577,7 @@ def main() -> None:
     torch.save(
         {
             "model_state_dict": model.state_dict(),
-            "args": vars(args),
+            "args": _args_dict_for_save(args),
             "selected_repr_keys": selected_keys,
             "pool_mode": pool_mode,
             "meta": meta,

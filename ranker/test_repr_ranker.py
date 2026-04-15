@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 用 ``DitRolloutReprCapture`` 保存的 ``.pt``（``batches[*]['repr']``）跑通
-:class:`~ranker.model.PointwiseDiffusionRanker` 与 :class:`~ranker.model.ListwiseDiffusionRanker`。
+:class:`~ranker.model.DiffusionRanker_Transformer`（与 ``ranker/train.py`` listwise 一致）。
 
 用法::
 
@@ -32,7 +32,8 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from ranker.model import ListwiseDiffusionRanker, PointwiseDiffusionRanker
+from ranker.model import DiffusionRanker_Transformer
+from ranker.repr_training_common import forward_listwise_transformer_ranker
 
 
 _DEFAULT_REPR_PT = Path("/root/autodl-tmp/repr_candidate_deno10_cfg1.0/idx0.pt")
@@ -92,25 +93,26 @@ def main() -> None:
         print(f"  meta: steps={meta.get('target_step_indices')}, layers={len(meta.get('layer_ratios', []))}")
 
     dev = torch.device(args.device)
-    pw = PointwiseDiffusionRanker(h, proj_dim=args.proj_dim, num_heads=8).to(dev)
-    x_pw_d = x_pw.to(dev)
-    with torch.inference_mode():
-        scores = pw(x_pw_d)
-    print(f"pointwise scores: shape={tuple(scores.shape)} mean={scores.mean().item():.4f} std={scores.std().item():.4f}")
-
+    # 与 train.py 一致：DiffusionRanker_Transformer，候选 repr 先 mean pool 再 (1,K,H)
     k = min(args.listwise_k, x_pw.size(0))
     tokens = [repr_dict_to_tokens_per_sample(rec, i) for i in range(k)]
-    x_ls = torch.stack(tokens, dim=0).unsqueeze(0).to(dev)
-    assert x_ls.shape == (1, k, n_tok, h), x_ls.shape
+    x_ls = torch.stack(tokens, dim=0).to(dev)
+    assert x_ls.shape == (k, n_tok, h), x_ls.shape
 
-    ls = ListwiseDiffusionRanker(
-        h, proj_dim=args.proj_dim, num_heads=8, num_list_layers=2
+    ls = DiffusionRanker_Transformer(
+        input_dim_candidate=h,
+        input_dim_prompt=h,
+        hidden_dim=args.proj_dim,
+        num_heads=8,
+        dropout=0.1,
+        num_layers=2,
+        half=False,
     ).to(dev)
     with torch.inference_mode():
-        logits = ls(x_ls)
+        logits = forward_listwise_transformer_ranker(ls, x_ls, class_id=0, prompt_table=None)
     probs = torch.softmax(logits, dim=-1)
-    print(f"listwise logits: shape={tuple(logits.shape)} probs sum={probs.sum(dim=-1).tolist()}")
-    print(f"  argmax candidate idx={logits.argmax(dim=-1).tolist()}")
+    print(f"listwise logits: shape={tuple(logits.shape)} probs sum={probs.sum().item():.4f}")
+    print(f"  argmax candidate idx={logits.argmax(dim=-1).item()}")
     print("ok")
 
 
