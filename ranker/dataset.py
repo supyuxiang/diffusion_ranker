@@ -5,8 +5,14 @@ from torch.utils.data import Dataset,DataLoader
 import json
 
 
+
+def load_prompt_repr(prompt_repr_pt:Path=Path('/root/diffusion_ranker/ranker/prompt_repr.pt')):
+    prompt_repr = torch.load(prompt_repr_pt,map_location='cpu',weights_only=False)
+    return prompt_repr # 1000,repr_dim
+
+
 class DiffusionRankerDataset(Dataset):
-    def __init__(self,repr_pt:Path,reward_path:Path):
+    def __init__(self,repr_pt:Path,reward_path:Path,prompt_repr:Tensor):
         self.repr_pt = repr_pt
         self.reward_path = reward_path
         self.load_repr_and_reward()
