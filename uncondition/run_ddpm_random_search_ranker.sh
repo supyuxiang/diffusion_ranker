@@ -3,7 +3,7 @@ set -euo pipefail
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
-python /root/difusion_ranker/uncondition/ddpm_random_search_ranker.py \
+python /root/diffusion_ranker/uncondition/ddpm_random_search_ranker.py \
   --ranker_ckpt "${RANKER_CKPT:-/root/autodl-tmp/ddpm_ranker_ckpt_deno10/ranker_final.pt}" \
   --output_dir "${OUT_DIR:-/root/autodl-tmp/ddpm_random_search_ranker_deno10}" \
   --candidates_root "${CAND_ROOT:-/root/autodl-tmp/ddpm_candidates_50k_deno10}" \
