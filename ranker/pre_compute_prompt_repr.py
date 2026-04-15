@@ -49,9 +49,10 @@ def _pool_seq(
 ) -> Tensor:
     """x: (B, seq, D); attention_mask: (B, seq) with 1 for real tokens."""
     if mode == "mean":
-        mask = attention_mask.unsqueeze(-1).to(dtype=x.dtype) # b,seq,1
-        mean_x = (x * mask).sum(dim=1) # b,D
-        num_tokens = mask.sum(dim=1, keepdim=True).clamp(min=1).to(dtype=x.dtype) # b,1
+        mask = attention_mask.unsqueeze(-1).to(dtype=x.dtype)  # (B, seq, 1)
+        mean_x = (x * mask).sum(dim=1)  # (B, D)
+        # 须用 (B,1)，不能对 mask 在 dim=1 上 sum 后仍带尾部 1，否则变成 (B,1,1)，与 (B,D) 相除会广播成 (B,B,D)
+        num_tokens = attention_mask.sum(dim=1, keepdim=True).clamp(min=1).to(dtype=x.dtype)
         return mean_x / num_tokens
     if mode == "last":
         b = x.shape[0]

@@ -8,7 +8,7 @@ python /root/diffusion_ranker/ranker/train.py \
     --output_dir /root/autodl-tmp/ranker_ckpt_listwise_l06_s00 \
     --image_dir /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10 \
     --candidate_repr_pt /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/mean/step_0_layer_0.6.pt \
-    --prompt_repr_pt /root/diffusion_ranker/ranker/prompt_repr_mean_pooling/from_logits.pt \
+    --prompt_repr_pt /root/diffusion_ranker/ranker/prompt_repr_mean_pooling/from_hidden_states_ratio0.6.pt \
     --reward_path /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/reward_ls.json \
     --batch_size 32 \
     --num_cand 10 \
@@ -129,7 +129,7 @@ def set_args() -> argparse.Namespace:
     p.add_argument(
         "--output_dir",
         type=str,
-        default="/root/autodl-tmp/ranker_train_l06_s00",
+        default="/root/autodl-tmp/ranker_ckpt_l06_s00",
         help="checkpoint 输出目录",
     )
     p.add_argument(
