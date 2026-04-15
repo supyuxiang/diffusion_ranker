@@ -85,7 +85,7 @@ def get_repr(
     dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
     model = AutoModelForCausalLM.from_pretrained(
         str(model_dir),
-        torch_dtype=dtype,
+        dtype=dtype,
         trust_remote_code=True,
     )
     model.eval()
@@ -113,7 +113,7 @@ def get_repr(
                 hiddens = o.hidden_states
                 layer_ratio = 0.6
                 layer_idx = round(layer_ratio * model.config.num_hidden_layers)
-                seq = hiddens[layer_idx].copy() # b,sq_len,hidden_dim
+                seq = hiddens[layer_idx].clone()  # (B, seq, hidden_dim)
                 del hiddens,o
                 gc.collect()
                 torch.cuda.empty_cache()

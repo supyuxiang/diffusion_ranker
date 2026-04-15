@@ -12,8 +12,8 @@ python /root/diffusion_ranker/ranker/train.py \
     --reward_path /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/reward_ls.json \
     --batch_size 32 \
     --num_cand 10 \
-    --input_dim_candidate 1024 \
-    --input_dim_prompt 768 \
+    --input_dim_candidate 1152 \
+    --input_dim_prompt 3584 \
     --hidden_dim 64 \
     --num_attention_heads 4 \
     --num_layers 2 \
