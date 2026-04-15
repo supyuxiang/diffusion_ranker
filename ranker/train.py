@@ -2,6 +2,27 @@
 r"""
 example:
 
+export CUDA_VISIBLE_DEVICES=0
+python /root/diffusion_ranker/ranker/train.py \
+    --num_epochs 100 \
+    --output_dir /root/autodl-tmp/ranker_ckpt_listwise_l06_s00 \
+    --image_dir /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10 \
+    --candidate_repr_pt /root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10/mean/step_0_layer_0.6.pt \
+    --prompt_repr_pt /root/diffusion_ranker/ranker/prompt_repr_mean_pooling/from_logits.pt \
+    --input_dim_candidate 1024 \
+    --input_dim_prompt 768 \
+    --hidden_dim 64 \
+    --num_attention_heads 4 \
+    --num_layers 2 \
+    --dropout 0.1 \
+    --optimizer adamw \
+    --scheduler cosine \
+    --warmup_ratio 0.03 \
+    --lr_min_ratio 0.01 \
+    --alpha 0.8 \
+    --tau 1.0 \
+    --seed 42 \
+
 
 """
 
@@ -94,7 +115,7 @@ def set_args() -> argparse.Namespace:
     _data = "/root/autodl-tmp/dit_training_data_perclass32_cfg1.0_deno10"
     p = argparse.ArgumentParser(description="Diffusion ranker（repr.pt + 图；默认单键 layer=0.6 step=0）")
     p.add_argument(
-        "--repr_pt",
+        "--candidate_repr_pt",
         type=str,
         default=f"{_data}/repr.pt",
         help="repr.pt 路径",
