@@ -1162,6 +1162,11 @@ def rollout_dit_perclass32_and_save_repr(
             reward_sum = torch.zeros(batch_n, dtype=torch.float32)
 
             for mc_i in range(int(mc)):
+                print(
+                    f"[case l{float(layer_ratio):g}_s{step_idx}] "
+                    f"batch {batch_idx + 1}/{num_batches} "
+                    f"mc {mc_i + 1}/{int(mc)} running..."
+                )
                 batch_images = _decode_suffix_mc_batch(
                     x_start=x_mid,
                     class_labels_input=class_input,
@@ -1196,6 +1201,11 @@ def rollout_dit_perclass32_and_save_repr(
                     ]
                     for fut in as_completed(futures):
                         fut.result()
+                print(
+                    f"[case l{float(layer_ratio):g}_s{step_idx}] "
+                    f"batch {batch_idx + 1}/{num_batches} "
+                    f"mc {mc_i + 1}/{int(mc)} done."
+                )
 
                 del batch_images, to_save
             reward_chunks.append(reward_sum / float(mc))
