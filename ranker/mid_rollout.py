@@ -69,7 +69,7 @@ def main() -> None:
     p.add_argument("--num_inference_steps", type=int, default=10)
     p.add_argument("--guidance_scale", type=float, default=1.0)
     p.add_argument("--batch_size", type=int, default=256)
-    p.add_argument("--mc", type=int, default=4)
+    p.add_argument("--mc", type=int, default=8)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", type=str, default="bf16")
     p.add_argument("--pooling_mode", type=str, default="mean", choices=("mean", "last"))
@@ -78,10 +78,9 @@ def main() -> None:
 
     layer_ratios = parse_float_list(args.layer_ratios)
     step_ratios = parse_float_list(args.step_ratios)
-    if not layer_ratios:
-        layer_ratios = LAYER_RATIO_LS
-    if not step_ratios:
-        step_ratios = STEP_RATIO_LS
+    
+    layer_ratios = layer_ratios or LAYER_RATIO_LS
+    step_ratios = step_ratios or STEP_RATIO_LS
 
     base_output_dir = Path(args.base_output_dir).expanduser().resolve()
     base_output_dir.mkdir(parents=True, exist_ok=True)

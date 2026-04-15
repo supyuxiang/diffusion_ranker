@@ -695,13 +695,13 @@ class DitRolloutReprCapture:
                 continue
             seen.add(idx)
             self.layer_specs.append((float(r), idx))
-        self._handles: list = []
-        self.records: list[dict] = []
-        self._capturing = False
-        self._step_counter = {"v": -1}
-        self._current: dict[tuple[int, float], dict[str, torch.Tensor]] = {}
-        self._batch_labels: list[int] = []
-        self._batch_size = 0
+        self._handles: list = [] # 存储所有注册的 forward_hook
+        self.records: list[dict] = [] # 存储所有捕获的表征
+        self._capturing = False # 是否正在捕获表征
+        self._step_counter = {"v": -1} # 存储当前步数
+        self._current: dict[tuple[int, float], dict[str, torch.Tensor]] = {} # 存储当前捕获的表征
+        self._batch_labels: list[int] = [] # 存储当前批次的标签
+        self._batch_size = 0 # 存储当前批次的样本数量
 
     def _pre_transformer(self, _module, _inputs) -> None:
         if not self._capturing:
@@ -727,16 +727,17 @@ class DitRolloutReprCapture:
 
         return hook
 
-    def install(self) -> None:
+    def install(self) -> None: 
+        # 注册 forward_pre_hook 和 forward_hook，用于捕获中间层的表征
         self._handles.append(
             self.pipe.transformer.register_forward_pre_hook(self._pre_transformer)
         )
-        for ratio, idx in self.layer_specs:
+        for ratio, idx in self.layer_specs: # 注册每个 block 的 forward_hook
             block = self.pipe.transformer.transformer_blocks[idx]
             self._handles.append(block.register_forward_hook(self._make_block_hook(ratio)))
 
     def remove(self) -> None:
-        for h in self._handles:
+        for h in self._handles: # 移除所有注册的 forward_hook
             h.remove()
         self._handles.clear()
 
@@ -745,9 +746,9 @@ class DitRolloutReprCapture:
 
     def begin_batch(self, batch_labels: list[int]) -> None:
         self._step_counter["v"] = -1
-        self._current = {}
-        self._batch_labels = list(batch_labels)
-        self._batch_size = len(batch_labels)
+        self._current = {} # 清空当前捕获的表征
+        self._batch_labels = list(batch_labels) # 存储当前批次的标签
+        self._batch_size = len(batch_labels) # 存储当前批次的样本数量
 
     def end_batch(
         self,
@@ -758,13 +759,13 @@ class DitRolloutReprCapture:
     ) -> None:
         if not self._capturing:
             return
-        repr_dict = {
+        repr_dict = { # 存储当前捕获的表征
             f"s{s}_r{r:g}": v for (s, r), v in self._current.items()
         }
         gseed = generator_seed
-        if gseed is None and self.rollout_base_seed is not None:
+        if gseed is None and self.rollout_base_seed is not None: # 如果 generator_seed 为空，则使用 rollout_base_seed + batch_idx
             gseed = self.rollout_base_seed + batch_idx
-        image_save_names = [
+        image_save_names = [ # 存储当前批次的图像保存名称
             f"image_{image_index_start + i:05d}_{lab:05d}.png"
             for i, lab in enumerate(self._batch_labels)
         ]
@@ -780,7 +781,7 @@ class DitRolloutReprCapture:
         self.records.append(rec)
         self._current.clear()
 
-    def save_pt(self, path: Path) -> None:
+    def save_pt(self, path: Path) -> None: # 保存捕获的表征到 pt 文件
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
@@ -961,6 +962,7 @@ def rollout_dit_perclass32_and_save_repr(
         device = set_device()
     else:
         device = torch.device(device)
+    
 
     set_seed(seed)
     pipe = dit_loader(model_name, device=device, dtype=dtype)
@@ -979,9 +981,10 @@ def rollout_dit_perclass32_and_save_repr(
     num_classes = 1000
     per_class = int(per_class)
     num_samples = num_classes * per_class
-    labels_all = [c for c in range(num_classes) for _ in range(per_class)]
+    labels_all = [c for c in range(num_classes) for _ in range(per_class)] # c0,c0,c0,...,c999,c999,c999,...,c999
     num_batches = (num_samples + batch_size - 1) // batch_size
 
+    # 创建一个 DitRolloutReprCapture 对象，用于捕获中间层的表征
     repr_capture = DitRolloutReprCapture(
         pipe,
         num_inference_steps=int(num_inference_steps),
