@@ -1200,6 +1200,13 @@ def rollout_dit_perclass32_and_save_repr(
                 del batch_images, to_save
             reward_chunks.append(reward_sum / float(mc))
             img_counter += batch_n
+            batch_reward_mean = float((reward_sum / float(mc)).mean().item())
+            case_tag = f"l{float(layer_ratio):g}_s{step_idx}"
+            print(
+                f"[case {case_tag}] batch {batch_idx + 1}/{num_batches} "
+                f"saved={img_counter}/{num_samples} "
+                f"batch_reward_mean={batch_reward_mean:.4f}"
+            )
             del gen, x_mid, class_input, timesteps, repr_batch, scheduler_after_prefix, reward_sum
             if device.type == "cuda":
                 torch.cuda.empty_cache()
