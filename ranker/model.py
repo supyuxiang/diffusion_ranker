@@ -200,6 +200,10 @@ class DiffusionRanker_MLP(nn.Module):
             return out / t
         else:
             raise NotImplementedError
+    def count_params(self):
+        return sum(
+            p.numel() for p in self.parameters()
+        )
     
 
 
