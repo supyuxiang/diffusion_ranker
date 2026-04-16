@@ -23,7 +23,7 @@ class Ranker_MLP(nn.Module):
                 nn.Conv2d(input_channels,16,kernel_size=2,stride=2),# b,256,8,8 -> b,16,4,4
                 nn.GELU(),
                 nn.Dropout(0.1),
-                nn.Flatten(start_dim=1), # b,16,4*4 -> b,16*4*4
+                nn.Flatten(start_dim=1), # b,16,4*4 -> b,16*4*4 = b,256
                 nn.Linear(16*4*4,hidden_dim), # b,16*4*4 -> b,hidden_dim
         )
 
@@ -55,11 +55,11 @@ class Ranker_MLP(nn.Module):
 
     
     def forward(self, cand_hstates:torch.Tensor) -> torch.Tensor:
-        B,K,C,H,W = cand_hstates.shape
+        B,K,C,H,W = cand_hstates.shape # B,K,C,H,W = B,K,256,8,8
         single_cand_hs_ls=[]
         for k in range(K):
-            cand_k = cand_hstates[:,k,:,:,:] # B,C,H,W
-            cand_k = self.process_candidate(cand_k) # B,hidden_dim
+            cand_k = cand_hstates[:,k,:,:,:] # B,C,H,W = B,256,8,8
+            cand_k = self.process_candidate(cand_k) # B,hidden_dim = B,32
             single_cand_hs_ls.append(cand_k)
 
         cand_hstates = torch.stack(single_cand_hs_ls,dim=1) # B,K,hidden_dim
@@ -224,21 +224,21 @@ class Ranker_Transformer(nn.Module):
 
 def test():
     model = Ranker_MLP(num_layers=2, hidden_dim=128)
-    cand_hstates = torch.randn(128,10,256,8,8)
+    cand_hstates = torch.randn(32,10,256,8,8)
     score = model(cand_hstates)
     print(score.shape)
     print(model.count_params())
     ######
     print("#########################")
     model = Probe_MLP(num_layers=2, hidden_dim=128)
-    cand_hstate = torch.randn(128,256,8,8)
+    cand_hstate = torch.randn(32,256,8,8)
     score = model(cand_hstate)
     print(score.shape)
     print(model.count_params())
     ######
     print("#########################")
     model = Ranker_Transformer(num_layers=2, hidden_dim=128, num_heads=8)
-    cand_hstates = torch.randn(128,10,256,8,8)
+    cand_hstates = torch.randn(32,10,256,8,8)
     score = model(cand_hstates)
     print(score.shape)
     print(model.count_params())
