@@ -7,10 +7,21 @@ predicts per-candidate scores. Training uses a combined loss:
   L = alpha_kl * KL(softmax(pred/tau) || softmax(target/tau))
     + alpha_mse * MSE(pred, target)
 
-Example:
+Example (single merged .pth):
 
 python /root/diffusion_ranker/uncondition/train_ranker.py \
   --data_path /root/autodl-tmp/ddpm_hidden_store_demo.pth \
+  --step_idx 12 \
+  --layer_idx 19 \
+  --num_candidates 10 \
+  --num_epochs 30 \
+  --batch_size 32 \
+  --save_dir /root/autodl-tmp/ranker_model/s12_l19/hd128_lr1e-4
+
+Example (shard directory):
+
+python /root/diffusion_ranker/uncondition/train_ranker.py \
+  --data_path /root/autodl-tmp/ddpm_hiddens_and_rewards_shards \
   --step_idx 12 \
   --layer_idx 19 \
   --num_candidates 10 \
@@ -37,6 +48,61 @@ from tqdm import tqdm
 from ranker import Ranker_MLP
 
 
+def _load_flat_hidden_reward(
+    data_path: str | Path,
+    *,
+    step_idx: int,
+    layer_idx: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Load flat hidden/reward tensors from either:
+      1) merged rollout .pth, or
+      2) shard directory with
+         hidden_s{step}_l{layer}_bXXXXX.pt / reward_s{step}_bXXXXX.pt.
+    Returns:
+      hiddens: (N, C, H, W), rewards: (N,)
+    """
+    p = Path(data_path).expanduser().resolve()
+    if p.is_dir():
+        hidden_paths = sorted(p.glob(f"hidden_s{int(step_idx)}_l{int(layer_idx)}_b*.pt"))
+        reward_paths = sorted(p.glob(f"reward_s{int(step_idx)}_b*.pt"))
+        if not hidden_paths:
+            raise FileNotFoundError(f"no hidden shards found in {p}")
+        if not reward_paths:
+            raise FileNotFoundError(f"no reward shards found in {p}")
+
+        reward_map = {rp.stem.split("_b")[-1]: rp for rp in reward_paths}
+        hs_chunks: list[torch.Tensor] = []
+        rw_chunks: list[torch.Tensor] = []
+        for hp in hidden_paths:
+            bid = hp.stem.split("_b")[-1]
+            rp = reward_map.get(bid)
+            if rp is None:
+                raise ValueError(f"missing reward shard for hidden batch id {bid}")
+            h = torch.load(hp, map_location="cpu", weights_only=False).float().contiguous()
+            r = torch.load(rp, map_location="cpu", weights_only=False).float().contiguous()
+            if h.shape[0] != r.shape[0]:
+                raise ValueError(f"batch size mismatch in shard {bid}: hidden={h.shape[0]} reward={r.shape[0]}")
+            hs_chunks.append(h)
+            rw_chunks.append(r)
+        hiddens = torch.cat(hs_chunks, dim=0)
+        rewards = torch.cat(rw_chunks, dim=0)
+        return hiddens, rewards
+
+    raw = torch.load(p, map_location="cpu", weights_only=False)
+    hidden_store = raw["hidden_store_target"]
+    reward_store = raw["reward_store"]
+    hidden_key = f"s{int(step_idx)}_l{int(layer_idx)}"
+    reward_key = f"s{int(step_idx)}"
+    if hidden_key not in hidden_store:
+        raise KeyError(f"missing hidden key: {hidden_key}; available={list(hidden_store.keys())[:10]}")
+    if reward_key not in reward_store:
+        raise KeyError(f"missing reward key: {reward_key}; available={list(reward_store.keys())[:10]}")
+    hiddens = hidden_store[hidden_key].float().contiguous()
+    rewards = reward_store[reward_key].float().contiguous()
+    return hiddens, rewards
+
+
 class RankerGroupDataset(Dataset):
     """
     Loads flat (N, C, H, W) hidden states and (N,) rewards from ddpm_rollout,
@@ -52,29 +118,28 @@ class RankerGroupDataset(Dataset):
         num_candidates: int = 10,
         group_seed: int = 0,
     ):
-        raw = torch.load(Path(data_path).expanduser().resolve(), map_location="cpu", weights_only=False)
-        hidden_store = raw["hidden_store_target"]
-        reward_store = raw["reward_store"]
-
-        hidden_key = f"s{int(step_idx)}_l{int(layer_idx)}"
-        reward_key = f"s{int(step_idx)}"
-        if hidden_key not in hidden_store:
-            raise KeyError(f"missing hidden key: {hidden_key}; available={list(hidden_store.keys())[:10]}")
-        if reward_key not in reward_store:
-            raise KeyError(f"missing reward key: {reward_key}; available={list(reward_store.keys())[:10]}")
-
-        hiddens = hidden_store[hidden_key].float().contiguous()
-        rewards = reward_store[reward_key].float().contiguous()
+        hiddens, rewards = _load_flat_hidden_reward(
+            data_path=data_path,
+            step_idx=step_idx,
+            layer_idx=layer_idx,
+        )
         if hiddens.shape[0] != rewards.shape[0]:
             raise ValueError(f"N mismatch: hidden={hiddens.shape[0]}, reward={rewards.shape[0]}")
 
         N = hiddens.shape[0]
         K = int(num_candidates)
+        if K <= 0:
+            raise ValueError(f"num_candidates must be > 0, got {K}")
         rng = random.Random(group_seed)
         indices = list(range(N))
         rng.shuffle(indices)
         # trim to multiple of K
         n_use = (N // K) * K
+        if n_use <= 0:
+            raise ValueError(
+                f"not enough samples to form one group: N={N}, num_candidates={K}. "
+                f"Please reduce --num_candidates or provide more rollout data."
+            )
         indices = indices[:n_use]
 
         idx_t = torch.tensor(indices, dtype=torch.long)
@@ -211,7 +276,12 @@ def get_scheduler(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("Train Ranker_MLP on DDPM rollout features (listwise KL+MSE)")
-    p.add_argument("--data_path", type=str, default="/root/autodl-tmp/ddpm_hidden_store_demo.pth")
+    p.add_argument(
+        "--data_path",
+        type=str,
+        default="/root/autodl-tmp/ddpm_hiddens_and_rewards_shards",
+        help="path to merged .pth OR shard directory",
+    )
     p.add_argument("--step_idx", type=int, default=12)
     p.add_argument("--layer_idx", type=int, default=19)
     p.add_argument("--num_candidates", type=int, default=10, help="K: group size for listwise ranking")
