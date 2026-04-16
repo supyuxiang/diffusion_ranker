@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
 python /root/diffusion_ranker/uncondition/random_search_ranker_reward.py \
   --ranker_ckpt "${RANKER_CKPT:-/root/autodl-tmp/ranker_model/s24_l19/hd128_lr1e-4/ranker_best.pt}" \
@@ -10,7 +10,7 @@ python /root/diffusion_ranker/uncondition/random_search_ranker_reward.py \
   --real_dir "${REAL_DIR:-/root/autodl-tmp/img_align_celeba}" \
   --num_samples "${NUM_SAMPLES:-50000}" \
   --batch_size "${BATCH_SIZE:-32}" \
-  --parallel_size "${PARALLEL_SIZE:-2}" \
+  --parallel_size "${PARALLEL_SIZE:-10}" \
   --num_inference_steps "${NUM_INFERENCE_STEPS:-25}" \
   --layer_idx "${LAYER_IDX:-19}" \
   --step_idx "${STEP_IDX:-24}" \

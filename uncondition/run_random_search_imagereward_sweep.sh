@@ -21,7 +21,7 @@ echo "[info] out_root=${OUT_ROOT}"
 
 for PS in 2 4 8; do
   OUT_DIR="${OUT_ROOT}/ps${PS}"
-  echo "[run] parallel_size=${PS} -> ${OUT_DIR}"
+  echo "[run] ImageReward parallel_size=${PS} -> ${OUT_DIR}"
   python /root/diffusion_ranker/uncondition/random_search_imagereward_reward.py \
     --output_dir "${OUT_DIR}" \
     --model_path "${MODEL_PATH}" \
@@ -33,9 +33,8 @@ for PS in 2 4 8; do
     --parallel_size "${PS}" \
     --num_inference_steps "${NUM_INFERENCE_STEPS}" \
     --seed "${SEED}" \
-    --dtype "${DTYPE}" \
-    "$@"
-  echo "[done] parallel_size=${PS}"
+    --dtype "${DTYPE}"
+  echo "[done] ImageReward parallel_size=${PS}"
 done
 
-echo "[all done] results saved under ${OUT_ROOT}"
+echo "[all done] ImageReward sweep results under ${OUT_ROOT}"
