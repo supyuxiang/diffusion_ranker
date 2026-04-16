@@ -16,6 +16,7 @@
 \usepackage{graphicx}
 \usepackage{xspace}
 \usepackage{natbib}
+\usepackage{multirow}
 
 
 \author{%
@@ -225,7 +226,7 @@ We additionally evaluate \method on unconditional generation with the DDPM backb
 For supervision, we use fixed-prompt reward signals on final decoded images (e.g., ImageReward or CLIP-style similarity with prompt ``a photo of a human face'') to construct teacher targets. This keeps the reward definition aligned with unconditional face synthesis while preserving a unified training interface with the conditional setting.
 
 \paragraph{Baselines}
-We compare the following methods under matched candidate budgets: (i) base DDPM sampling without reranking, (ii) external-reward best-of-$N$ selection, (iii) \method-based best-of-$N$ selection, (iv) FK-Steering with external reward (DIFFERENCE / MAX), and (v) FK-Steering with \method as the potential model (DIFFERENCE / MAX). Following standard unconditional evaluation on CelebA-HQ style data, we report FID and IS against a held-out real-image reference set; we also report CLIPScore with the same fixed prompt as an auxiliary semantic metric.
+For final-step selection, we compare methods under matched candidate budgets: (i) base DDPM sampling without reranking, (ii) external-reward best-of-$N$ selection, and (iii) \method-based best-of-$N$ selection. Following standard unconditional evaluation on CelebA-HQ style data, we report FID and IS against a held-out real-image reference set; we also report CLIPScore with the same fixed prompt as an auxiliary semantic metric. FK-Steering results are presented separately in Section~\ref{sec:midstep_three_settings}.
 
 \paragraph{Results}
 Main unconditional DDPM results are shown in Table~\ref{tab:main_uncond_ddpm}.
@@ -242,13 +243,6 @@ Base DDPM & 1 & XX.XX & XX.XX & XX.XX & X.XXX \\
 Best-of-$N$ + CLIPScore & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
 Best-of-$N$ + ImageReward & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
 Best-of-$N$ + \method & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
-\midrule
-FK (DIFFERENCE) + CLIPScore & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
-FK (MAX) + CLIPScore & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
-FK (DIFFERENCE) + ImageReward & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
-FK (MAX) + ImageReward & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
-FK (DIFFERENCE) + \method & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
-FK (MAX) + \method & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -270,7 +264,7 @@ as the reward signal for both teacher target construction and evaluation in this
 We conduct this experiment on ImageNet \(256\times256\). The diffusion backbone is an unconditional ImageNet prior, and each run conditions on one target class \(c\in\{0,\dots,999\}\). To construct condition features for the ranker, we convert each class id to a text prompt (e.g., ``a photo of a \emph{class-name}''), feed it to a frozen language model, and use the resulting hidden-state representation as \(\mathbf{p}_i\). We then fuse \(\mathbf{p}_i\) with diffusion hidden-state features as in Equation~\ref{eq:x_cond}. We generate \(N\) parallel trajectories per class and train rankers from internal hidden states using classifier-based targets derived from \(r(\mathbf{x})=\log p(c\mid \mathbf{x})\). For middle-step supervision, rollout targets are also computed with the same classifier reward to keep training and inference objectives aligned.
 
 \paragraph{Baselines}
-For class-conditional posterior sampling, we compare against: (i) no reranking, (ii) heuristic reranking baselines, and (iii) external reward-model reranking when applicable. For each class, we generate \(N=16\) parallel trajectories and select one sample per method. We report Fr\'echet Inception Distance (FID), Inception Score (IS), and CLIPScore against the ImageNet validation set \citep{russakovsky2015imagenet}.
+For final-step class-conditional posterior sampling, we compare against: (i) no reranking, (ii) external reward-based best-of-$N$ reranking, and (iii) \method-based best-of-$N$ reranking. We report results at candidate budgets \(N\in\{2,4,8\}\), and evaluate Fr\'echet Inception Distance (FID), Inception Score (IS), and CLIPScore against the ImageNet validation set \citep{russakovsky2015imagenet}. FK-Steering results are reported separately in Section~\ref{sec:midstep_three_settings}.
 
 \paragraph{Results}
 Main quantitative results are summarized in Table~\ref{tab:main_class_cond}. We additionally report compute-efficiency comparisons in Table~\ref{tab:efficiency_overall}.
@@ -279,31 +273,27 @@ Main quantitative results are summarized in Table~\ref{tab:main_class_cond}. We 
 \centering
 \caption{Class-conditional posterior sampling on ImageNet-256. Fill in mean $\pm$ std over seeds. Lower FID is better; higher IS/CLIPScore is better.}
 \label{tab:main_class_cond}
-\begin{tabular}{lcccccc}
+\begin{tabular}{ccccccc}
 \toprule
 Method & Reward & Candidate & FID$\downarrow$ & IS$\uparrow$ & CLIPScore$\uparrow$ & Latency (s/img)$\downarrow$ \\
 \midrule
 Base (no rerank) & -- & 1 & XX.XX & XX.XX & XX.XX & X.XXX \\
 \midrule
-Best-of-$N$ & FID Reward & 2 & 10.87 & 107.74 & 23.37 & X.XXX \\
-Best-of-$N$ & FID Reward & 4 & 10.59 & 108.01 & 23.39 & X.XXX \\
-Best-of-$N$ & FID Reward & 8 & 10.31 & 108.94 & 23.42 & X.XXX \\
-Best-of-$N$ & CLIPScore & 2 & 10.37 & 113.74 & 23.76 & X.XXX \\
-Best-of-$N$ & CLIPScore & 4 & 9.88 & 119.60 & 24.09 & X.XXX \\
-Best-of-$N$ & CLIPScore & 8 & -- & -- & -- & X.XXX \\
-Best-of-$N$ & ImageReward & 2 & 10.24 & 114.52 & 23.59 & X.XXX \\
-Best-of-$N$ & ImageReward & 4 & 9.62 & 120.74 & 23.76 & X.XXX \\
-Best-of-$N$ & ImageReward & 8 & 9.04 & 127.14 & 23.91 & X.XXX \\
-Best-of-$N$ & \method & 2 & xxx & xxx & xxx & xxx \\
-Best-of-$N$ & \method & 4 & xxx & xxx & xxx & xxx \\
-Best-of-$N$ & \method & 8 & xxx & xxx & xxx & xxx \\
-\midrule
-FK (DIFFERENCE) & CLIPScore & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
-FK (MAX) & CLIPScore & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
-FK (DIFFERENCE) & ImageReward & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
-FK (MAX) & ImageReward & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
-FK (DIFFERENCE) & \method & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
-FK (MAX) & \method & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
+\multirow{12}{*}{Best-of-$N$} & \multirow{3}{*}{FID Reward} & 2 & 10.87 & 107.74 & 23.37 & X.XXX \\
+ &  & 4 & 10.59 & 108.01 & 23.39 & X.XXX \\
+ &  & 8 & 10.31 & 108.94 & 23.42 & X.XXX \\
+\cmidrule(lr){2-7}
+ & \multirow{3}{*}{CLIPScore} & 2 & 10.37 & 113.74 & 23.76 & X.XXX \\
+ &  & 4 & 9.88 & 119.60 & 24.09 & X.XXX \\
+ &  & 8 & -- & -- & -- & X.XXX \\
+\cmidrule(lr){2-7}
+ & \multirow{3}{*}{ImageReward} & 2 & 10.24 & 114.52 & 23.59 & X.XXX \\
+ &  & 4 & 9.62 & 120.74 & 23.76 & X.XXX \\
+ &  & 8 & 9.04 & 127.14 & 23.91 & X.XXX \\
+\cmidrule(lr){2-7}
+ & \multirow{3}{*}{\method} & 2 & xxx & xxx & xxx & xxx \\
+ &  & 4 & xxx & xxx & xxx & xxx \\
+ &  & 8 & xxx & xxx & xxx & xxx \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -315,7 +305,7 @@ Large-scale diffusion models for text-conditioned image generation can generate 
 We use Stable Diffusion v1.5 \citep{rombach2022ldm}, a latent diffusion model, as the prior over $512 \times 512$ images $\mathbf{x} \sim p_{\theta}(\mathbf{x} \mid \mathbf{y})$ where $\mathbf{y}$ denotes the text prompt. We evaluate on two different settings: (a) \textbf{DrawBench} \citep{saharia2022photorealistic}, which is a comprehensive benchmark of 200 prompts, with ImageReward \citep{xu2023imagereward} $\mathrm{r}(\mathbf{x}, \mathbf{y})$ that encodes prompt accuracy as well as human preferences; and (b) following \citet{black2023consistency}, we use 45 common animals from the ImageNet-1000 dataset as prompts, with the \textbf{LAION} aesthetics predictor \citep{schuhmann2022laion} $\mathrm{r}(\mathbf{x})$ that encodes aesthetic quality of an image but does not check for prompt accuracy.
 
 \paragraph{Baseline}
-We compare \method with best-of-N and FK-Steering (SMC). For fair comparison, we set the number of candidates for best-of-N or the number of particles for FK-Steering based on the number of function evaluations of the base diffusion model, and record the highest reward for each method per prompt.
+For final-step text-to-image evaluation, we compare \method with external-reward best-of-$N$ baselines under matched candidate budgets. We report the best selected sample per prompt. FK-Steering results are presented separately in Section~\ref{sec:midstep_three_settings}.
 
 \paragraph{Results}
 Text-to-image results are summarized in Table~\ref{tab:main_t2i}. We recommend reporting both prompt-following and preference-oriented metrics.
@@ -332,14 +322,9 @@ Base & -- & 1 & XX.XX & XX.XX & XX.XX & X.XX \\
 Best-of-$N$ & CLIPScore & 10 & XX.XX & XX.XX & XX.XX & X.XX \\
 Best-of-$N$ & ImageReward & 10 & XX.XX & XX.XX & XX.XX & X.XX \\
 Best-of-$N$ & \method & 10 & XX.XX & XX.XX & XX.XX & X.XX \\
-FK (DIFFERENCE) & External Reward & 10 particles & XX.XX & XX.XX & XX.XX & X.XX \\
-FK (MAX) & External Reward & 10 particles & XX.XX & XX.XX & XX.XX & X.XX \\
-FK (DIFFERENCE) & \method & 10 particles & XX.XX & XX.XX & XX.XX & X.XX \\
-FK (MAX) & \method & 10 particles & XX.XX & XX.XX & XX.XX & X.XX \\
 \bottomrule
 \end{tabular}
 \end{table}
-
 
 % We evaluate \method on \textbf{class-conditional ImageNet 256$\times$256 generation} using DiT-XL/2 \citep{peebles2023dit} as the backbone IDM. We compare our ranker against external reward models of varying scale: a frozen CLIP-based scorer, ImageReward, and larger VLM models. For each class, we generate $N=16$ parallel trajectories and select the best using each method. We report Fr\'echet Inception Distance (FID), Inception Score (IS), and CLIPScore against the ImageNet\citep{xu2023imagereward} validation set.
 
@@ -469,6 +454,62 @@ FK baseline & DIFFERENCE & External Reward & XX.XX & XX.XX & X.XXX \\
 FK baseline & MAX & External Reward & XX.XX & XX.XX & X.XXX \\
 FK + \method & DIFFERENCE & Ranker score & XX.XX & XX.XX & X.XXX \\
 FK + \method & MAX & Ranker score & XX.XX & XX.XX & X.XXX \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Middle-step Experiments Across Three Settings}
+\label{sec:midstep_three_settings}
+
+To improve readability in the main paper, we provide three dedicated table templates for middle-step experiments under unconditional DDPM generation, class-conditional posterior sampling, and text-to-image generation, respectively.
+
+\begin{table}[htbp]
+\centering
+\caption{Middle-step experiments on unconditional DDPM (\texttt{google/ddpm-celebahq-256}).}
+\label{tab:midstep_uncond_template}
+\begin{tabular}{lcccccc}
+\toprule
+Method & Potential Source & Resample Type & Particle & FID$\downarrow$ & IS$\uparrow$ & CLIPScore$\uparrow$ \\
+\midrule
+Base DDPM & -- & -- & 1 & XX.XX & XX.XX & XX.XX \\
+FK (DIFFERENCE) & CLIPScore/ImageReward & External Reward & 8 & XX.XX & XX.XX & XX.XX \\
+FK (MAX) & CLIPScore/ImageReward & External Reward & 8 & XX.XX & XX.XX & XX.XX \\
+FK (DIFFERENCE) & \method (middle-step) & Ranker Potential & 8 & XX.XX & XX.XX & XX.XX \\
+FK (MAX) & \method (middle-step) & Ranker Potential & 8 & XX.XX & XX.XX & XX.XX \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Middle-step experiments on class-conditional posterior sampling (ImageNet-256).}
+\label{tab:midstep_class_template}
+\begin{tabular}{lcccccc}
+\toprule
+Method & Potential Source & Resample Type & Candidate/Particle & FID$\downarrow$ & IS$\uparrow$ & CLIPScore$\uparrow$ \\
+\midrule
+Base (no rerank) & -- & -- & 1 & XX.XX & XX.XX & XX.XX \\
+FK (DIFFERENCE) & Classifier Reward $\log p(c\mid x)$ & External Reward & 8/10 & XX.XX & XX.XX & XX.XX \\
+FK (MAX) & Classifier Reward $\log p(c\mid x)$ & External Reward & 8/10 & XX.XX & XX.XX & XX.XX \\
+FK (DIFFERENCE) & \method (middle-step) & Ranker Potential & 8/10 & XX.XX & XX.XX & XX.XX \\
+FK (MAX) & \method (middle-step) & Ranker Potential & 8/10 & XX.XX & XX.XX & XX.XX \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Middle-step experiments on text-to-image generation (e.g., DrawBench/GenEval subsets).}
+\label{tab:midstep_t2i_template}
+\begin{tabular}{lcccccc}
+\toprule
+Method & Potential Source & Resample Type & Particle & ImageReward$\uparrow$ & PickScore/HPS$\uparrow$ & CLIPScore$\uparrow$ \\
+\midrule
+Base T2I & -- & -- & 1 & XX.XX & XX.XX & XX.XX \\
+FK (DIFFERENCE) & CLIPScore/ImageReward & External Reward & 10 & XX.XX & XX.XX & XX.XX \\
+FK (MAX) & CLIPScore/ImageReward & External Reward & 10 & XX.XX & XX.XX & XX.XX \\
+FK (DIFFERENCE) & \method (middle-step) & Ranker Potential & 10 & XX.XX & XX.XX & XX.XX \\
+FK (MAX) & \method (middle-step) & Ranker Potential & 10 & XX.XX & XX.XX & XX.XX \\
 \bottomrule
 \end{tabular}
 \end{table}

@@ -3,7 +3,7 @@
 '''
 
 python /root/diffusion_ranker/uncondition/train_probe.py \
-  --data_path /root/autodl-tmp/ddpm_hidden_store_demo.pth \
+  --data_path /root/autodl-tmp/ddpm_hiddens_and_rewards_shards \
   --step_idx 24 \
   --layer_idx 19 \
   --num_epochs 30 \
@@ -236,7 +236,7 @@ def get_scheduler(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("Train Probe_MLP on DDPM rollout features")
-    p.add_argument("--data_path", type=str, default="/root/autodl-tmp/ddpm_hidden_store_demo.pth")
+    p.add_argument("--data_path", type=str, default="/root/autodl-tmp/ddpm_hiddens_and_rewards_shards")
     p.add_argument("--step_idx", type=int, default=12)
     p.add_argument("--layer_idx", type=int, default=19)
     p.add_argument("--num_layers", type=int, default=2)

@@ -132,14 +132,14 @@ def _mean_imagereward_for_dir(gen_dir: Path, device: torch.device) -> float:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser("Online random search with Probe reward (parallel size=10)")
+    p = argparse.ArgumentParser("Online random search with Probe reward")
     p.add_argument("--probe_ckpt", type=str, required=True)
-    p.add_argument("--output_dir", type=str, default="/root/autodl-tmp/uncond_random_search_probe_ps10")
+    p.add_argument("--output_dir", type=str, default="/root/autodl-tmp/uncond_random_search_probe_ps2")
     p.add_argument("--model_path", type=str, default="/root/autodl-tmp/google_ddpm-celebahq-256")
     p.add_argument("--real_dir", type=str, default="/root/autodl-tmp/img_align_celeba_fid_ref_50k")
     p.add_argument("--num_samples", type=int, default=50_000)
     p.add_argument("--batch_size", type=int, default=32)
-    p.add_argument("--parallel_size", type=int, default=10)
+    p.add_argument("--parallel_size", type=int, default=2)
     p.add_argument("--num_inference_steps", type=int, default=25)
     p.add_argument("--layer_idx", type=int, default=19)
     p.add_argument("--step_idx", type=int, default=24)
@@ -159,8 +159,8 @@ def parse_args() -> argparse.Namespace:
 @torch.inference_mode()
 def main() -> None:
     args = parse_args()
-    if args.parallel_size != 10:
-        raise ValueError(f"parallel_size must be 10 by requirement, got {args.parallel_size}")
+    if args.parallel_size <= 0:
+        raise ValueError(f"parallel_size must be > 0, got {args.parallel_size}")
 
     set_seed(args.seed)
     device = set_device()
@@ -201,7 +201,7 @@ def main() -> None:
     img_counter = 0
     rng = torch.Generator(device="cpu").manual_seed(args.seed)
     round_logs: list[dict[str, float]] = []
-    for ridx in tqdm(range(n_rounds), desc="online best-of-10"):
+    for ridx in tqdm(range(n_rounds), desc=f"online best-of-{args.parallel_size}"):
         batch_n = min(args.batch_size, args.num_samples - img_counter)
         if batch_n <= 0:
             break
