@@ -16,7 +16,9 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+_ROOT_ = Path(__file__).resolve().parent.parent
+
+sys.path.insert(0, str(_ROOT_))
 
 from utils import (
     compute_fid_is_clipscore,

@@ -230,7 +230,7 @@ def ddpm_loader(
     return pipe
 
 
-def model_loader(model_name:str, device: torch.device, dtype:str='fp16') -> DiTPipeline | DDPMPipeline:
+def model_loader(model_name:str, device: torch.device, dtype:str='bf16') -> DiTPipeline | DDPMPipeline:
     if model_name == 'dit-xl-2-256':
         return dit_loader(model_name, device=device, dtype=dtype)
     if model_name == 'google_ddpm-celebahq-256':
@@ -476,6 +476,39 @@ def compute_fid_is_clipscore(
         )
     )
     return metrics
+
+
+
+def compute_fid_is_clipscore_for_uncondition(
+    gen_dir: str | Path,
+    real_dir: str | Path,
+    *,
+    clip_model_dir: str | Path,
+    clip_batch_size: int = 64,
+) -> dict[str, float]:
+    '''compute FID / IS / CLIPScore for uncondition image generation, typically for ddpm_unet'''
+
+    gen_dir,real_dir = Path(gen_dir),Path(real_dir)
+    assert gen_dir.is_dir() and real_dir.is_dir()
+
+    real_images = _load_images_from_dir(real_dir)
+    gen_images = _load_images_from_dir(gen_dir)
+    device = set_device()
+
+    prompt = 'a photo of a human face'
+    prompts = [prompt] * gen_images.shape[0]
+
+    metrics:dict[str,float] = {}
+
+    metrics['fid'] = float(compute_fid(real_images,gen_images,device=device))
+    is_mean, is_std = compute_is(gen_images,device=device)
+    metrics['is'] = float(is_mean)
+    metrics['is_std'] = float(is_std)
+    metrics['clipscore'] = float(compute_clipscore(gen_images,prompts,device=device,clip_model_dir=clip_model_dir,clip_batch_size=clip_batch_size))
+    return metrics
+
+
+
 
 
 def compute_fid(
@@ -902,8 +935,7 @@ def rollout_dit_with_steps(
             gc.collect()
 
     gc.collect()
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
+    torch.cuda.empty_cache()
 
     return img_counter
 
@@ -1322,9 +1354,10 @@ def rollout_ddpm_with_steps(
         for img in out.images:
             if img_counter >= num_samples:
                 break
-            im = _prepare_pil_for_save(img.convert("RGB"), image_size)
+            im = _prepare_pil_for_save(img.convert("RGB"), image_size) # resize if needed
             to_save.append((save_dir / f"{img_counter:05d}.png", im.copy()))
             img_counter += 1
+
         with ThreadPoolExecutor(max_workers=_ROLLOUT_SAVE_WORKERS) as ex:
             futures = [
                 ex.submit(
