@@ -142,7 +142,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--parallel_size", type=int, default=10)
     p.add_argument("--num_inference_steps", type=int, default=25)
     p.add_argument("--layer_idx", type=int, default=19)
-    p.add_argument("--step_idx", type=int, default=12)
+    p.add_argument("--step_idx", type=int, default=24)
     p.add_argument("--pool_kernel", type=int, default=2)
     p.add_argument("--pool_stride", type=int, default=2)
     p.add_argument("--seed", type=int, default=42)
