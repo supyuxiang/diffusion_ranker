@@ -56,13 +56,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--save_path", type=str, default="/root/autodl-tmp/cifar10_ddpm_hiddens_and_rewards.pth")
     p.add_argument("--num_samples", type=int, default=1500)
     p.add_argument("--batch_size", type=int, default=256)
-    p.add_argument("--num_inference_steps", type=int, default=50)
+    p.add_argument("--num_inference_steps", type=int, default=100)
     p.add_argument("--mc_samples", type=int, default=5)
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
 
 
-def _latents_to_pil(x: torch.Tensor) -> list[Image.Image]:
+def _latents_to_pil(x: torch.Tensor) -> list[Image.Image]: # 意义是将latents转换为PIL图像
     x = (x / 2 + 0.5).clamp(0, 1)
     arr = x.detach().cpu().permute(0, 2, 3, 1).numpy()
     arr = (arr * 255.0).round().clip(0, 255).astype("uint8")
