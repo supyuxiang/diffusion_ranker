@@ -57,7 +57,7 @@ from torchvision import transforms
 Constants_ls = {
     'layer_ratio_ls':[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9],
     'middle_ratio_ls':[0.1,0.25,0.5,0.75,0.9,1.0], # 在 target_step = (ratio*total_steps)上抽取表征然后训ranker
-    'model_name_ls':['dit-xl-2-256','google_ddpm-celebahq-256'], # uncond: DiT-XL-2-256; cond: google/ddpm-celebahq-256
+    'model_name_ls':['dit-xl-2-256','google_ddpm-celebahq-256','google_ddpm-cifar10-32'],
     'cfg_ls':[1.0,1.25,1.5], # 对于imagenet
     'lr_ls':[5e-4,1e-4,5e-5,1e-5],
     'weight_decay_ls':[1e-4,1e-5,1e-6],
@@ -171,11 +171,13 @@ def get_num_layers(model_name: str) -> int:
 
 def model_name2path(model_name:str) -> Path:
     from pathlib import Path
-    assert model_name in ['dit-xl-2-256','google_ddpm-celebahq-256']
+    assert model_name in ['dit-xl-2-256','google_ddpm-celebahq-256','google_ddpm-cifar10-32']
     if model_name == 'dit-xl-2-256':
         return Path("/root/autodl-tmp/DiT-XL-2-256")
     if model_name == 'google_ddpm-celebahq-256':
         return Path("/root/autodl-tmp/google_ddpm-celebahq-256")
+    if model_name == 'google_ddpm-cifar10-32':
+        return Path("/root/autodl-tmp/google_ddpm-cifar10-32")
 
 
 def _dtype_str_to_torch(dtype: str) -> torch.dtype:
@@ -234,6 +236,8 @@ def model_loader(model_name:str, device: torch.device, dtype:str='bf16') -> DiTP
     if model_name == 'dit-xl-2-256':
         return dit_loader(model_name, device=device, dtype=dtype)
     if model_name == 'google_ddpm-celebahq-256':
+        return ddpm_loader(model_name, device=device, dtype=dtype)
+    if model_name == 'google_ddpm-cifar10-32':
         return ddpm_loader(model_name, device=device, dtype=dtype)
     raise ValueError(f"Unknown model name: {model_name}")
 

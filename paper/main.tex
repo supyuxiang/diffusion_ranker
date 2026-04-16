@@ -247,6 +247,38 @@ Best-of-$N$ + \method & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
 \end{tabular}
 \end{table}
 
+\subsubsection{Unconditional CIFAR-10 generation}
+\label{sec:exp_uncond_cifar10}
+
+\paragraph{Setting}
+We further evaluate \method on unconditional CIFAR-10 generation with \texttt{google/ddpm-cifar10-32}. Since CIFAR-10 is class-balanced with 10 semantic categories and standard evaluation is label-free, we follow the conventional unconditional protocol and report only FID and IS. For middle-step supervision, we use a pretrained CIFAR-10 classifier as reward model and define per-sample reward by negative predictive entropy, which provides a stable confidence-based signal for Monte Carlo target construction.
+
+\paragraph{Baselines}
+For final-step selection, we compare: (i) base DDPM sampling, (ii) external-reward best-of-$N$, and (iii) \method-based best-of-$N$ under matched candidate budgets. We additionally report denoising-step scaling trends to show how selection gains interact with sampling compute. FK-style middle-step replacement on CIFAR-10 is reported in Section~\ref{sec:midstep_three_settings} when available.
+
+\paragraph{Results}
+CIFAR-10 unconditional results are summarized in Table~\ref{tab:main_uncond_cifar10}.
+
+\begin{table}[htbp]
+\centering
+\caption{Unconditional CIFAR-10 (\texttt{google/ddpm-cifar10-32}). Lower FID is better; higher IS is better.}
+\label{tab:main_uncond_cifar10}
+\begin{tabular}{lcccc}
+\toprule
+Method & Candidate/Particle Budget & FID$\downarrow$ & IS$\uparrow$ & Latency (s/img)$\downarrow$ \\
+\midrule
+Base DDPM & 1 & XX.XX & XX.XX & X.XXX \\
+Best-of-$N$ + External Reward & 2/4/8 & XX.XX & XX.XX & X.XXX \\
+Best-of-$N$ + \method & 2/4/8 & XX.XX & XX.XX & X.XXX \\
+\midrule
+Scaling @ 10 denoise steps & -- & XX.XX & XX.XX & X.XXX \\
+Scaling @ 20 denoise steps & -- & XX.XX & XX.XX & X.XXX \\
+Scaling @ 50 denoise steps & -- & XX.XX & XX.XX & X.XXX \\
+Scaling @ 100 denoise steps & -- & XX.XX & XX.XX & X.XXX \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \subsubsection{Class-conditional posterior sampling}
 \label{sec:exp_class_posterior}
 
@@ -358,7 +390,7 @@ Computing the potential at a single interval requires $N \times C$ additional di
 We propose to replace the MC-based potential $V(y^{(t)})$ with our lightweight \method. Rather than simulating the future at inference time, we integrate the rollout procedure into training and learn to predict rollout outcomes directly from the model's internal hidden states at step $t$.
 
 \paragraph{Data Collection.}
-To train the middle-step ranker, we collect trajectories and record hidden states $\mathbf{H}_i^{(l,t)}$ at multiple diffusion steps (e.g., $t \in \{0, T/16, 2T/16, \dots, 15T/16\}$). For each intermediate step $t$, we run $M$ MC rollouts to compute a ground-truth potential target $y_i(t)$ as the mean accuracy (or reward) over the $M$ rollouts. The rollout reward is obtained by the judge of the final generated image using ImageReward.
+To train the middle-step ranker, we collect trajectories and record hidden states $\mathbf{H}_i^{(l,t)}$ at multiple diffusion steps (e.g., $t \in \{0, T/4, T/2, 3T/4\}$). For each intermediate step $t$, we run $M$ MC rollouts to compute a ground-truth potential target $y_i(t)$ as the mean accuracy (or reward) over the $M$ rollouts. The rollout reward is obtained by the judge of the final generated image using ImageReward.
 
 \paragraph{Architecture.}
 We use the same Transformer-based architecture described in Section~\ref{sec:ranker}. However, the ranker now takes hidden states $\mathbf{H}_i^{(l,t)}$ as input. To capture temporal information, we add a time-step embedding to the pooled features $\mathbf{h}_i^{(l,t)}$ (obtained via Equation~\ref{eq:h}) before feeding them into the ranker. Specifically, we project the diffusion step $t$ using a sinusoidal embedding and add it to the projected feature $\mathbf{x}_i$ from Equation~\ref{eq:x_i}:
