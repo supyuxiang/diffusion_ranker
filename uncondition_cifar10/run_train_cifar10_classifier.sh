@@ -8,7 +8,7 @@ python /root/diffusion_ranker/uncondition_cifar10/train_cifar10_classifier.py \
   --save_dir "${SAVE_DIR:-/root/autodl-tmp/cifar10_classifier/resnet18}" \
   --num_epochs "${NUM_EPOCHS:-20}" \
   --batch_size "${BATCH_SIZE:-32}" \
-  --learning_rate "${LEARNING_RATE:-0.1}" \
+  --learning_rate "${LEARNING_RATE:-3e-4}" \
   --weight_decay "${WEIGHT_DECAY:-5e-4}" \
   --num_workers "${NUM_WORKERS:-4}" \
   --seed "${SEED:-42}"

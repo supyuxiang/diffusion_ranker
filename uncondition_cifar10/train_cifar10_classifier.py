@@ -24,8 +24,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--weight_decay", type=float, default=5e-4)
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--pretrained", action="store_true", default=True)
-    p.add_argument("--no_pretrained", action="store_false", dest="pretrained")
     return p.parse_args()
 
 
@@ -91,7 +89,8 @@ def main() -> None:
         pin_memory=(device.type == "cuda"),
     )
 
-    model = build_cifar10_resnet18(pretrained=bool(args.pretrained)).to(device)
+    # Hard enforce ImageNet pretrained initialization for finetuning.
+    model = build_cifar10_resnet18(pretrained=True).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.learning_rate,
