@@ -28,6 +28,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def set_seed(seed: int) -> None:
+    import random
+    import numpy as np
+    random.seed(seed)
+    np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
