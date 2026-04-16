@@ -17,6 +17,9 @@ export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 mkdir -p "${ROOT}/DiT-XL-2-256"
 hf download facebook/DiT-XL-2-256 --local-dir "${ROOT}/DiT-XL-2-256"
 
+mkdir -p "${ROOT}/DiT-XL-2-512"
+hf download facebook/DiT-XL-2-512 --local-dir "${ROOT}/DiT-XL-2-512"
+
 # ---------- ImageReward ----------
 mkdir -p "${ROOT}/ImageReward"
 hf download yuxng/ImageReward --local-dir "${ROOT}/ImageReward"
