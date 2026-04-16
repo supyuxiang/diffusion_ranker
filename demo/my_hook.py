@@ -72,6 +72,9 @@ def demo_unet_ddpm_hook():
         for name, mod in pipe.unet.named_modules()
         if mod.__class__.__name__ == "ResnetBlock2D"
     ]
+    print('--------------------------------')
+    print(resnet_blocks)
+    print('--------------------------------')
     if not resnet_blocks:
         print("[ddpm hook demo] no ResnetBlock2D found")
         return
