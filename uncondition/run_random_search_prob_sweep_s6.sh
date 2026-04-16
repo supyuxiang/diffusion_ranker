@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-5}"
 
 PROBE_CKPT="${PROBE_CKPT:-/root/autodl-tmp/probe_model/s6_l19/hd128_lr1e-4_wd1e-4/probe_best.pt}"
 OUT_ROOT="${OUT_ROOT:-/root/autodl-tmp/uncond_random_search_probe_sweep_s6}"
 
 MODEL_PATH="${MODEL_PATH:-/root/autodl-tmp/google_ddpm-celebahq-256}"
-REAL_DIR="${REAL_DIR:-/root/autodl-tmp/img_align_celeba_fid_ref_50k}"
+REAL_DIR="${REAL_DIR:-/root/autodl-tmp/img_align_celeba}"
 NUM_SAMPLES="${NUM_SAMPLES:-50000}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
 NUM_INFERENCE_STEPS="${NUM_INFERENCE_STEPS:-25}"

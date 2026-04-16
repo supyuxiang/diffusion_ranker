@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("Online random search with ImageReward reward (parallel size=10)")
     p.add_argument("--output_dir", type=str, default="/root/autodl-tmp/uncond_random_search_imagereward_ps10")
     p.add_argument("--model_path", type=str, default="/root/autodl-tmp/google_ddpm-celebahq-256")
-    p.add_argument("--real_dir", type=str, default="/root/autodl-tmp//root/autodl-tmp/img_align_celeba")
+    p.add_argument("--real_dir", type=str, default="/root/autodl-tmp/img_align_celeba")
     p.add_argument("--clip_model_dir", type=str, default="/root/autodl-tmp/openai_clip-vit-large-patch14")
     p.add_argument("--clip_batch_size", type=int, default=64)
     p.add_argument("--num_samples", type=int, default=50_000)

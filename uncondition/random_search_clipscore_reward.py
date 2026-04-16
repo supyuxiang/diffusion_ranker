@@ -75,10 +75,10 @@ def _mean_imagereward_for_dir(gen_dir: Path, device: torch.device) -> float:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser("Online random search with CLIPScore reward (parallel size=10)")
+    p = argparse.ArgumentParser("Online random search with CLIPScore reward")
     p.add_argument("--output_dir", type=str, default="/root/autodl-tmp/uncond_random_search_clipscore_ps10")
     p.add_argument("--model_path", type=str, default="/root/autodl-tmp/google_ddpm-celebahq-256")
-    p.add_argument("--real_dir", type=str, default="/root/autodl-tmp//root/autodl-tmp/img_align_celeba")
+    p.add_argument("--real_dir", type=str, default="/root/autodl-tmp/img_align_celeba")
     p.add_argument("--clip_model_dir", type=str, default="/root/autodl-tmp/openai_clip-vit-large-patch14")
     p.add_argument("--clip_batch_size", type=int, default=64)
     p.add_argument("--num_samples", type=int, default=50_000)
@@ -93,8 +93,8 @@ def parse_args() -> argparse.Namespace:
 @torch.inference_mode()
 def main() -> None:
     args = parse_args()
-    if args.parallel_size != 10:
-        raise ValueError(f"parallel_size must be 10 by requirement, got {args.parallel_size}")
+    if args.parallel_size <= 0:
+        raise ValueError(f"parallel_size must be positive, got {args.parallel_size}")
 
     set_seed(args.seed)
     device = set_device()
