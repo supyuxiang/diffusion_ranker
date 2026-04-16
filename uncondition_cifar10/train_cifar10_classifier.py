@@ -18,12 +18,14 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("Train CIFAR-10 classifier for reward modeling")
     p.add_argument("--data_root", type=str, default="/root/autodl-tmp")
     p.add_argument("--save_dir", type=str, default="/root/autodl-tmp/cifar10_classifier/resnet18")
-    p.add_argument("--num_epochs", type=int, default=100)
+    p.add_argument("--num_epochs", type=int, default=30)
     p.add_argument("--batch_size", type=int, default=256)
-    p.add_argument("--learning_rate", type=float, default=0.1)
+    p.add_argument("--learning_rate", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=5e-4)
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--pretrained", action="store_true", default=True)
+    p.add_argument("--no_pretrained", action="store_false", dest="pretrained")
     return p.parse_args()
 
 
@@ -58,16 +60,17 @@ def main() -> None:
 
     train_tf = transforms.Compose(
         [
-            transforms.RandomCrop(32, padding=4),
+            transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BILINEAR),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
+            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ]
     )
     test_tf = transforms.Compose(
         [
+            transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BILINEAR),
             transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
+            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ]
     )
 
@@ -88,13 +91,11 @@ def main() -> None:
         pin_memory=(device.type == "cuda"),
     )
 
-    model = build_cifar10_resnet18().to(device)
-    optimizer = torch.optim.SGD(
+    model = build_cifar10_resnet18(pretrained=bool(args.pretrained)).to(device)
+    optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.learning_rate,
-        momentum=0.9,
         weight_decay=args.weight_decay,
-        nesterov=True,
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.num_epochs)
 
