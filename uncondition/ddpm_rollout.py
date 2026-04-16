@@ -93,7 +93,7 @@ def rollout() -> None:
     num_samples = 1500
     batch_size = 128
     num_inference_steps = 25
-    mc_samples = 4 
+    mc_samples = 5 
     seed = 42
     ##########
 
@@ -122,14 +122,15 @@ def rollout() -> None:
     }
     reward_shard_paths: dict[int, list[Path]] = {s: [] for s in target_step_indices}
 
-    current_step_idx = {"value": -1} # 
+    current_step_idx = {"value": -1}
+    capture_enabled = {"value": True}
     current_store_ref: dict[str, dict[int, dict[int, list[torch.Tensor]]] | None] = {"store": None}
 
     def _make_hook(layer_idx: int):
         def _hook(_module, _inp, _out):
             s = current_step_idx["value"]
             store = current_store_ref["store"]
-            if store is None or s < 0 or s not in store:
+            if (not capture_enabled["value"]) or store is None or s < 0 or s not in store:
                 return
             t = _out[0] if isinstance(_out, (tuple, list)) else _out
             # 2x2 mean pooling on H/W: every 4 neighboring pixels -> 1 pooled value.
@@ -176,6 +177,8 @@ def rollout() -> None:
             x = pipe.scheduler.step(eps, t, x, generator=generator).prev_sample
             del eps
             if st_i in target_step_indices:
+                # Disable hooks during MC rollout: MC is only for reward labels.
+                capture_enabled["value"] = False
                 batch_reward_store[st_i].append(
                     mc(
                         step_idx=st_i,
@@ -186,6 +189,7 @@ def rollout() -> None:
                         base_seed=seed + batch_i * 1000 + st_i * 10,
                     )
                 )
+                capture_enabled["value"] = True
         current_store_ref["store"] = None
 
         # Flush this batch to disk shards, then free RAM.
