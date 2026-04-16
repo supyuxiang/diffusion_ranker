@@ -85,9 +85,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--parallel_size", type=int, default=10)
     p.add_argument("--num_inference_steps", type=int, default=25)
-    # Keep defaults aligned with the probe script setting for experiment consistency.
-    p.add_argument("--layer_idx", type=int, default=19)
-    p.add_argument("--step_idx", type=int, default=12)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", type=str, default="fp16", choices=("fp16", "fp32", "bf16"))
     return p.parse_args()
