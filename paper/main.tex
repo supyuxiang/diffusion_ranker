@@ -236,16 +236,19 @@ Main unconditional DDPM results are shown in Table~\ref{tab:main_uncond_ddpm}.
 \label{tab:main_uncond_ddpm}
 \begin{tabular}{lccccc}
 \toprule
-Method & Candidate / Particle Budget & FID$\downarrow$ & IS$\uparrow$ & CLIPScore$\uparrow$ & Latency (s/img)$\downarrow$ \\
+Method & Particle & FID$\downarrow$ & IS$\uparrow$ & CLIPScore$\uparrow$ & Latency (s/img)$\downarrow$ \\
 \midrule
-Base DDPM & 1 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
-Best-of-$N$ + CLIPScore & 16 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
-Best-of-$N$ + ImageReward & 16 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
-Best-of-$N$ + \method & 16 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
-FK (DIFFERENCE) + External Reward & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
-FK (MAX) + External Reward & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
-FK (DIFFERENCE) + \method & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
-FK (MAX) + \method & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+Base DDPM & 1 & XX.XX & XX.XX & XX.XX & X.XXX \\
+Best-of-$N$ + CLIPScore & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
+Best-of-$N$ + ImageReward & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
+Best-of-$N$ + \method & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
+\midrule
+FK (DIFFERENCE) + CLIPScore & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
+FK (MAX) + CLIPScore & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
+FK (DIFFERENCE) + ImageReward & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
+FK (MAX) + ImageReward & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
+FK (DIFFERENCE) + \method & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
+FK (MAX) + \method & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -278,19 +281,29 @@ Main quantitative results are summarized in Table~\ref{tab:main_class_cond}. We 
 \label{tab:main_class_cond}
 \begin{tabular}{lcccccc}
 \toprule
-Method & Reward / Verifier & Candidate Budget & FID$\downarrow$ & IS$\uparrow$ & CLIPScore$\uparrow$ & Latency (s/img)$\downarrow$ \\
+Method & Reward & Candidate & FID$\downarrow$ & IS$\uparrow$ & CLIPScore$\uparrow$ & Latency (s/img)$\downarrow$ \\
 \midrule
-Base (no rerank) & -- & 1 & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+Base (no rerank) & -- & 1 & XX.XX & XX.XX & XX.XX & X.XXX \\
+\midrule
+Best-of-$N$ & FID Reward & 2 & 10.87 & 107.74 & 23.37 & X.XXX \\
+Best-of-$N$ & FID Reward & 4 & 10.59 & 108.01 & 23.39 & X.XXX \\
+Best-of-$N$ & FID Reward & 8 & 10.31 & 108.94 & 23.42 & X.XXX \\
+Best-of-$N$ & CLIPScore & 2 & 10.37 & 113.74 & 23.76 & X.XXX \\
+Best-of-$N$ & CLIPScore & 4 & 9.88 & 119.60 & 24.09 & X.XXX \\
 Best-of-$N$ & CLIPScore & 8 & -- & -- & -- & X.XXX \\
-Best-of-$N$ & CLIPScore & 10 & -- & -- & -- & X.XXX \\
-Best-of-$N$ & ImageReward & 8 & 9.04 $\pm$ 0.00 & 127.14 $\pm$ 2.08 & 23.91 $\pm$ 0.00 & X.XXX \\
-Best-of-$N$ & ImageReward & 10 & 8.95 $\pm$ 0.00 & 129.07 $\pm$ 1.09 & 23.95 $\pm$ 0.00 & X.XXX \\
-Best-of-$N$ & FID Reward (oracle) & 8 & 10.31 $\pm$ 0.00 & 108.94 $\pm$ 1.48 & 23.42 $\pm$ 0.00 & X.XXX \\
-Best-of-$N$ & FID Reward (oracle) & 10 & 10.27 $\pm$ 0.00 & 109.74 $\pm$ 1.18 & 23.44 $\pm$ 0.00 & X.XXX \\
-FK (DIFFERENCE) & External Reward & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
-FK (MAX) & External Reward & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
-FK (DIFFERENCE) & \method & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
-FK (MAX) & \method & 10 particles & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & XX.XX $\pm$ X.XX & X.XXX \\
+Best-of-$N$ & ImageReward & 2 & 10.24 & 114.52 & 23.59 & X.XXX \\
+Best-of-$N$ & ImageReward & 4 & 9.62 & 120.74 & 23.76 & X.XXX \\
+Best-of-$N$ & ImageReward & 8 & 9.04 & 127.14 & 23.91 & X.XXX \\
+Best-of-$N$ & \method & 2 & xxx & xxx & xxx & xxx \\
+Best-of-$N$ & \method & 4 & xxx & xxx & xxx & xxx \\
+Best-of-$N$ & \method & 8 & xxx & xxx & xxx & xxx \\
+\midrule
+FK (DIFFERENCE) & CLIPScore & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
+FK (MAX) & CLIPScore & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
+FK (DIFFERENCE) & ImageReward & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
+FK (MAX) & ImageReward & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
+FK (DIFFERENCE) & \method & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
+FK (MAX) & \method & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
 \bottomrule
 \end{tabular}
 \end{table}

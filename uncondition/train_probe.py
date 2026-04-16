@@ -4,7 +4,7 @@
 
 python /root/diffusion_ranker/uncondition/train_probe.py \
   --data_path /root/autodl-tmp/ddpm_hidden_store_demo.pth \
-  --step_idx 12 \
+  --step_idx 24 \
   --layer_idx 19 \
   --num_epochs 30 \
   --batch_size 32 \
@@ -19,7 +19,7 @@ python /root/diffusion_ranker/uncondition/train_probe.py \
   --scheduler cosine \
   --dropout 0.1 \
   --hidden_dim 128 \
-  --save_dir /root/autodl-tmp/probe_model/s12_l19/hd128_lr1e-4_wd1e-4
+  --save_dir /root/autodl-tmp/probe_model/s24_l19/hd128_lr1e-4_wd1e-4
 
 '''
 from __future__ import annotations
