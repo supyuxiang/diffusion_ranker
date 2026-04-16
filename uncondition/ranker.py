@@ -127,6 +127,96 @@ class Probe_MLP(nn.Module):
     
     def count_params(self):
         return sum(p.numel() for p in self.parameters())
+
+
+class Ranker_Transformer(nn.Module):
+    def __init__(self, num_layers:int, hidden_dim:int, num_heads:int, dropout:float=0.1,input_channels:int=256):
+        super(Ranker_Transformer,self).__init__()
+        self.num_layers = num_layers
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+
+        self.process_candidate = nn.Sequential( # b,c,h,w -> b,hidden_dim
+                nn.Conv2d(input_channels,16,kernel_size=2,stride=2),# b,256,16,16 -> b,16,8,8
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Flatten(start_dim=1), # b,16,8*8 -> b,16*8*8
+                nn.Linear(16*8*8,hidden_dim), # b,16*8*8 -> b,hidden_dim
+        )
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=num_heads,
+            dim_feedforward=hidden_dim * 4,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.final_norm = nn.LayerNorm(hidden_dim)
+        self.score_head = nn.Linear(hidden_dim, 1, bias=False)
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                if isinstance(m.weight, UninitializedParameter):
+                    continue
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None and not isinstance(m.bias, UninitializedParameter):
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.LayerNorm):
+                if m.elementwise_affine:
+                    nn.init.ones_(m.weight)
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, cand_hstates:torch.Tensor) -> torch.Tensor:
+        B, K, C, H, W = cand_hstates.shape
+        cand_hstates = cand_hstates.reshape(B * K, C, H, W) # BK,C,H,W
+        cand_hstates = self.process_candidate(cand_hstates) # BK,hidden_dim
+        cand_hstates = cand_hstates.reshape(B, K, self.hidden_dim) # B,K,hidden_dim
+        cand_hstates = self.encoder(cand_hstates) # B,K,hidden_dim
+        cand_hstates = self.final_norm(cand_hstates)
+        score = self.score_head(cand_hstates).squeeze(-1) # B,K
+        return score
+
+    def count_params(self):
+        return sum(p.numel() for p in self.parameters())
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         
 
 def test():
@@ -140,6 +230,13 @@ def test():
     model = Probe_MLP(num_layers=2, hidden_dim=128)
     cand_hstate = torch.randn(128,256,16,16)
     score = model(cand_hstate)
+    print(score.shape)
+    print(model.count_params())
+    ######
+    print("#########################")
+    model = Ranker_Transformer(num_layers=2, hidden_dim=128, num_heads=8)
+    cand_hstates = torch.randn(128,10,256,16,16)
+    score = model(cand_hstates)
     print(score.shape)
     print(model.count_params())
     ######
