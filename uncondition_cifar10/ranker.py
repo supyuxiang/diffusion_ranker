@@ -223,21 +223,21 @@ class Ranker_Transformer(nn.Module):
         
 
 def test():
-    model = Ranker_MLP(num_layers=2, hidden_dim=128)
+    model = Ranker_MLP(num_layers=2, hidden_dim=32)
     cand_hstates = torch.randn(32,10,256,8,8)
     score = model(cand_hstates)
     print(score.shape)
     print(model.count_params())
     ######
     print("#########################")
-    model = Probe_MLP(num_layers=2, hidden_dim=128)
+    model = Probe_MLP(num_layers=2, hidden_dim=32)
     cand_hstate = torch.randn(32,256,8,8)
     score = model(cand_hstate)
     print(score.shape)
     print(model.count_params())
     ######
     print("#########################")
-    model = Ranker_Transformer(num_layers=2, hidden_dim=128, num_heads=8)
+    model = Ranker_Transformer(num_layers=2, hidden_dim=32, num_heads=8)
     cand_hstates = torch.randn(32,10,256,8,8)
     score = model(cand_hstates)
     print(score.shape)

@@ -40,9 +40,9 @@ from uncondition_cifar10.cifar10_classifier_reward import (
 
 # ---- Hard-coded targets for CIFAR-10 DDPM (22 ResnetBlock2D, 50 steps) ----
 # layer ratio 0.6 -> layer index 12  (shape: B,256,8,8)
-# step ratios [0.0, 0.25, 0.5, 0.75, 1.0] -> step indices [0, 12, 24, 37, 49]
+# step ratios [0.0, 0.25, 0.5, 0.75, 1.0] -> step indices [0, 25, 50, 75, 100]
 _TARGET_LAYER_INDICES = [12]
-_TARGET_STEP_INDICES = [0, 12, 24, 37, 49]
+_TARGET_STEP_INDICES = [0, 25, 50, 75, 100]
 
 
 def parse_args() -> argparse.Namespace:

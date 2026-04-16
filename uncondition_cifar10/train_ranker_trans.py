@@ -10,10 +10,22 @@ python /root/diffusion_ranker/uncondition_cifar10/train_ranker_trans.py \
   --data_path /root/autodl-tmp/cifar10_ddpm_hiddens_and_rewards_shards \
   --step_idx 25 \
   --layer_idx 12 \
-  --num_candidates 8 \
+  --num_candidates 2 \
   --num_epochs 30 \
-  --batch_size 64 \
-  --save_dir /root/autodl-tmp/cifar10_ranker_trans/s25_l12/hd128_h8_lr1e-4
+  --batch_size 32 \
+  --learning_rate 1e-4 \
+  --weight_decay 1e-4 \
+  --optimizer adamw \
+  --scheduler cosine \
+  --num_workers 4 \
+  --train_ratio 0.9 \
+  --split_seed 42 \
+  --save_interval 2 \
+  --hidden_dim 32 \
+  --num_heads 8 \
+  --input_channels 256 \
+  --dropout 0.1 \
+  --save_dir /root/autodl-tmp/cifar10_ranker_trans/s25_l12/hd32_h8_lr1e-4
 """
 from __future__ import annotations
 
