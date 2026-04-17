@@ -25,7 +25,7 @@ python train_ranker_trans.py \
   --train_ratio 0.9 \
   --split_seed 42 \
   --save_interval 1 \
-  --save_dir /root/autodl-tmp/mnist_ranker_trans/s0_l9/hd8_h8_lr1e-4
+  --save_dir /root/autodl-tmp/mnist_ranker_trans/s0_l9/hd8_h8_lr1e-4_n2
 '''
 from __future__ import annotations
 
