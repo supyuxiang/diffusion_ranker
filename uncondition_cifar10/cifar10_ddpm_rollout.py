@@ -42,7 +42,7 @@ from uncondition_cifar10.cifar10_classifier_reward import (
 # layer ratio 0.6 -> layer index 12  (shape: B,256,8,8)
 # step ratios [0.0, 0.25, 0.5, 0.75, 1.0] -> step indices [0, 25, 50, 75, 100]
 _TARGET_LAYER_INDICES = [12]
-_TARGET_STEP_INDICES = [0, 25, 50, 75, 100]
+_TARGET_STEP_INDICES = [0, 100, 200, 300, 400, 500]
 
 
 def parse_args() -> argparse.Namespace:
@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--save_path", type=str, default="/root/autodl-tmp/cifar10_ddpm_hiddens_and_rewards.pth")
     p.add_argument("--num_samples", type=int, default=1500)
     p.add_argument("--batch_size", type=int, default=256)
-    p.add_argument("--num_inference_steps", type=int, default=100)
+    p.add_argument("--num_inference_steps", type=int, default=500)
     p.add_argument("--mc_samples", type=int, default=5)
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
