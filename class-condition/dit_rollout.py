@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-'''
-
+"""
 python /root/diffusion_ranker/class-condition/dit_rollout.py \
   --output_path /root/autodl-tmp/dit_hiddens_and_rewards_custom.pth \
-  --target_step_indices 0,2,4,7,9 \
-  --target_layer_ratios 0.3,0.6,0.9 \
-  --num_samples 50000 \
-  --batch_size 128
-
-'''
+  --per_class 64 \
+  --target_step_ratios 0,0.3,0.6,0.9 \
+  --target_layer_ratios 0.6 \
+  --num_inference_steps 10 \
+  --pooling_mode mean
+"""
 from __future__ import annotations
 
 import argparse
@@ -27,10 +26,6 @@ if str(_ROOT) not in sys.path:
 
 from search.reward import labels_1k, load_imagereward
 from utils import DitRolloutReprCapture, dit_loader, set_seed
-
-
-def _parse_int_list(s: str) -> list[int]:
-    return [int(x.strip()) for x in s.split(",") if x.strip()]
 
 
 def _parse_float_list(s: str) -> list[float]:
@@ -54,14 +49,14 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("DiT rollout for class-conditional hidden/reward shards")
     p.add_argument("--output_path", type=str, default="/root/autodl-tmp/dit_hiddens_and_rewards_s02479.pth")
     p.add_argument("--model_name", type=str, default="dit-xl-2-256")
-    p.add_argument("--num_samples", type=int, default=50000)
+    p.add_argument("--per_class", type=int, default=64)
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--num_inference_steps", type=int, default=10)
     p.add_argument("--guidance_scale", type=float, default=1.0)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", type=str, default="bf16")
     p.add_argument("--pooling_mode", type=str, default="mean", choices=("mean", "last"))
-    p.add_argument("--target_step_indices", type=str, default="0,2,4,7,9")
+    p.add_argument("--target_step_ratios", type=str, default="0,0.3,0.6,0.9")
     p.add_argument("--target_layer_ratios", type=str, default="0.6")
     return p.parse_args()
 
@@ -77,18 +72,35 @@ def rollout() -> None:
     shard_dir = shard_dir.parent / f"{shard_dir.name}_shards"
     shard_dir.mkdir(parents=True, exist_ok=True)
 
-    target_step_indices = sorted(set(_parse_int_list(args.target_step_indices)))
+    target_step_ratios = [float(x) for x in _parse_float_list(args.target_step_ratios)]
     target_layer_ratios = [float(x) for x in _parse_float_list(args.target_layer_ratios)]
-    if not target_step_indices:
-        raise ValueError("target_step_indices is empty")
+    if not target_step_ratios:
+        raise ValueError("target_step_ratios is empty")
     if not target_layer_ratios:
         raise ValueError("target_layer_ratios is empty")
-    for s in target_step_indices:
-        if s < 0 or s >= int(args.num_inference_steps):
-            raise ValueError(
-                f"step index out of range: {s}, num_inference_steps={args.num_inference_steps}"
+    for r in target_step_ratios:
+        if r < 0.0 or r > 1.0:
+            raise ValueError(f"step ratio out of range: {r}, expected in [0,1]")
+    for r in target_layer_ratios:
+        if r < 0.0 or r > 1.0:
+            raise ValueError(f"layer ratio out of range: {r}, expected in [0,1]")
+
+    target_step_indices = sorted(
+        {
+            min(
+                int(args.num_inference_steps) - 1,
+                max(0, round(float(r) * float(max(1, args.num_inference_steps - 1)))),
             )
+            for r in target_step_ratios
+        }
+    )
     step_ratios = [float(s) / float(max(1, args.num_inference_steps - 1)) for s in target_step_indices]
+
+    per_class = int(args.per_class)
+    if per_class <= 0:
+        raise ValueError(f"per_class must be positive, got {per_class}")
+    labels_all = [c for c in range(1000) for _ in range(per_class)]
+    num_samples = len(labels_all)
 
     pipe = dit_loader(args.model_name, device=device, dtype=args.dtype)
     pipe.set_progress_bar_config(disable=True)
@@ -111,16 +123,18 @@ def rollout() -> None:
     reward_shard_paths: dict[int, list[Path]] = {s: [] for s in target_step_indices}
     label_shard_paths: list[Path] = []
 
-    n_batches = (int(args.num_samples) + int(args.batch_size) - 1) // int(args.batch_size)
+    n_batches = (num_samples + int(args.batch_size) - 1) // int(args.batch_size)
     img_counter = 0
     try:
         pbar = tqdm(range(n_batches), total=n_batches, desc="Running DiT rollout")
         for batch_i in pbar:
-            batch_n = min(int(args.batch_size), int(args.num_samples) - batch_i * int(args.batch_size))
+            batch_start = batch_i * int(args.batch_size)
+            batch_end = min(batch_start + int(args.batch_size), num_samples)
+            batch_n = batch_end - batch_start
             if batch_n <= 0:
                 break
 
-            labels = torch.randint(0, 1000, (batch_n,), device=device).tolist()
+            labels = labels_all[batch_start:batch_end]
             gen = torch.Generator(device=device).manual_seed(int(args.seed) + batch_i)
 
             capture.set_capturing(True)
@@ -189,9 +203,11 @@ def rollout() -> None:
         "reward_store": reward_store_tensor,
         "label_store": label_store,
         "meta": {
+            "per_class": per_class,
             "target_layer_ratios": target_layer_ratios,
+            "target_step_ratios": target_step_ratios,
             "target_step_indices": target_step_indices,
-            "num_samples": int(args.num_samples),
+            "num_samples": int(num_samples),
             "batch_size": int(args.batch_size),
             "num_inference_steps": int(args.num_inference_steps),
             "guidance_scale": float(args.guidance_scale),
