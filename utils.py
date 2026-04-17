@@ -273,7 +273,51 @@ def _load_images_from_dir(
         rng.shuffle(paths)
         paths = paths[:max_images]
     if not paths:
-        raise FileNotFoundError(f"No images in {folder} (supported: {exts})")
+        # Support HuggingFace datasets local-dir format (e.g., celebahq256_hf with parquet shards).
+        parquet_paths = sorted(folder.glob("*.parquet")) + sorted((folder / "data").glob("*.parquet"))
+        if parquet_paths:
+            # Use streaming parquet reader to avoid generating massive local cache.
+            import io
+            from datasets import load_dataset
+
+            ds = load_dataset(
+                "parquet",
+                data_files=[str(p) for p in parquet_paths],
+                split="train",
+                streaming=True,
+            )
+            image_col = "image" if "image" in ds.column_names else ds.column_names[0]
+            if max_images is not None:
+                # Shuffle stream for unbiased subset, then take first max_images.
+                ds = ds.shuffle(seed=subset_seed, buffer_size=max(1000, max_images * 10)).take(max_images)
+
+            if resize_crop is not None and resize_crop > 0:
+                to_tensor = T.Compose([T.Resize(resize_crop), T.CenterCrop(resize_crop), PILToTensor()])
+            else:
+                to_tensor = PILToTensor()
+
+            tensors: list[torch.Tensor] = []
+            for row in ds:
+                img = row[image_col]
+                if isinstance(img, Image.Image):
+                    pil_img = img
+                elif isinstance(img, dict):
+                    if img.get("bytes") is not None:
+                        pil_img = Image.open(io.BytesIO(img["bytes"]))
+                    elif img.get("path"):
+                        pil_img = Image.open(img["path"])
+                    else:
+                        raise ValueError("unsupported image dict format in parquet dataset")
+                else:
+                    pil_img = Image.fromarray(img)
+                tensors.append(to_tensor(pil_img.convert("RGB")))
+            if not tensors:
+                raise FileNotFoundError(f"No decodable images in parquet dataset under {folder}")
+            batch = torch.stack(tensors, dim=0)
+            if batch.dtype != torch.uint8:
+                batch = batch.to(torch.uint8)
+            return batch
+        raise FileNotFoundError(f"No images or parquet dataset found in {folder} (supported image exts: {exts})")
     if resize_crop is not None and resize_crop > 0:
         to_tensor = T.Compose(
             [T.Resize(resize_crop), T.CenterCrop(resize_crop), PILToTensor()]

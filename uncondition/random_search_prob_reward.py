@@ -136,7 +136,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--probe_ckpt", type=str, required=True)
     p.add_argument("--output_dir", type=str, default="/root/autodl-tmp/uncond_random_search_probe_ps2")
     p.add_argument("--model_path", type=str, default="/root/autodl-tmp/google_ddpm-celebahq-256")
-    p.add_argument("--real_dir", type=str, default="/root/autodl-tmp/img_align_celeba")
+    p.add_argument("--real_dir", type=str, default="/root/autodl-tmp/celebahq256_png")
     p.add_argument("--num_samples", type=int, default=50_000)
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--parallel_size", type=int, default=2)

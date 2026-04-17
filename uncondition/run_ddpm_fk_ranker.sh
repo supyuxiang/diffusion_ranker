@@ -13,6 +13,6 @@ python /root/diffusion_ranker/uncondition/ddpm_fk_ranker.py \
   --potential "${POTENTIAL:-difference}" \
   --tau "${TAU:-0.1}" \
   --pick "${PICK:-argmax}" \
-  --real_dir "${REAL_DIR:-/root/autodl-tmp/img_align_celeba}" \
+  --real_dir "${REAL_DIR:-/root/autodl-tmp/celebahq256_png}" \
   --compute_clipscore \
-  --clip_prompt "${CLIP_PROMPT:-a photo of a human face}"
+  --clip_prompt "${CLIP_PROMPT:-A photo of a human face.}"

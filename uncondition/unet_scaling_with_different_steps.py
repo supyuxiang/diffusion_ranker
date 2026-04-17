@@ -6,7 +6,7 @@ example:
         --batch_size 128 \
         --num_gen 50000 \
         --save_dir /root/autodl-tmp/outputs/unet_scaling_with_different_steps \
-        --real_dir /root/autodl-tmp/img_align_celeba 
+        --real_dir /root/autodl-tmp/celebahq256_png 
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--real_dir",
         type=str,
-        default="/root/autodl-tmp/img_align_celeba",
+        default="/root/autodl-tmp/celebahq256_png",
         help="真实图像根目录",
     )
     p.add_argument("--seed", type=int, default=42)

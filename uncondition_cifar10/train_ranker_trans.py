@@ -8,7 +8,7 @@ Input feature expectation (from cifar10_ddpm_rollout.py):
 Example:
 python /root/diffusion_ranker/uncondition_cifar10/train_ranker_trans.py \
   --data_path /root/autodl-tmp/cifar10_ddpm_hiddens_and_rewards_shards \
-  --step_idx 25 \
+  --step_idx 50 \
   --layer_idx 12 \
   --num_candidates 2 \
   --num_epochs 30 \
@@ -21,11 +21,11 @@ python /root/diffusion_ranker/uncondition_cifar10/train_ranker_trans.py \
   --train_ratio 0.9 \
   --split_seed 42 \
   --save_interval 2 \
-  --hidden_dim 32 \
+  --hidden_dim 8 \
   --num_heads 8 \
   --input_channels 256 \
   --dropout 0.1 \
-  --save_dir /root/autodl-tmp/cifar10_ranker_trans/s25_l12/hd32_h8_lr1e-4
+  --save_dir /root/autodl-tmp/cifar10_ranker_trans/s50_l12/hd8_h8_lr1e-4
 """
 from __future__ import annotations
 

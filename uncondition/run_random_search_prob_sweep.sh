@@ -7,7 +7,7 @@ PROBE_CKPT="${PROBE_CKPT:-/root/autodl-tmp/probe_model/s24_l19/hd128_lr1e-4_wd1e
 OUT_ROOT="${OUT_ROOT:-/root/autodl-tmp/uncond_random_search_probe_sweep_final}"
 
 MODEL_PATH="${MODEL_PATH:-/root/autodl-tmp/google_ddpm-celebahq-256}"
-REAL_DIR="${REAL_DIR:-/root/autodl-tmp/img_align_celeba}"
+REAL_DIR="${REAL_DIR:-/root/autodl-tmp/celebahq256_png}"
 NUM_SAMPLES="${NUM_SAMPLES:-50000}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
 NUM_INFERENCE_STEPS="${NUM_INFERENCE_STEPS:-25}"

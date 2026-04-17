@@ -8,7 +8,7 @@ Input feature expectation (from cifar10_ddpm_rollout.py):
 Example:
 python /root/diffusion_ranker/uncondition_cifar10/train_ranker_mlp.py \
   --data_path /root/autodl-tmp/cifar10_ddpm_hiddens_and_rewards_shards \
-  --step_idx 25 \
+  --step_idx 75 \
   --layer_idx 12 \
   --num_candidates 8 \
   --num_epochs 30 \

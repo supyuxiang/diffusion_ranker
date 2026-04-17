@@ -98,10 +98,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--tau", type=float, default=0.1)
     p.add_argument("--potential", type=str, choices=("difference", "max"), default="difference")
     p.add_argument("--pick", type=str, choices=("sample", "argmax"), default="argmax")
-    p.add_argument("--real_dir", type=Path, default=Path("/root/autodl-tmp/img_align_celeba"))
+    p.add_argument("--real_dir", type=Path, default=Path("/root/autodl-tmp/celebahq256_png"))
     p.add_argument("--metrics_batch_size", type=int, default=64)
     p.add_argument("--compute_clipscore", action="store_true")
-    p.add_argument("--clip_prompt", type=str, default="a photo of a human face")
+    p.add_argument("--clip_prompt", type=str, default="A photo of a human face.")
     p.add_argument("--clip_batch_size", type=int, default=64)
     return p.parse_args()
 

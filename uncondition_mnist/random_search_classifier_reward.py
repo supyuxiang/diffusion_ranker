@@ -38,7 +38,7 @@ def _dtype_to_torch(dtype: str) -> torch.dtype:
 
 
 def _load_mnist_test_images(data_root: str | Path) -> torch.Tensor:
-    ds = MNIST(root=str(Path(data_root).expanduser().resolve()), train=False, download=False)
+    ds = MNIST(root=str(Path(data_root).expanduser().resolve()), train=False, download=True)
     arr = torch.from_numpy(ds.data.numpy()).unsqueeze(1).contiguous().repeat(1, 3, 1, 1)
     return arr.to(torch.uint8)
 

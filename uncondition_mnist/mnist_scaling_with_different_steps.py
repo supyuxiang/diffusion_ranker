@@ -31,7 +31,7 @@ _DENO_STEP_LS = [100,200,300,400,500,600,700,800,900,950]
 
 
 def _load_mnist_test_images(data_root: str | Path) -> torch.Tensor:
-    ds = MNIST(root=str(Path(data_root).expanduser().resolve()), train=False, download=False)
+    ds = MNIST(root=str(Path(data_root).expanduser().resolve()), train=False, download=True)
     # ds.data: (N,H,W) uint8 -> (N,3,H,W) uint8
     arr = torch.from_numpy(ds.data.numpy()).unsqueeze(1).contiguous()
     arr = arr.repeat(1, 3, 1, 1)

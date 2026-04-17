@@ -10,6 +10,6 @@ python /root/diffusion_ranker/uncondition/ddpm_random_search_ranker.py \
   --num_candidates "${NUM_CAND:-16}" \
   --num_samples "${NUM_SAMPLES:-50000}" \
   --search_batch_size "${SEARCH_BS:-32}" \
-  --real_dir "${REAL_DIR:-/root/autodl-tmp/img_align_celeba}" \
+  --real_dir "${REAL_DIR:-/root/autodl-tmp/celebahq256_png}" \
   --compute_clipscore \
   --clip_prompt "${CLIP_PROMPT:-a photo of a human face}"
