@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 from PIL import Image
+from transformers import AutoImageProcessor, AutoModel, CLIPModel
 from torchvision import models, transforms
 
 _IMAGENET_MEAN = (0.485, 0.456, 0.406)
@@ -63,3 +65,105 @@ def reward_neg_entropy_mnist(
     p = F.softmax(logits, dim=-1)
     entropy = -(p * (p + 1e-10).log()).sum(dim=-1)
     return (-entropy).detach().cpu()
+
+
+@dataclass
+class MnistAlignReward:
+    clip_model: CLIPModel
+    clip_processor: AutoImageProcessor
+    dino_model: AutoModel
+    dino_processor: AutoImageProcessor
+    device: torch.device
+
+
+@torch.inference_mode()
+def load_mnist_align_reward(
+    clip_model_path: str | Path,
+    dino_model_path: str | Path,
+    device: torch.device,
+) -> MnistAlignReward:
+    clip_path = str(Path(clip_model_path).expanduser().resolve())
+    dino_path = str(Path(dino_model_path).expanduser().resolve())
+
+    clip_model = CLIPModel.from_pretrained(clip_path, local_files_only=True).to(device).eval()
+    clip_processor = AutoImageProcessor.from_pretrained(clip_path, local_files_only=True)
+
+    dino_model = AutoModel.from_pretrained(dino_path, local_files_only=True).to(device).eval()
+    dino_processor = AutoImageProcessor.from_pretrained(dino_path, local_files_only=True)
+
+    return MnistAlignReward(
+        clip_model=clip_model,
+        clip_processor=clip_processor,
+        dino_model=dino_model,
+        dino_processor=dino_processor,
+        device=device,
+    )
+
+
+@torch.inference_mode()
+def _clip_features(
+    model: CLIPModel,
+    processor: AutoImageProcessor,
+    images: list[Image.Image],
+    device: torch.device,
+) -> torch.Tensor:
+    proc = processor(images=[im.convert("RGB") for im in images], return_tensors="pt")
+    pixel_values = proc["pixel_values"].to(device)
+    # Be robust to transformers versions/checkpoints where get_image_features
+    # may not directly return a tensor.
+    clip_out = model.vision_model(pixel_values=pixel_values)
+    pooled = clip_out.pooler_output
+    if hasattr(model, "visual_projection") and model.visual_projection is not None:
+        feat = model.visual_projection(pooled).float()
+    else:
+        feat = pooled.float()
+    feat = F.normalize(feat, dim=-1)
+    return feat
+
+
+@torch.inference_mode()
+def _dino_features(
+    model: AutoModel,
+    processor: AutoImageProcessor,
+    images: list[Image.Image],
+    device: torch.device,
+) -> torch.Tensor:
+    proc = processor(images=[im.convert("RGB") for im in images], return_tensors="pt")
+    pixel_values = proc["pixel_values"].to(device)
+    out = model(pixel_values=pixel_values)
+    if hasattr(out, "pooler_output") and out.pooler_output is not None:
+        feat = out.pooler_output.float()
+    else:
+        feat = out.last_hidden_state[:, 0, :].float()
+    feat = F.normalize(feat, dim=-1)
+    return feat
+
+
+@torch.inference_mode()
+def reward_clip_dino_align_mnist(
+    align_reward: MnistAlignReward,
+    mid_images: list[Image.Image],
+    final_images: list[Image.Image],
+    *,
+    clip_weight: float = 0.5,
+) -> torch.Tensor:
+    """
+    Reward = weighted cosine similarity between middle-step and final-image features.
+      reward = clip_weight * cos(CLIP(mid), CLIP(final))
+             + (1-clip_weight) * cos(DINO(mid), DINO(final))
+    """
+    if len(mid_images) != len(final_images):
+        raise ValueError(f"mid/final image count mismatch: {len(mid_images)} vs {len(final_images)}")
+    if not (0.0 <= clip_weight <= 1.0):
+        raise ValueError(f"clip_weight must be in [0,1], got {clip_weight}")
+
+    device = align_reward.device
+    clip_mid = _clip_features(align_reward.clip_model, align_reward.clip_processor, mid_images, device)
+    clip_fin = _clip_features(align_reward.clip_model, align_reward.clip_processor, final_images, device)
+    dino_mid = _dino_features(align_reward.dino_model, align_reward.dino_processor, mid_images, device)
+    dino_fin = _dino_features(align_reward.dino_model, align_reward.dino_processor, final_images, device)
+
+    clip_sim = (clip_mid * clip_fin).sum(dim=-1)
+    dino_sim = (dino_mid * dino_fin).sum(dim=-1)
+    reward = clip_weight * clip_sim + (1.0 - clip_weight) * dino_sim
+    return reward.detach().cpu()

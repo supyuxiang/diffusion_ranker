@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Rollout script for 1aurent/ddpm-mnist using pretrained MNIST classifier reward.
+Rollout script for 1aurent/ddpm-mnist with pluggable reward backends.
 
-Reward: negative entropy from pretrained MNIST classifier.
-  Higher reward = sharper class prediction = better image quality.
+Supported reward:
+  - entropy: negative entropy from pretrained MNIST classifier.
+  - align: CLIP + DINO feature alignment between middle-step image and final image.
 
 UNet structure (1aurent/ddpm-mnist): 17 ResnetBlock2D layers.
   Use layer_idx=16 by default (shape: B, 32, 7, 7).
@@ -27,7 +28,9 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from uncondition_mnist.mnist_classifier_reward import (
+    load_mnist_align_reward,
     load_mnist_classifier,
+    reward_clip_dino_align_mnist,
     reward_neg_entropy_mnist,
 )
 
@@ -36,13 +39,17 @@ _TARGET_STEP_INDICES = [0, 25, 50, 75, 99]
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser("MNIST DDPM rollout with classifier reward")
+    p = argparse.ArgumentParser("MNIST DDPM rollout with configurable reward")
     p.add_argument("--model_path", type=str, default="/root/autodl-tmp/1aurent_ddpm-mnist")
+    p.add_argument("--reward_type", type=str, default="align", choices=("entropy", "align"))
     p.add_argument(
         "--classifier_ckpt",
         type=str,
         default="/root/autodl-tmp/mnist_classifier/resnet18/classifier_best.pt",
     )
+    p.add_argument("--clip_model_path", type=str, default="/root/autodl-tmp/openai_clip-vit-large-patch14")
+    p.add_argument("--dino_model_path", type=str, default="/root/autodl-tmp/facebook_dinov2-base")
+    p.add_argument("--clip_weight", type=float, default=0.5)
     p.add_argument("--save_path", type=str, default="/root/autodl-tmp/mnist_ddpm_hiddens_and_rewards.pth")
     p.add_argument("--num_samples", type=int, default=2000)
     p.add_argument("--batch_size", type=int, default=256)
@@ -65,13 +72,16 @@ def mc(
     step_idx: int,
     batch_middle_x: torch.Tensor,
     pipe: DDPMPipeline,
-    classifier,
+    reward_obj,
+    reward_type: str,
+    clip_weight: float,
     mc_samples: int,
     base_seed: int,
 ) -> torch.Tensor:
     device = batch_middle_x.device
     timesteps = pipe.scheduler.timesteps
     reward_ls: list[torch.Tensor] = []
+    middle_images = _latents_to_pil(batch_middle_x)
     for j in range(mc_samples):
         sched = copy.deepcopy(pipe.scheduler)
         x = batch_middle_x.clone()
@@ -80,9 +90,21 @@ def mc(
             eps = pipe.unet(x, t).sample
             x = sched.step(eps, t, x, generator=gen).prev_sample
             del eps
-        images = _latents_to_pil(x)
-        reward_ls.append(reward_neg_entropy_mnist(classifier, images, device))
-        del images, x, gen, sched
+        final_images = _latents_to_pil(x)
+        if reward_type == "entropy":
+            reward_ls.append(reward_neg_entropy_mnist(reward_obj, final_images, device))
+        elif reward_type == "align":
+            reward_ls.append(
+                reward_clip_dino_align_mnist(
+                    reward_obj,
+                    middle_images,
+                    final_images,
+                    clip_weight=clip_weight,
+                )
+            )
+        else:
+            raise ValueError(f"unknown reward_type: {reward_type}")
+        del final_images, x, gen, sched
         gc.collect()
         if device.type == "cuda":
             torch.cuda.empty_cache()
@@ -100,7 +122,12 @@ def rollout() -> None:
         torch_dtype=torch.float16 if device.type == "cuda" else torch.float32,
     ).to(device)
     pipe.set_progress_bar_config(disable=True)
-    classifier = load_mnist_classifier(args.classifier_ckpt, device)
+    if args.reward_type == "entropy":
+        reward_obj = load_mnist_classifier(args.classifier_ckpt, device)
+    elif args.reward_type == "align":
+        reward_obj = load_mnist_align_reward(args.clip_model_path, args.dino_model_path, device)
+    else:
+        raise ValueError(f"unknown reward_type: {args.reward_type}")
 
     num_samples = int(args.num_samples)
     batch_size = int(args.batch_size)
@@ -177,7 +204,9 @@ def rollout() -> None:
                         step_idx=st_i,
                         batch_middle_x=x,
                         pipe=pipe,
-                        classifier=classifier,
+                        reward_obj=reward_obj,
+                        reward_type=args.reward_type,
+                        clip_weight=float(args.clip_weight),
                         mc_samples=mc_samples,
                         base_seed=seed + batch_i * 1000 + st_i * 10,
                     )
@@ -232,7 +261,11 @@ def rollout() -> None:
         "reward_store": reward_store_tensor,
         "meta": {
             "model": "1aurent/ddpm-mnist",
+            "reward_type": args.reward_type,
             "classifier_ckpt": str(Path(args.classifier_ckpt).expanduser().resolve()),
+            "clip_model_path": str(Path(args.clip_model_path).expanduser().resolve()),
+            "dino_model_path": str(Path(args.dino_model_path).expanduser().resolve()),
+            "clip_weight": float(args.clip_weight),
             "target_layer_indices": target_layer_indices,
             "target_step_indices": target_step_indices,
             "num_samples": num_samples,
