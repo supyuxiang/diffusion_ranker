@@ -31,7 +31,7 @@ from uncondition_mnist.mnist_classifier_reward import (
     reward_neg_entropy_mnist,
 )
 
-_TARGET_LAYER_INDICES = [16]
+_TARGET_LAYER_INDICES = [9]
 _TARGET_STEP_INDICES = [0, 25, 50, 75, 99]
 
 

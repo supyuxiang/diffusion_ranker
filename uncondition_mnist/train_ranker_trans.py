@@ -1,4 +1,32 @@
 #!/usr/bin/env python3
+
+'''
+python train_ranker_trans.py \
+  --data_path /root/autodl-tmp/mnist_ddpm_hiddens_and_rewards_shards \
+  --step_idx 0 \
+  --layer_idx 9 \
+  --num_candidates 2 \
+  --group_seed 0 \
+  --num_layers 2 \
+  --hidden_dim 8 \
+  --num_heads 8 \
+  --input_channels 32 \
+  --dropout 0.1 \
+  --alpha_kl 0.3 \
+  --alpha_mse 0.7 \
+  --tau 1.0 \
+  --num_epochs 30 \
+  --batch_size 32 \
+  --learning_rate 1e-4 \
+  --weight_decay 1e-4 \
+  --optimizer adamw \
+  --scheduler cosine \
+  --num_workers 4 \
+  --train_ratio 0.9 \
+  --split_seed 42 \
+  --save_interval 1 \
+  --save_dir /root/autodl-tmp/mnist_ranker_trans/s0_l9/hd8_h8_lr1e-4
+'''
 from __future__ import annotations
 
 import argparse
@@ -208,12 +236,12 @@ def get_scheduler(
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("Train MNIST Ranker_Transformer (listwise KL+MSE)")
     p.add_argument("--data_path", type=str, default="/root/autodl-tmp/mnist_ddpm_hiddens_and_rewards_shards")
-    p.add_argument("--step_idx", type=int, default=50)
-    p.add_argument("--layer_idx", type=int, default=16)
-    p.add_argument("--num_candidates", type=int, default=10)
+    p.add_argument("--step_idx", type=int, default=0)
+    p.add_argument("--layer_idx", type=int, default=9)
+    p.add_argument("--num_candidates", type=int, default=2)
     p.add_argument("--group_seed", type=int, default=0)
     p.add_argument("--num_layers", type=int, default=2)
-    p.add_argument("--hidden_dim", type=int, default=64)
+    p.add_argument("--hidden_dim", type=int, default=8)
     p.add_argument("--num_heads", type=int, default=8)
     p.add_argument("--input_channels", type=int, default=32)
     p.add_argument("--dropout", type=float, default=0.1)
@@ -221,7 +249,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--alpha_mse", type=float, default=0.7)
     p.add_argument("--tau", type=float, default=1.0)
     p.add_argument("--num_epochs", type=int, default=30)
-    p.add_argument("--batch_size", type=int, default=64)
+    p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--learning_rate", type=float, default=1e-4)
     p.add_argument("--weight_decay", type=float, default=1e-4)
     p.add_argument("--optimizer", type=str, default="adamw", choices=("adamw", "sgd"))
@@ -229,8 +257,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--train_ratio", type=float, default=0.9)
     p.add_argument("--split_seed", type=int, default=42)
-    p.add_argument("--save_interval", type=int, default=2)
-    p.add_argument("--save_dir", type=str, default="/root/autodl-tmp/mnist_ranker_trans")
+    p.add_argument("--save_interval", type=int, default=1)
+    p.add_argument("--save_dir", type=str, default="/root/autodl-tmp/mnist_ranker_trans/s0_l9/hd8_h8_lr1e-4")
     return p.parse_args()
 
 

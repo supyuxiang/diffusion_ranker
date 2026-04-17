@@ -3,21 +3,21 @@ import torch.nn as nn
 from torch.nn.parameter import UninitializedParameter
 
 
-############## hidden shape (single): [32,7,7] for mnist-ddpm ##############
+############## hidden shape (single): [64,14,14] for mnist-ddpm idx=9 ##############
 
 
 class Ranker_MLP(nn.Module):
-    def __init__(self, num_layers: int, hidden_dim: int, dropout: float = 0.1, input_channels: int = 32):
+    def __init__(self, num_layers: int, hidden_dim: int, dropout: float = 0.1, input_channels: int = 64):
         super(Ranker_MLP, self).__init__()
         self.num_layers = num_layers
         self.hidden_dim = hidden_dim
 
         self.process_candidate = nn.Sequential(
-            nn.Conv2d(input_channels, 16, kernel_size=2, stride=2),  # b,32,7,7 -> b,16,3,3
+            nn.Conv2d(input_channels, 16, kernel_size=2, stride=2),  # b,64,14,14 -> b,16,7,7
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Flatten(start_dim=1),  # b,16,3*3 -> b,144
-            nn.Linear(16 * 3 * 3, hidden_dim),
+            nn.Flatten(start_dim=1),  # b,16,7*7 -> b,784
+            nn.Linear(16 * 7 * 7, hidden_dim),
         )
 
         self.ffn = nn.Sequential(
@@ -63,7 +63,7 @@ class Ranker_MLP(nn.Module):
 
 
 class Probe_MLP(nn.Module):
-    def __init__(self, num_layers: int, hidden_dim: int, input_channels: int = 32, dropout: float = 0.1):
+    def __init__(self, num_layers: int, hidden_dim: int, input_channels: int = 64, dropout: float = 0.1):
         super(Probe_MLP, self).__init__()
         self.num_layers = num_layers
         self.hidden_dim = hidden_dim
@@ -71,11 +71,11 @@ class Probe_MLP(nn.Module):
         self.dropout = dropout
 
         self.process_candidate = nn.Sequential(
-            nn.Conv2d(input_channels, 16, kernel_size=2, stride=2),  # b,32,7,7 -> b,16,3,3
+            nn.Conv2d(input_channels, 16, kernel_size=2, stride=2),  # b,64,14,14 -> b,16,7,7
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Flatten(start_dim=1),
-            nn.Linear(16 * 3 * 3, hidden_dim),
+            nn.Linear(16 * 7 * 7, hidden_dim),
         )
 
         self.layers = nn.ModuleList(
@@ -125,7 +125,7 @@ class Ranker_Transformer(nn.Module):
         hidden_dim: int,
         num_heads: int,
         dropout: float = 0.1,
-        input_channels: int = 32,
+        input_channels: int = 64,
     ):
         super(Ranker_Transformer, self).__init__()
         self.num_layers = num_layers
@@ -133,11 +133,11 @@ class Ranker_Transformer(nn.Module):
         self.num_heads = num_heads
 
         self.process_candidate = nn.Sequential(
-            nn.Conv2d(input_channels, 16, kernel_size=2, stride=2),  # b,32,7,7 -> b,16,3,3
+            nn.Conv2d(input_channels, 16, kernel_size=2, stride=2),  # b,64,14,14 -> b,16,7,7
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Flatten(start_dim=1),
-            nn.Linear(16 * 3 * 3, hidden_dim),
+            nn.Linear(16 * 7 * 7, hidden_dim),
         )
 
         encoder_layer = nn.TransformerEncoderLayer(
@@ -187,19 +187,19 @@ class Ranker_Transformer(nn.Module):
 
 def test():
     model = Ranker_MLP(num_layers=2, hidden_dim=64)
-    cand_hstates = torch.randn(32, 10, 32, 7, 7)
+    cand_hstates = torch.randn(32, 10, 64, 14, 14)
     score = model(cand_hstates)
     print(score.shape)
     print(model.count_params())
     print("#########################")
     model = Probe_MLP(num_layers=2, hidden_dim=64)
-    cand_hstate = torch.randn(32, 32, 7, 7)
+    cand_hstate = torch.randn(32, 64, 14, 14)
     score = model(cand_hstate)
     print(score.shape)
     print(model.count_params())
     print("#########################")
     model = Ranker_Transformer(num_layers=2, hidden_dim=64, num_heads=8)
-    cand_hstates = torch.randn(32, 10, 32, 7, 7)
+    cand_hstates = torch.randn(32, 10, 64, 14, 14)
     score = model(cand_hstates)
     print(score.shape)
     print(model.count_params())
