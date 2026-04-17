@@ -215,7 +215,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--group_seed", type=int, default=0)
     p.add_argument("--num_layers", type=int, default=2)
     p.add_argument("--hidden_dim", type=int, default=64)
-    p.add_argument("--input_channels", type=int, default=32)
+    p.add_argument("--input_channels", type=int, default=64)
     p.add_argument("--dropout", type=float, default=0.1)
     p.add_argument("--alpha_kl", type=float, default=0.3)
     p.add_argument("--alpha_mse", type=float, default=0.7)
@@ -266,10 +266,12 @@ def main() -> None:
         pin_memory=pin_memory,
     )
 
+    input_channels = int(args.input_channels)
+
     model = Ranker_MLP(
         num_layers=args.num_layers,
         hidden_dim=args.hidden_dim,
-        input_channels=args.input_channels,
+        input_channels=input_channels,
         dropout=args.dropout,
     ).to(device)
     optimizer = get_optimizer(
@@ -287,7 +289,7 @@ def main() -> None:
     )
     loss_fn = KLMSELoss(alpha_kl=args.alpha_kl, alpha_mse=args.alpha_mse, tau=args.tau)
 
-    print(f"[info] device={device}, train_groups={len(train_ds)}, eval_groups={len(eval_ds)}")
+    print(f"[info] device={device}, train_groups={len(train_ds)}, eval_groups={len(eval_ds)}, input_channels={input_channels}")
     best_eval = float("inf")
     history: list[dict[str, float]] = []
     for ep in range(args.num_epochs):
