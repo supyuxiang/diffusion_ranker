@@ -127,6 +127,7 @@ def main() -> None:
             args.batch_size,
             device,
             seed=args.seed,
+            image_size=32,
         )
 
         gen_images = _load_images_from_dir_uint8(out_dir)
