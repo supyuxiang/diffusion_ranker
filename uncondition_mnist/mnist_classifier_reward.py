@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
@@ -65,6 +66,57 @@ def reward_neg_entropy_mnist(
     p = F.softmax(logits, dim=-1)
     entropy = -(p * (p + 1e-10).log()).sum(dim=-1)
     return (-entropy).detach().cpu()
+
+
+def _images_to_gray_tensor(images: list[Image.Image]) -> torch.Tensor:
+    arr = np.stack([np.array(im.convert("L"), dtype=np.float32) / 255.0 for im in images], axis=0)
+    t = torch.from_numpy(arr)  # [B,H,W], float32 in [0,1]
+    return t
+
+
+@torch.inference_mode()
+def reward_brightness_mnist(images: list[Image.Image]) -> torch.Tensor:
+    """
+    Reward = mean luminance in grayscale space.
+    For MNIST-like images, brighter digits receive higher score.
+    """
+    g = _images_to_gray_tensor(images)
+    return g.mean(dim=(1, 2)).detach().cpu()
+
+
+@torch.inference_mode()
+def reward_sharpness_mnist(images: list[Image.Image]) -> torch.Tensor:
+    """
+    Reward = Laplacian variance of grayscale image.
+    Higher value indicates sharper edges / strokes.
+    """
+    g = _images_to_gray_tensor(images).unsqueeze(1)  # [B,1,H,W]
+    k = torch.tensor(
+        [[0.0, -1.0, 0.0], [-1.0, 4.0, -1.0], [0.0, -1.0, 0.0]],
+        dtype=g.dtype,
+        device=g.device,
+    ).view(1, 1, 3, 3)
+    lap = F.conv2d(g, k, padding=1)
+    var = lap.flatten(1).var(dim=1, unbiased=False)
+    return var.detach().cpu()
+
+
+@torch.inference_mode()
+def reward_image_entropy_mnist(images: list[Image.Image], bins: int = 256) -> torch.Tensor:
+    """
+    Reward = Shannon entropy of grayscale histogram.
+    """
+    if bins <= 1:
+        raise ValueError(f"bins must be > 1, got {bins}")
+    g = _images_to_gray_tensor(images)  # [B,H,W]
+    eps = 1e-12
+    vals: list[torch.Tensor] = []
+    for i in range(g.shape[0]):
+        hist = torch.histc(g[i], bins=bins, min=0.0, max=1.0)
+        p = hist / hist.sum().clamp_min(eps)
+        ent = -(p * (p + eps).log()).sum()
+        vals.append(ent)
+    return torch.stack(vals, dim=0).detach().cpu()
 
 
 @dataclass

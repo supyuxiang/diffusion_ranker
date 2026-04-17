@@ -5,6 +5,9 @@ Rollout script for 1aurent/ddpm-mnist with pluggable reward backends.
 Supported reward:
   - entropy: negative entropy from pretrained MNIST classifier.
   - align: CLIP + DINO feature alignment between middle-step image and final image.
+  - brightness: grayscale mean luminance.
+  - sharpness: Laplacian variance.
+  - image_entropy: Shannon entropy on grayscale histogram.
 
 UNet structure (1aurent/ddpm-mnist): 17 ResnetBlock2D layers.
   Use layer_idx=16 by default (shape: B, 32, 7, 7).
@@ -30,8 +33,11 @@ if str(_ROOT) not in sys.path:
 from uncondition_mnist.mnist_classifier_reward import (
     load_mnist_align_reward,
     load_mnist_classifier,
+    reward_brightness_mnist,
     reward_clip_dino_align_mnist,
+    reward_image_entropy_mnist,
     reward_neg_entropy_mnist,
+    reward_sharpness_mnist,
 )
 
 _TARGET_LAYER_INDICES = [9]
@@ -41,7 +47,12 @@ _TARGET_STEP_INDICES = [0, 25, 50, 75, 99]
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("MNIST DDPM rollout with configurable reward")
     p.add_argument("--model_path", type=str, default="/root/autodl-tmp/1aurent_ddpm-mnist")
-    p.add_argument("--reward_type", type=str, default="align", choices=("entropy", "align"))
+    p.add_argument(
+        "--reward_type",
+        type=str,
+        default="align",
+        choices=("entropy", "align", "brightness", "sharpness", "image_entropy"),
+    )
     p.add_argument(
         "--classifier_ckpt",
         type=str,
@@ -102,6 +113,12 @@ def mc(
                     clip_weight=clip_weight,
                 )
             )
+        elif reward_type == "brightness":
+            reward_ls.append(reward_brightness_mnist(final_images))
+        elif reward_type == "sharpness":
+            reward_ls.append(reward_sharpness_mnist(final_images))
+        elif reward_type == "image_entropy":
+            reward_ls.append(reward_image_entropy_mnist(final_images))
         else:
             raise ValueError(f"unknown reward_type: {reward_type}")
         del final_images, x, gen, sched
@@ -126,6 +143,8 @@ def rollout() -> None:
         reward_obj = load_mnist_classifier(args.classifier_ckpt, device)
     elif args.reward_type == "align":
         reward_obj = load_mnist_align_reward(args.clip_model_path, args.dino_model_path, device)
+    elif args.reward_type in ("brightness", "sharpness", "image_entropy"):
+        reward_obj = None
     else:
         raise ValueError(f"unknown reward_type: {args.reward_type}")
 

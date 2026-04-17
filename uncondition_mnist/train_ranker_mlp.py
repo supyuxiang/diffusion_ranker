@@ -1,6 +1,33 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+'''
+
+python /root/diffusion_ranker/uncondition_mnist/train_ranker_mlp.py \
+  --data_path /root/autodl-tmp/mnist_ddpm_hiddens_and_rewards_shards \
+  --step_idx 99 \
+  --layer_idx 9 \
+  --num_candidates 8 \
+  --group_seed 0 \
+  --num_layers 2 \
+  --hidden_dim 8 \
+  --input_channels 64 \
+  --dropout 0.1 \
+  --alpha_kl 0.3 \
+  --alpha_mse 0.7 \
+  --tau 1.0 \
+  --num_epochs 30 \
+  --batch_size 32 \
+  --learning_rate 1e-4 \
+  --weight_decay 1e-4 \
+  --optimizer adamw \
+  --scheduler cosine \
+  --num_workers 4 \
+  --train_ratio 0.9 \
+  --split_seed 42 \
+  --save_interval 1 \
+  --save_dir /root/autodl-tmp/mnist_ranker_mlp/s99_l9/hd8_lr1e-4_n8
+'''
 import argparse
 import json
 import math

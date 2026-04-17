@@ -5,7 +5,7 @@ python /root/diffusion_ranker/uncondition_mnist/train_ranker_trans.py \
   --data_path /root/autodl-tmp/mnist_ddpm_hiddens_and_rewards_shards \
   --step_idx 0 \
   --layer_idx 9 \
-  --num_candidates 2 \
+  --num_candidates 8 \
   --group_seed 0 \
   --num_layers 2 \
   --hidden_dim 8 \
@@ -25,7 +25,7 @@ python /root/diffusion_ranker/uncondition_mnist/train_ranker_trans.py \
   --train_ratio 0.9 \
   --split_seed 42 \
   --save_interval 1 \
-  --save_dir /root/autodl-tmp/mnist_ranker_trans/s0_l9/hd8_h8_lr1e-4_n2
+  --save_dir /root/autodl-tmp/mnist_ranker_trans/s0_l9/hd8_h8_lr1e-4_n8
 '''
 from __future__ import annotations
 
