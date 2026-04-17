@@ -83,12 +83,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="/root/autodl-tmp/mnist_classifier/resnet18/classifier_best.pt",
     )
-    p.add_argument("--output_dir", type=str, default="/root/autodl-tmp/mnist_random_search_classifier_ps2")
+    p.add_argument("--output_dir", type=str, default="/root/autodl-tmp/mnist_random_search_classifier_ps8")
     p.add_argument("--model_path", type=str, default="/root/autodl-tmp/1aurent_ddpm-mnist")
     p.add_argument("--data_root", type=str, default="/root/autodl-tmp")
     p.add_argument("--num_samples", type=int, default=10000)
     p.add_argument("--batch_size", type=int, default=32)
-    p.add_argument("--parallel_size", type=int, default=2)
+    p.add_argument("--parallel_size", type=int, default=8)
     p.add_argument("--num_inference_steps", type=int, default=100)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", type=str, default="fp16", choices=("fp16", "fp32", "bf16"))
@@ -98,8 +98,8 @@ def parse_args() -> argparse.Namespace:
 @torch.inference_mode()
 def main() -> None:
     args = parse_args()
-    if args.parallel_size != 2:
-        raise ValueError(f"this script is configured for parallel_size=2, got {args.parallel_size}")
+    if args.parallel_size != 8:
+        raise ValueError(f"this script is configured for parallel_size=8, got {args.parallel_size}")
     if args.batch_size <= 0:
         raise ValueError(f"batch_size must be > 0, got {args.batch_size}")
 
