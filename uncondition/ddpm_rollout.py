@@ -24,7 +24,7 @@ from search.reward import load_imagereward
 # layer ratio [0.6] -> layer index [19]
 # step ratios  [0.0, 0.25, 0.5, 0.75, 1.0] -> step indices  [0, 6, 12, 18, 24]
 _TARGET_LAYER_INDICES = [19]
-_TARGET_STEP_INDICES = [0,2,4, 6, 12, 18, 24]
+_TARGET_STEP_INDICES = [0,2,4,6,12,18,24]
 
 
 @torch.inference_mode()
@@ -90,7 +90,7 @@ def rollout() -> None:
     rm_model = load_imagereward(device)
 
     # settings:
-    num_samples = 3000
+    num_samples = 5000
     batch_size = 64
     num_inference_steps = 25
     mc_samples = 5 
@@ -112,7 +112,7 @@ def rollout() -> None:
     target_step_indices = sorted(set(int(x) for x in _TARGET_STEP_INDICES))
 
     # Write per-batch shards to disk first to avoid large in-memory accumulation.
-    save_path = Path("/root/autodl-tmp/ddpm_hiddens_and_rewards_s0246121824.pth")
+    save_path = Path("/root/autodl-tmp/ddpm_hiddens_and_rewards_.pth")
     shard_dir = save_path.with_suffix("")
     shard_dir = shard_dir.parent / f"{shard_dir.name}_shards"
     shard_dir.mkdir(parents=True, exist_ok=True)
