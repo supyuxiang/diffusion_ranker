@@ -225,7 +225,7 @@ def main() -> None:
 
     from reward import labels_1k, load_imagereward
 
-    prompt = f"a photo of a {labels_1k[args.class_id]}"
+    prompt = f"A photo of a {labels_1k[args.class_id]}."
     ensure_image_reward_on_path()
     rm = load_imagereward(device)
 

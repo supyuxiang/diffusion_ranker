@@ -148,7 +148,7 @@ def _compute_imagereward_tensor(image_dir: Path, reward_pt: Path, overwrite: boo
     vals: list[float] = []
     for p in tqdm(img_paths, desc="ImageReward scoring"):
         lab = int(p.stem.split("_")[2])
-        prompt = f"a photo of a {labels_1k[lab]}"
+        prompt = f"A photo of a {labels_1k[lab]}."
         img = Image.open(p).convert("RGB")
         vals.append(float(rm.score(prompt, img)))
     reward_t = torch.tensor(vals, dtype=torch.float32)

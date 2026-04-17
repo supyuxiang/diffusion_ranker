@@ -112,7 +112,7 @@ def main() -> None:
             labels_s = labels_f[:n_this]
             reward_ls = []
             for im, lab in zip(imgs_s, labels_s):
-                prompt = f"a photo of a {labels_1k[int(lab)]}"
+                prompt = f"A photo of a {labels_1k[int(lab)]}."
                 reward_ls.append(float(rm.score(prompt, im)))
             scores[j] = float(sum(reward_ls) / max(len(reward_ls), 1))
             round_entries.append((imgs_s, labels_s))

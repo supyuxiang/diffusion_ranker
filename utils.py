@@ -584,7 +584,7 @@ def _imagenet_simple_labels_list() -> list[str]:
 def imagenet_label2text_for_clipscore(label_ls: list[int]) -> list[str]:
     """ImageNet 类索引 ``0 <= idx < 1000`` → 可读短名称（来自 :func:`imagenet_labels_json_path`）。"""
     assert isinstance(label_ls, list) and all(isinstance(label, int) and 0 <= label < 1000 for label in label_ls), f"label_ls must be a list of int in [0, 999], got {label_ls}"
-    prompt_template = "a photo of a {label}"
+    prompt_template = "A photo of a {label}."
     formatted_prompts = [
         prompt_template.replace('{label}', _imagenet_simple_labels_list()[label])
         for label in label_ls
@@ -1195,7 +1195,7 @@ def rollout_dit_perclass32_and_save_repr(
             start = batch_idx * batch_size
             end = min(start + batch_size, num_samples)
             batch_labels_ls = labels_all[start:end]
-            batch_prompts = [f"a photo of a {labels_1k[int(l)]}" for l in batch_labels_ls]
+            batch_prompts = [f"A photo of a {labels_1k[int(l)]}." for l in batch_labels_ls]
             gen = torch.Generator(device=device).manual_seed(seed + batch_idx)
 
             x_mid, class_input, latent_c, timesteps, repr_batch, scheduler_after_prefix = _run_prefix_and_capture(

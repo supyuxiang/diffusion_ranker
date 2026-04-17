@@ -107,7 +107,7 @@ def _path_to_clip_prompt(path: Path, labels_1k: list[str]) -> str:
     if not (0 <= class_id < len(labels_1k)):
         raise IndexError(f"class_id={class_id} out of range for labels ({len(labels_1k)})")
 
-    return f"a photo of a {labels_1k[class_id]}"
+    return f"A photo of a {labels_1k[class_id]}."
 
 
 def load_clip(device: torch.device):

@@ -45,7 +45,7 @@ def _ratio_tag(x: float) -> str:
 def _reward_imagereward_by_label(rm_model, images: list[Image.Image], labels: list[int]) -> torch.Tensor:
     vals: list[float] = []
     for img, lab in zip(images, labels):
-        prompt = f"a photo of a {labels_1k[int(lab)]}"
+        prompt = f"A photo of a {labels_1k[int(lab)]}."
         vals.append(float(rm_model.score(prompt, img)))
     return torch.tensor(vals, dtype=torch.float32)
 
