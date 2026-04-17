@@ -138,7 +138,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model_path", type=str, default="/root/autodl-tmp/1aurent_ddpm-mnist")
     p.add_argument("--data_root", type=str, default="/root/autodl-tmp")
     p.add_argument("--num_samples", type=int, default=10000)
-    p.add_argument("--batch_size", type=int, default=256)
+    p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--parallel_size", type=int, default=2)
     p.add_argument("--num_inference_steps", type=int, default=100)
     p.add_argument("--layer_idx", type=int, default=9)
