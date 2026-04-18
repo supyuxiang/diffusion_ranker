@@ -302,29 +302,31 @@ Base DDPM & 123.44$\pm$27.87 & 68.62$\pm$34.56 & 30.05$\pm$16.00 \\
 \midrule
 \rowcolor{gray!15}
 \multicolumn{4}{c}{\textit{Best-of-$N$}} \\
-First-step (Brightness) & \textbf{xx$\pm$xx} & xx$\pm$xx & xx$\pm$xx \\
-First-step (Saturation) & xx$\pm$xx & \textbf{xx$\pm$xx} & xx$\pm$xx \\
-First-step (Colorfulness) & XX.XX & XX.XX & \textbf{xx$\pm$xx} \\
+Early-step (Brightness) & \textbf{xx$\pm$xx} & xx$\pm$xx & xx$\pm$xx \\
+Early-step (Saturation) & 115.60$\pm$23.29 & 76.17$\pm$34.47 & 32.13$\pm$15.13 \\
+Early-step (Colorfulness) & 132.25$\pm$25.36 & 72.69$\pm$36.28 & 32.60$\pm$17.85 \\
 \midrule
 Mid-step (Brightness) & \textbf{150.84$\pm$27.74} & 56.65$\pm$28.75 & 29.56$\pm$16.87 \\
 Mid-step (Saturation) & 118.65$\pm$24.74 & \textbf{88.01$\pm$32.21} & 37.48$\pm$14.63 \\
-Mid-step (Colorfulness) & XX.XX & XX.XX & \textbf{} \\
+Mid-step (Colorfulness) & 122.29$\pm$25.77 & 92.76$\pm$37.25 & \textbf{42.77$\pm$18.69} \\
 \midrule
 Last-step (Brightness) & \textbf{xx$\pm$xx} & xx$\pm$xx & xx$\pm$xx \\
 Last-step (Saturation) & xx$\pm$xx & \textbf{xx$\pm$xx} & xx$\pm$xx \\
 Last-step (Colorfulness) & XX.XX & XX.XX & \textbf{xx$\pm$xx} \\
 \midrule
 \rowcolor{gray!15}
-\multicolumn{4}{c}{\textit{FK-Steering---using DIFFERENCE as potential}} \\
-First-step (Top-N/2) + mid-step & xx & xx & xx \\
-Mid-step (Top-N/2) + last-step & xx & xx & xx \\
-First-step (Top-N/2) + mid-step (Top-N/4) + last-step & xx & xx & xx \\
+\multicolumn{4}{c}{\textit{FK-Steering---using RankerReward as potential}} \\
+Early-step (Top-N/2) + mid-step & xx & xx & xx \\
+Early-step (Top-N/2) + mid-step & xx & xx & xx \\
+Early-step (Top-N/2) + mid-step & xx & xx & xx \\
 \midrule
-\rowcolor{gray!15}
-\multicolumn{4}{c}{\textit{FK-Steering---using MAX as potential}} \\
-First-step (Top-N/2) + mid-step & xx & xx & xx \\
 Mid-step (Top-N/2) + last-step & xx & xx & xx \\
-First-step (Top-N/2) + mid-step (Top-N/4) + last-step & xx & xx & xx \\
+Mid-step (Top-N/2) + last-step & xx & xx & xx \\
+Mid-step (Top-N/2) + last-step & xx & xx & xx \\
+\midrule
+Early-step (Top-N/2) + last-step & xx & xx & xx \\
+Early-step (Top-N/2) + last-step & xx & xx & xx \\
+Early-step (Top-N/2) + last-step & xx & xx & xx \\
 \bottomrule
 \end{tabular}
 \label{tab:cifar10}
@@ -355,7 +357,7 @@ Main unconditional DDPM results are shown in Table~\ref{tab:celeba}.
 \renewcommand{\arraystretch}{1.15}
 \begin{tabular}{lccccc}
 \toprule
-\textbf{Method} & \textbf{Fid} & \textbf{IS} & \textbf{CLIPScore} & \textbf{ImageReward} & \textbf{Latency}\\
+\textbf{Method} & \textbf{Fid} & \textbf{IS} & \textbf{CLIPScore} & \textbf{ImageReward} & \textbf{Latency(s/img)}\\
 \midrule
 Base DDPM & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
 \midrule
@@ -366,16 +368,10 @@ CLIPScore  & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
 ImageReward  & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
 \midrule
 \rowcolor{gray!15}
-\multicolumn{6}{c}{\textit{FK-Steering---using DIFFERENCE as potential}} \\
-First-step (Top-N/2) + mid-step & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\& xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
+\multicolumn{6}{c}{\textit{FK-Steering---using RankerReward as potential}} \\
+Early-step (Top-N/2) + mid-step & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
 Mid-step (Top-N/2) + last-step & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
-First-step (Top-N/2) + mid-step (Top-N/4) + last-step & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
-\midrule
-\rowcolor{gray!15}
-\multicolumn{6}{c}{\textit{FK-Steering---using MAX as potential}} \\
-First-step (Top-N/2) + mid-step & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
-Mid-step (Top-N/2) + last-step & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
-First-step (Top-N/2) + mid-step (Top-N/4) + last-step & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
+Early-step (Top-N/2) + last-step & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
 \bottomrule
 \end{tabular}
 \label{tab:celeba}
@@ -418,9 +414,9 @@ Main quantitative results are summarized in Table~\ref{tab:main_class_cond}. We 
 \toprule
 Method & Reward & Candidate & FID$\downarrow$ & IS$\uparrow$ & CLIPScore$\uparrow$ & Latency (s/img)$\downarrow$ \\
 \midrule
-Base (no rerank) & -- & 1 & XX.XX & XX.XX & XX.XX & X.XXX \\
+Base (no search) & -- & 1 & XX.XX & XX.XX & XX.XX & X.XXX \\
 \midrule
-\multirow{12}{*}{Best-of-$N$} & \multirow{3}{*}{FID Reward} & 2 & 10.87 & 107.74 & 23.37 & X.XXX \\
+\multirow{12}{*}{Best-of-$N$} & \multirow{3}{*}{FID} & 2 & 10.87 & 107.74 & 23.37 & X.XXX \\
  &  & 4 & 10.59 & 108.01 & 23.39 & X.XXX \\
  &  & 8 & 10.31 & 108.94 & 23.42 & X.XXX \\
 \cmidrule(lr){2-7}
