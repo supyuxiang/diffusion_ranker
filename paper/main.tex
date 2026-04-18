@@ -17,6 +17,8 @@
 \usepackage{xspace}
 \usepackage{natbib}
 \usepackage{multirow}
+\usepackage{booktabs}
+\usepackage[table]{xcolor}
 
 
 \author{%
@@ -217,7 +219,122 @@ Because the ranker operates on compact feature vectors and uses only a few Trans
 
 \subsection{Experiments}
 
-\subsubsection{Unconditional DDPM generation}
+
+
+% \subsubsection{Unconditional MNIST generation}
+% \label{sec:exp_uncond_mnist}
+
+% \paragraph{Setting}
+% We also evaluate \method on unconditional MNIST generation with a DDPM backbone trained on \(28\times 28\) grayscale digits. We keep the same training/inference pipeline as CIFAR-10 and only change the dataset/model.
+
+% \paragraph{Reward design}
+% For MNIST, we use the same four reward definitions to keep protocol consistency:
+% \begin{itemize}
+%     \item \textbf{Brightness reward}: encourages target-consistent average luminance.
+%     \item \textbf{Saturation reward}: included as a unified attribute reward term under grayscale-compatible implementation.
+%     \item \textbf{Colorfulness reward}: included as a unified attribute reward term under grayscale-compatible implementation.
+% \end{itemize}
+
+% \paragraph{Metrics}
+% We report the same metric suite:
+% \textbf{brightness, saturation, colorfulness}.
+
+% \paragraph{Results}
+
+
+% \begin{table}[htbp]
+% \centering
+% \caption{Unconditional MNIST (\texttt{1aurent/ddpm-mnist}). We report attribute metrics (brightness/saturation/colorfulness). Denoising step = 100, batch size = 2}
+% \label{tab:main_uncond_cifar10}
+% \begin{tabular}{lcccccccc}
+% \toprule
+% Method & Budget & Brightness$\uparrow$ & Saturation$\uparrow$ & Colorfulness$\uparrow$ \\
+% \midrule
+% Base DDPM & 1 & 123.44$\pm$27.87 & 68.62$\pm$34.56 & 30.05$\pm$16.00 \\
+% \midrule
+% Best-of-$N$ + \method (Brightness, 600Step) & 8 & 150.84$\pm$27.74 & 56.65$\pm$28.75 & 29.56$\pm$16.87 \\
+% Best-of-$N$ + \method (Saturation, 600Step) & 8 & XX.XX & XX.XX & XX.XX \\
+% Best-of-$N$ + \method (Colorfulness, 600Step) & 8 & XX.XX & XX.XX & XX.XX \\
+% \midrule
+% FK (Difference) + \method (Brightness, 600Step) & 8 & XX.XX & XX.XX & X.XXX \\
+% FK (Difference) + \method (Saturation, 600Step) & 8 & XX.XX & XX.XX & XX.XX \\
+% FK (Difference) + \method (Colorfulness, 600Step) & 8 & XX.XX & XX.XX & XX.XX \\
+% \midrule
+% FK (Max) + \method (Brightness, 600Step) & 8 & XX.XX & XX.XX & X.XXX \\
+% FK (Max) + \method (Saturation, 600Step) & 8 & XX.XX & XX.XX & XX.XX \\
+% FK (Max) + \method (Colorfulness, 600Step) & 8 & XX.XX & XX.XX & XX.XX \\
+% \bottomrule
+% \end{tabular}
+% \end{table}
+
+
+
+
+\subsubsection{Unconditional CIFAR-10 generation}
+\label{sec:exp_uncond_cifar10}
+
+\paragraph{Setting}
+We further evaluate \method on unconditional CIFAR-10 generation with \texttt{google/ddpm-cifar10-32}. In this paper, we use four image-attribute rewards as the primary reward family for both target construction and reranking:
+\begin{itemize}
+    \item \textbf{Brightness reward}: higher reward for target-consistent luminance level.
+    \item \textbf{Saturation reward}: higher reward for stronger and cleaner color saturation.
+    \item \textbf{Colorfulness reward}: higher reward for richer and more diverse color composition.
+\end{itemize}
+All reward variants are implemented with the same rollout/ranker pipeline; only the reward head changes.
+
+\paragraph{Baselines}
+For final-step selection, we compare: (i) base DDPM sampling, (ii) external-reward best-of-$N$, and (iii) \method-based best-of-$N$ under matched candidate budgets. We additionally report denoising-step scaling trends to show how selection gains interact with sampling compute. FK-style middle-step replacement on CIFAR-10 is reported in Section~\ref{sec:midstep_three_settings} when available.
+
+\paragraph{Results}
+CIFAR-10 unconditional results are summarized in Table~\ref{tab:cifar10}.
+
+
+\begin{table}[t]
+\centering
+\caption{Unconditional CIFAR-10 (\texttt{google/ddpm-cifar10-32}). We report attribute metrics (brightness/saturation/colorfulness). Denoising step = 1000, parallel size=8, batch size = 2}
+\setlength{\tabcolsep}{6pt}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Method} & \textbf{Brightness} & \textbf{Saturation} & \textbf{Colorfulness} \\
+\midrule
+Base DDPM & 123.44$\pm$27.87 & 68.62$\pm$34.56 & 30.05$\pm$16.00 \\
+\midrule
+\rowcolor{gray!15}
+\multicolumn{4}{c}{\textit{Best-of-$N$}} \\
+First-step (Brightness) & \textbf{xx$\pm$xx} & xx$\pm$xx & xx$\pm$xx \\
+First-step (Saturation) & xx$\pm$xx & \textbf{xx$\pm$xx} & xx$\pm$xx \\
+First-step (Colorfulness) & XX.XX & XX.XX & \textbf{xx$\pm$xx} \\
+\midrule
+Mid-step (Brightness) & \textbf{150.84$\pm$27.74} & 56.65$\pm$28.75 & 29.56$\pm$16.87 \\
+Mid-step (Saturation) & 118.65$\pm$24.74 & \textbf{88.01$\pm$32.21} & 37.48$\pm$14.63 \\
+Mid-step (Colorfulness) & XX.XX & XX.XX & \textbf{} \\
+\midrule
+Last-step (Brightness) & \textbf{xx$\pm$xx} & xx$\pm$xx & xx$\pm$xx \\
+Last-step (Saturation) & xx$\pm$xx & \textbf{xx$\pm$xx} & xx$\pm$xx \\
+Last-step (Colorfulness) & XX.XX & XX.XX & \textbf{xx$\pm$xx} \\
+\midrule
+\rowcolor{gray!15}
+\multicolumn{4}{c}{\textit{FK-Steering---using DIFFERENCE as potential}} \\
+First-step (Top-N/2) + mid-step & xx & xx & xx \\
+Mid-step (Top-N/2) + last-step & xx & xx & xx \\
+First-step (Top-N/2) + mid-step (Top-N/4) + last-step & xx & xx & xx \\
+\midrule
+\rowcolor{gray!15}
+\multicolumn{4}{c}{\textit{FK-Steering---using MAX as potential}} \\
+First-step (Top-N/2) + mid-step & xx & xx & xx \\
+Mid-step (Top-N/2) + last-step & xx & xx & xx \\
+First-step (Top-N/2) + mid-step (Top-N/4) + last-step & xx & xx & xx \\
+\bottomrule
+\end{tabular}
+\label{tab:cifar10}
+\end{table}
+
+
+
+
+
+\subsubsection{Unconditional CelebA generation}
 \label{sec:exp_uncond_ddpm}
 
 \paragraph{Setting}
@@ -229,81 +346,47 @@ For supervision, we use fixed-prompt reward signals on final decoded images (e.g
 For final-step selection, we compare methods under matched candidate budgets: (i) base DDPM sampling without reranking, (ii) external-reward best-of-$N$ selection, and (iii) \method-based best-of-$N$ selection. Following standard unconditional evaluation on CelebA-HQ style data, we report FID and IS against a held-out real-image reference set; we also report CLIPScore with the same fixed prompt as an auxiliary semantic metric. FK-Steering results are presented separately in Section~\ref{sec:midstep_three_settings}.
 
 \paragraph{Results}
-Main unconditional DDPM results are shown in Table~\ref{tab:main_uncond_ddpm}.
+Main unconditional DDPM results are shown in Table~\ref{tab:celeba}.
 
-\begin{table}[htbp]
+\begin{table}[t]
 \centering
-\caption{Unconditional DDPM (\texttt{google/ddpm-celebahq-256}) on CelebA-HQ-style evaluation. Lower FID is better; higher IS/CLIPScore is better.}
-\label{tab:main_uncond_ddpm}
+\caption{Unconditional DDPM (\texttt{google/ddpm-celebahq-256}) on CelebA-HQ-style evaluation. Lower FID is better; higher IS/CLIPScore is better. Inference step=25, parallel size=8.}
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.15}
 \begin{tabular}{lccccc}
 \toprule
-Method & Particle & FID$\downarrow$ & IS$\uparrow$ & CLIPScore$\uparrow$ & Latency (s/img)$\downarrow$ \\
+\textbf{Method} & \textbf{Fid} & \textbf{IS} & \textbf{CLIPScore} & \textbf{ImageReward} & \textbf{Latency}\\
 \midrule
-Base DDPM & 1 & XX.XX & XX.XX & XX.XX & X.XXX \\
-Best-of-$N$ + CLIPScore & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
-Best-of-$N$ + ImageReward & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
-Best-of-$N$ + \method & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
+Base DDPM & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
+\midrule
+\rowcolor{gray!15}
+\multicolumn{6}{c}{\textit{Best-of-$N$}} \\
+\method (mid-step) & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
+CLIPScore  & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
+ImageReward  & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
+\midrule
+\rowcolor{gray!15}
+\multicolumn{6}{c}{\textit{FK-Steering---using DIFFERENCE as potential}} \\
+First-step (Top-N/2) + mid-step & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\& xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
+Mid-step (Top-N/2) + last-step & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
+First-step (Top-N/2) + mid-step (Top-N/4) + last-step & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
+\midrule
+\rowcolor{gray!15}
+\multicolumn{6}{c}{\textit{FK-Steering---using MAX as potential}} \\
+First-step (Top-N/2) + mid-step & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
+Mid-step (Top-N/2) + last-step & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
+First-step (Top-N/2) + mid-step (Top-N/4) + last-step & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
 \bottomrule
 \end{tabular}
+\label{tab:celeba}
 \end{table}
 
-\subsubsection{Unconditional CIFAR-10 generation}
-\label{sec:exp_uncond_cifar10}
 
-\paragraph{Setting}
-We further evaluate \method on unconditional CIFAR-10 generation with \texttt{google/ddpm-cifar10-32}. In this paper, we use four image-attribute rewards as the primary reward family for both target construction and reranking:
-\begin{itemize}
-    \item \textbf{Brightness reward}: higher reward for target-consistent luminance level.
-    \item \textbf{Contrast reward}: higher reward for clearer local/global intensity separation.
-    \item \textbf{Saturation reward}: higher reward for stronger and cleaner color saturation.
-    \item \textbf{Colorfulness reward}: higher reward for richer and more diverse color composition.
-\end{itemize}
-All reward variants are implemented with the same rollout/ranker pipeline; only the reward head changes.
 
-\paragraph{Baselines}
-For final-step selection, we compare: (i) base DDPM sampling, (ii) external-reward best-of-$N$, and (iii) \method-based best-of-$N$ under matched candidate budgets. We additionally report denoising-step scaling trends to show how selection gains interact with sampling compute. FK-style middle-step replacement on CIFAR-10 is reported in Section~\ref{sec:midstep_three_settings} when available.
 
-\paragraph{Results}
-CIFAR-10 unconditional results are summarized in Table~\ref{tab:main_uncond_cifar10}.
 
-\begin{table}[htbp]
-\centering
-\caption{Unconditional CIFAR-10 (\texttt{google/ddpm-cifar10-32}). We report attribute metrics (brightness/contrast/saturation/colorfulness) together with FID and IS. Lower FID is better; higher others are better.}
-\label{tab:main_uncond_cifar10}
-\begin{tabular}{lcccccccc}
-\toprule
-Method & Budget & Brightness$\uparrow$ & Contrast$\uparrow$ & Saturation$\uparrow$ & Colorfulness$\uparrow$ & FID$\downarrow$ & IS$\uparrow$ & Latency$\downarrow$ \\
-\midrule
-Base DDPM & 1 & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & X.XXX \\
-Best-of-$N$ + External Reward & 2/4/8 & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & X.XXX \\
-Best-of-$N$ + \method & 2/4/8 & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & X.XXX \\
-\midrule
-Scaling @ 10 denoise steps & -- & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & X.XXX \\
-Scaling @ 20 denoise steps & -- & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & X.XXX \\
-Scaling @ 50 denoise steps & -- & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & X.XXX \\
-Scaling @ 100 denoise steps & -- & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & X.XXX \\
-\bottomrule
-\end{tabular}
-\end{table}
 
-\subsubsection{Unconditional MNIST generation}
-\label{sec:exp_uncond_mnist}
 
-\paragraph{Setting}
-We also evaluate \method on unconditional MNIST generation with a DDPM backbone trained on \(28\times 28\) grayscale digits. We keep the same training/inference pipeline as CIFAR-10 and only change the dataset/model.
-
-\paragraph{Reward design}
-For MNIST, we use the same four reward definitions to keep protocol consistency:
-\begin{itemize}
-    \item \textbf{Brightness reward}: encourages target-consistent average luminance.
-    \item \textbf{Contrast reward}: encourages clear foreground-background separation.
-    \item \textbf{Saturation reward}: included as a unified attribute reward term under grayscale-compatible implementation.
-    \item \textbf{Colorfulness reward}: included as a unified attribute reward term under grayscale-compatible implementation.
-\end{itemize}
-
-\paragraph{Metrics}
-For both CIFAR-10 and MNIST, we report the same metric suite:
-\textbf{brightness, contrast, saturation, colorfulness, FID, and IS}.
 
 \subsubsection{Class-conditional posterior sampling}
 \label{sec:exp_class_posterior}
