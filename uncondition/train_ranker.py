@@ -293,7 +293,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--alpha_kl", type=float, default=0.3)
     p.add_argument("--alpha_mse", type=float, default=0.7)
     p.add_argument("--tau", type=float, default=1.0)
-    p.add_argument("--num_epochs", type=int, default=30)
+    p.add_argument("--num_epochs", type=int, default=200)
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--learning_rate", type=float, default=1e-4)
     p.add_argument("--weight_decay", type=float, default=1e-4)
