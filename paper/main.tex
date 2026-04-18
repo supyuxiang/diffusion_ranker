@@ -251,7 +251,14 @@ Best-of-$N$ + \method & 8 & XX.XX & XX.XX & XX.XX & X.XXX \\
 \label{sec:exp_uncond_cifar10}
 
 \paragraph{Setting}
-We further evaluate \method on unconditional CIFAR-10 generation with \texttt{google/ddpm-cifar10-32}. Since CIFAR-10 is class-balanced with 10 semantic categories and standard evaluation is label-free, we follow the conventional unconditional protocol and report only FID and IS. For middle-step supervision, we use a pretrained CIFAR-10 classifier as reward model and define per-sample reward by negative predictive entropy, which provides a stable confidence-based signal for Monte Carlo target construction.
+We further evaluate \method on unconditional CIFAR-10 generation with \texttt{google/ddpm-cifar10-32}. In this paper, we use four image-attribute rewards as the primary reward family for both target construction and reranking:
+\begin{itemize}
+    \item \textbf{Brightness reward}: higher reward for target-consistent luminance level.
+    \item \textbf{Contrast reward}: higher reward for clearer local/global intensity separation.
+    \item \textbf{Saturation reward}: higher reward for stronger and cleaner color saturation.
+    \item \textbf{Colorfulness reward}: higher reward for richer and more diverse color composition.
+\end{itemize}
+All reward variants are implemented with the same rollout/ranker pipeline; only the reward head changes.
 
 \paragraph{Baselines}
 For final-step selection, we compare: (i) base DDPM sampling, (ii) external-reward best-of-$N$, and (iii) \method-based best-of-$N$ under matched candidate budgets. We additionally report denoising-step scaling trends to show how selection gains interact with sampling compute. FK-style middle-step replacement on CIFAR-10 is reported in Section~\ref{sec:midstep_three_settings} when available.
@@ -261,23 +268,42 @@ CIFAR-10 unconditional results are summarized in Table~\ref{tab:main_uncond_cifa
 
 \begin{table}[htbp]
 \centering
-\caption{Unconditional CIFAR-10 (\texttt{google/ddpm-cifar10-32}). Lower FID is better; higher IS is better.}
+\caption{Unconditional CIFAR-10 (\texttt{google/ddpm-cifar10-32}). We report attribute metrics (brightness/contrast/saturation/colorfulness) together with FID and IS. Lower FID is better; higher others are better.}
 \label{tab:main_uncond_cifar10}
-\begin{tabular}{lcccc}
+\begin{tabular}{lcccccccc}
 \toprule
-Method & Candidate/Particle Budget & FID$\downarrow$ & IS$\uparrow$ & Latency (s/img)$\downarrow$ \\
+Method & Budget & Brightness$\uparrow$ & Contrast$\uparrow$ & Saturation$\uparrow$ & Colorfulness$\uparrow$ & FID$\downarrow$ & IS$\uparrow$ & Latency$\downarrow$ \\
 \midrule
-Base DDPM & 1 & XX.XX & XX.XX & X.XXX \\
-Best-of-$N$ + External Reward & 2/4/8 & XX.XX & XX.XX & X.XXX \\
-Best-of-$N$ + \method & 2/4/8 & XX.XX & XX.XX & X.XXX \\
+Base DDPM & 1 & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & X.XXX \\
+Best-of-$N$ + External Reward & 2/4/8 & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & X.XXX \\
+Best-of-$N$ + \method & 2/4/8 & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & X.XXX \\
 \midrule
-Scaling @ 10 denoise steps & -- & XX.XX & XX.XX & X.XXX \\
-Scaling @ 20 denoise steps & -- & XX.XX & XX.XX & X.XXX \\
-Scaling @ 50 denoise steps & -- & XX.XX & XX.XX & X.XXX \\
-Scaling @ 100 denoise steps & -- & XX.XX & XX.XX & X.XXX \\
+Scaling @ 10 denoise steps & -- & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & X.XXX \\
+Scaling @ 20 denoise steps & -- & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & X.XXX \\
+Scaling @ 50 denoise steps & -- & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & X.XXX \\
+Scaling @ 100 denoise steps & -- & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & XX.XX & X.XXX \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\subsubsection{Unconditional MNIST generation}
+\label{sec:exp_uncond_mnist}
+
+\paragraph{Setting}
+We also evaluate \method on unconditional MNIST generation with a DDPM backbone trained on \(28\times 28\) grayscale digits. We keep the same training/inference pipeline as CIFAR-10 and only change the dataset/model.
+
+\paragraph{Reward design}
+For MNIST, we use the same four reward definitions to keep protocol consistency:
+\begin{itemize}
+    \item \textbf{Brightness reward}: encourages target-consistent average luminance.
+    \item \textbf{Contrast reward}: encourages clear foreground-background separation.
+    \item \textbf{Saturation reward}: included as a unified attribute reward term under grayscale-compatible implementation.
+    \item \textbf{Colorfulness reward}: included as a unified attribute reward term under grayscale-compatible implementation.
+\end{itemize}
+
+\paragraph{Metrics}
+For both CIFAR-10 and MNIST, we report the same metric suite:
+\textbf{brightness, contrast, saturation, colorfulness, FID, and IS}.
 
 \subsubsection{Class-conditional posterior sampling}
 \label{sec:exp_class_posterior}
