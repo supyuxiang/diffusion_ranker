@@ -36,13 +36,13 @@ def _dtype_to_torch(dtype: str) -> torch.dtype:
 
 @torch.inference_mode()
 def _batch_imagereward_face(images: list[Image.Image], rm_model) -> float:
-    prompt = "a photo of a human face"
+    prompt = "A photo of a human face."
     vals = [float(rm_model.score(prompt, img)) for img in images]
     return float(sum(vals) / max(1, len(vals)))
 
 
 def _mean_imagereward_for_dir(gen_dir: Path, rm_model) -> float:
-    prompt = "a photo of a human face"
+    prompt = "A photo of a human face."
     vals: list[float] = []
     for p in tqdm(sorted(gen_dir.glob("*.png")), desc="ImageReward(final)"):
         img = Image.open(p).convert("RGB")
@@ -51,15 +51,15 @@ def _mean_imagereward_for_dir(gen_dir: Path, rm_model) -> float:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser("Online random search with ImageReward reward (parallel size=10)")
-    p.add_argument("--output_dir", type=str, default="/root/autodl-tmp/uncond_random_search_imagereward_ps2")
+    p = argparse.ArgumentParser("Online random search with ImageReward reward (parallel size=8)")
+    p.add_argument("--output_dir", type=str, default="/root/autodl-tmp/uncond_random_search_imagereward_ps8")
     p.add_argument("--model_path", type=str, default="/root/autodl-tmp/google_ddpm-celebahq-256")
     p.add_argument("--real_dir", type=str, default="/root/autodl-tmp/celebahq256_png")
     p.add_argument("--clip_model_dir", type=str, default="/root/autodl-tmp/openai_clip-vit-large-patch14")
     p.add_argument("--clip_batch_size", type=int, default=64)
     p.add_argument("--num_samples", type=int, default=50_000)
-    p.add_argument("--batch_size", type=int, default=32)
-    p.add_argument("--parallel_size", type=int, default=2)
+    p.add_argument("--batch_size", type=int, default=2)
+    p.add_argument("--parallel_size", type=int, default=8)
     p.add_argument("--num_inference_steps", type=int, default=25)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", type=str, default="fp16", choices=("fp16", "fp32", "bf16"))
@@ -93,7 +93,7 @@ def main() -> None:
     img_counter = 0
     rng = torch.Generator(device="cpu").manual_seed(args.seed)
     round_logs: list[dict[str, float]] = []
-    for ridx in tqdm(range(n_rounds), desc="online best-of-2 (imagereward)"):
+    for ridx in tqdm(range(n_rounds), desc="online best-of-8 (imagereward)"):
         batch_n = min(args.batch_size, args.num_samples - img_counter)
         if batch_n <= 0:
             break
