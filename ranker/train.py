@@ -208,9 +208,36 @@ def split_batch_into_candidate_groups(
 ):
     sample_indices_ls = []
     batch_size = batch[0].size(0)
-    for i in range(num_candidate_groups):
-        group_indices = random.sample(range(batch_size), num_cand)
-        sample_indices_ls.append(group_indices)
+    if batch_size < num_cand:
+        raise ValueError(
+            f"batch_size={batch_size} < num_cand={num_cand}; cannot form one candidate group"
+        )
+
+    prompt_hstates = batch[1]
+    if prompt_hstates is None:
+        for _ in range(num_candidate_groups):
+            group_indices = random.sample(range(batch_size), num_cand)
+            sample_indices_ls.append(group_indices)
+    else:
+        # When prompt hstates are enabled, each listwise group must share the same prompt/context.
+        prompt_cpu = prompt_hstates.detach().float().cpu()
+        _, inverse = torch.unique(prompt_cpu, dim=0, return_inverse=True)
+        buckets: dict[int, list[int]] = {}
+        for idx, gid in enumerate(inverse.tolist()):
+            buckets.setdefault(int(gid), []).append(idx)
+        eligible_buckets = [idxs for idxs in buckets.values() if len(idxs) >= num_cand]
+        if not eligible_buckets:
+            bucket_sizes = sorted((len(v) for v in buckets.values()), reverse=True)[:8]
+            raise ValueError(
+                "No prompt-consistent candidate group can be formed in the current batch. "
+                f"Need at least num_cand={num_cand} samples from the same prompt, but bucket sizes are {bucket_sizes}. "
+                "Try increasing --batch_size, reducing --num_cand, or disabling shuffle for prompt-conditioned training."
+            )
+        for _ in range(num_candidate_groups):
+            bucket = random.choice(eligible_buckets)
+            group_indices = random.sample(bucket, num_cand)
+            sample_indices_ls.append(group_indices)
+
     groups = [
         [
             batch[0][indices],
@@ -235,7 +262,14 @@ def process_single_candidate_group(
     if candidate_hstates.dim() == 2:
         candidate_hstates = candidate_hstates.unsqueeze(0)  # (1, K, D_c)
     if prompt_hstates is not None and prompt_hstates.dim() == 2:
-        # 同一 listwise 组共用一个上下文向量（多行 prompt 通常来自同 class 重复，取首行即可）
+        prompt_ref = prompt_hstates[:1].expand_as(prompt_hstates)
+        if not torch.equal(prompt_hstates, prompt_ref):
+            max_diff = float((prompt_hstates - prompt_ref).abs().max().item())
+            raise ValueError(
+                "Prompt-conditioned candidate group contains mixed prompt states. "
+                f"All candidates in one group must share the same prompt; max diff={max_diff:.6g}"
+            )
+        # 同一 listwise 组共用一个上下文向量（同类 prompt 重复，取首行即可）
         prompt_hstates = prompt_hstates[:1]  # (1, D_p)
 
     logits = ranker(candidate_hstates, prompt_hstates)  # (1, K)
@@ -326,15 +360,16 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # build dataoader
+    use_shuffle = not bool(args.has_prompt_hstates)
     train_loader = diffusion_ranker_dataloader(
         candidate_repr_path,
         reward_path,
         prompt_repr_path,
         args.batch_size,
-        shuffle=True,
+        shuffle=use_shuffle,
         has_prompt_hstates=args.has_prompt_hstates,
     )
-    print(f"train_loader built")
+    print(f"train_loader built (shuffle={use_shuffle})")
 
     if args.ranker_type == 'listwise':
         ranker = DiffusionRanker_Transformer(
