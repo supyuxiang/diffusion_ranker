@@ -112,8 +112,7 @@ def _run_one_candidate(
     finally:
         h.remove()
         gc.collect()
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
 
 
 def _load_cifar10_test_images(data_root: str | Path) -> torch.Tensor:

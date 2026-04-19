@@ -117,7 +117,7 @@ def load_clip(device: torch.device):
     clip = CLIPModel.from_pretrained(str(_DEFAULT_CLIP_DIR), local_files_only=True)
     clip.to(device)
     clip.eval()
-    processor = CLIPProcessor.from_pretrained(str(_DEFAULT_CLIP_DIR))
+    processor = CLIPProcessor.from_pretrained(str(_DEFAULT_CLIP_DIR), local_files_only=True)
     return clip, processor
 
 

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-Rollout script for google/ddpm-cifar10-32 using pretrained CIFAR-10 classifier reward.
+Rollout script for DDPM-CIFAR10 using configurable image-quality reward.
 
-Reward: negative entropy from pretrained CIFAR-10 classifier.
-  Higher reward = sharper class prediction = better image quality.
+Reward choices:
+  - brightness
+  - contrast
+  - saturation
+  - colorfulness
 
 UNet structure: 22 ResnetBlock2D layers.
   layer_ratio ~0.6 => layer_idx=12, shape (B, 256, 8, 8)
@@ -23,6 +26,7 @@ import sys
 from pathlib import Path
 
 import argparse
+import numpy as np
 
 import torch
 from diffusers import DDPMPipeline
@@ -30,35 +34,37 @@ from PIL import Image
 from tqdm import tqdm
 
 _ROOT = Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+sys.path.insert(0, str(_ROOT))
 
-from uncondition_cifar10.cifar10_classifier_reward import (
-    load_cifar10_classifier,
-    reward_neg_entropy_cifar10,
+from uncondition_cifar10.reward import (
+    brightness_reward,
+    colorfulness_reward,
+    saturation_reward,
 )
+
 
 # ---- Hard-coded targets for CIFAR-10 DDPM (22 ResnetBlock2D, 50 steps) ----
 # layer ratio 0.6 -> layer index 12  (shape: B,256,8,8)
 # step ratios [0.0, 0.25, 0.5, 0.75, 1.0] -> step indices [0, 25, 50, 75, 100]
 _TARGET_LAYER_INDICES = [12]
-_TARGET_STEP_INDICES = [0, 100, 200, 300, 400, 500]
+_TARGET_STEP_INDICES = [100, 600, 999, -1]  # early-step(100), mid-step(600), and final step (final resolved from num_inference_steps)
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser("CIFAR10 DDPM rollout with classifier reward")
-    p.add_argument("--model_path", type=str, default="/root/autodl-tmp/google_ddpm-cifar10-32")
-    p.add_argument(
-        "--classifier_ckpt",
-        type=str,
-        default="/root/autodl-tmp/cifar10_classifier/resnet18/classifier_best.pt",
-    )
+    p = argparse.ArgumentParser("CIFAR10 DDPM rollout with image-quality reward")
+    p.add_argument("--model_path", type=str, default="/root/autodl-tmp/ddpm_ema_cifar10")
     p.add_argument("--save_path", type=str, default="/root/autodl-tmp/cifar10_ddpm_hiddens_and_rewards.pth")
     p.add_argument("--num_samples", type=int, default=1500)
     p.add_argument("--batch_size", type=int, default=256)
-    p.add_argument("--num_inference_steps", type=int, default=500)
+    p.add_argument("--num_inference_steps", type=int, default=1000)
     p.add_argument("--mc_samples", type=int, default=5)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument(
+        "--reward_type",
+        type=str,
+        default="saturation",
+        choices=("brightness", "saturation", "colorfulness"),
+    )
     return p.parse_args()
 
 
@@ -74,9 +80,9 @@ def mc(
     step_idx: int,
     batch_middle_x: torch.Tensor,
     pipe: DDPMPipeline,
-    classifier,
     mc_samples: int,
     base_seed: int,
+    reward_type: str,
 ) -> torch.Tensor:
     device = batch_middle_x.device
     timesteps = pipe.scheduler.timesteps
@@ -90,7 +96,21 @@ def mc(
             x = sched.step(eps, t, x, generator=gen).prev_sample
             del eps
         images = _latents_to_pil(x)
-        reward_ls.append(reward_neg_entropy_cifar10(classifier, images, device))
+        img_batch = torch.stack(
+            [torch.from_numpy(np.array(im, dtype=np.uint8)).permute(2, 0, 1) for im in images],
+            dim=0,
+        )
+        if reward_type == "brightness":
+            reward = brightness_reward(img_batch)
+        elif reward_type == "contrast":
+            reward = contrast_reward(img_batch)
+        elif reward_type == "saturation":
+            reward = saturation_reward(img_batch)
+        elif reward_type == "colorfulness":
+            reward = colorfulness_reward(img_batch)
+        else:
+            raise ValueError(f"unknown reward_type={reward_type}")
+        reward_ls.append(reward)
         del images, x, gen, sched
         gc.collect()
         if device.type == "cuda":
@@ -109,13 +129,13 @@ def rollout() -> None:
         torch_dtype=torch.float16 if device.type == "cuda" else torch.float32,
     ).to(device)
     pipe.set_progress_bar_config(disable=True)
-    classifier = load_cifar10_classifier(args.classifier_ckpt, device)
 
     num_samples = int(args.num_samples)
     batch_size = int(args.batch_size)
     num_inference_steps = int(args.num_inference_steps)
     mc_samples = int(args.mc_samples)
     seed = int(args.seed)
+    reward_type = str(args.reward_type)
 
     generator = torch.Generator(device=device).manual_seed(seed)
     pipe.scheduler.set_timesteps(num_inference_steps, device=device)
@@ -129,7 +149,16 @@ def rollout() -> None:
     print(f"total ResnetBlock2D layers: {len(resnet_blocks)}")
 
     target_layer_indices = sorted(set(int(x) for x in _TARGET_LAYER_INDICES))
-    target_step_indices = sorted(set(int(x) for x in _TARGET_STEP_INDICES))
+    resolved_steps: list[int] = []
+    for s in _TARGET_STEP_INDICES:
+        si = int(s)
+        if si == -1:
+            si = num_inference_steps - 1
+        if 0 <= si < num_inference_steps:
+            resolved_steps.append(si)
+    target_step_indices = sorted(set(resolved_steps))
+    if not target_step_indices:
+        raise ValueError("No valid target step indices after resolving first/final steps.")
 
     save_path = Path(args.save_path).expanduser().resolve()
     shard_dir = save_path.parent / f"{save_path.stem}_shards"
@@ -196,9 +225,9 @@ def rollout() -> None:
                         step_idx=st_i,
                         batch_middle_x=x,
                         pipe=pipe,
-                        classifier=classifier,
                         mc_samples=mc_samples,
                         base_seed=seed + batch_i * 1000 + st_i * 10,
+                        reward_type=reward_type,
                     )
                 )
                 capture_enabled["value"] = True
@@ -251,7 +280,7 @@ def rollout() -> None:
         "reward_store": reward_store_tensor,
         "meta": {
             "model": "google/ddpm-cifar10-32",
-            "classifier_ckpt": str(Path(args.classifier_ckpt).expanduser().resolve()),
+            "reward": reward_type,
             "target_layer_indices": target_layer_indices,
             "target_step_indices": target_step_indices,
             "num_samples": num_samples,

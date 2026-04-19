@@ -34,6 +34,16 @@ from reward import load_clip, clipscore_reward, labels_1k
 _DEFAULT_CLIP_DIR = Path("/root/autodl-tmp/openai_clip-vit-large-patch14")
 
 
+def _sorted_candidate_images(candidate_dir: Path) -> list[Path]:
+    return sorted(candidate_dir.glob("image_*_*.png"), key=lambda p: int(p.stem.split("_")[1]))
+
+
+def _reset_best_dir(best_dir: Path) -> None:
+    if best_dir.exists():
+        shutil.rmtree(best_dir)
+    best_dir.mkdir(parents=True, exist_ok=True)
+
+
 def save_best_images(best_path_ls: list[Path], output_dir: Path) -> None:
     for path in best_path_ls:
         copy_path = output_dir / path.name
@@ -66,6 +76,11 @@ def run_random_search_clipscore(
 
         for candidate_idx, candidate_path_ls in candidate_pathes_dict.items():
             batch_candidate_paths = candidate_path_ls[start_idx : start_idx + n_this_batch]
+            if len(batch_candidate_paths) != n_this_batch:
+                raise ValueError(
+                    f"candidate_{candidate_idx:04d} has only {len(batch_candidate_paths)} images "
+                    f"for slice [{start_idx}:{start_idx + n_this_batch}], expected {n_this_batch}"
+                )
 
             reward = clipscore_reward(
                 batch_candidate_paths,
@@ -84,6 +99,9 @@ def run_random_search_clipscore(
         best_path_ls.extend(win_paths_this_loop)
         start_idx += n_this_batch
 
+    if len(best_path_ls) != n_expected:
+        raise RuntimeError(f"selected {len(best_path_ls)} images, expected {n_expected}")
+
     return best_path_ls
 
 
@@ -101,20 +119,24 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--deno_steps", type=int, default=10, help="与 rollout 目录名一致")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--guidance_scale", type=float, default=1.0)
+    p.add_argument("--real_dir", type=Path, default=Path("/root/autodl-tmp/imagenet/val"))
+    p.add_argument("--clip_model_dir", type=Path, default=_DEFAULT_CLIP_DIR)
+    p.add_argument("--clip_batch_size", type=int, default=64)
 
     return p.parse_args()
 
 
 def main() -> None:
-    imagenet_val = Path("/root/autodl-tmp/imagenet/val")
-
     args = parse_args()
-    
     output_dir = Path(args.output_dir).expanduser().resolve()
+    real_dir = args.real_dir.expanduser().resolve()
+    clip_model_dir = args.clip_model_dir.expanduser().resolve()
 
     rollout_root = Path(
         f"/root/autodl-tmp/dit_candidates_50k_cfg{args.guidance_scale}_deno{args.deno_steps}"
     )
+    if not rollout_root.is_dir():
+        raise FileNotFoundError(f"missing rollout_root: {rollout_root}")
     candidate_dir_ls = [
         rollout_root / f"candidate_{i:04d}" for i in range(args.num_candidates)
     ]
@@ -126,10 +148,13 @@ def main() -> None:
 
     candidate_pathes_dict: dict[int, list[Path]] = {}
     for i in range(args.num_candidates):
-        candidate_pathes_dict[i] = sorted(
-            candidate_dir_ls[i].glob("image_*_*.png"),
-            key=lambda p: int(p.stem.split("_")[1]),
-        )
+        candidate_dir = candidate_dir_ls[i]
+        if not candidate_dir.is_dir():
+            raise FileNotFoundError(f"missing candidate dir: {candidate_dir}")
+        paths = _sorted_candidate_images(candidate_dir)
+        if len(paths) < args.num_samples:
+            raise ValueError(f"{candidate_dir} has only {len(paths)} images, expected >= {args.num_samples}")
+        candidate_pathes_dict[i] = paths
 
     best_path_ls = run_random_search_clipscore(
         clip,
@@ -141,7 +166,7 @@ def main() -> None:
     )
 
     best_dir = output_dir / "best_images"
-    best_dir.mkdir(exist_ok=True,parents=True)
+    _reset_best_dir(best_dir)
     save_best_images(best_path_ls, best_dir)
 
 
@@ -149,11 +174,16 @@ def main() -> None:
         json.dumps(
             {
                 "verifier": "clipscore",
+                "candidates_root": str(rollout_root),
+                "real_dir": str(real_dir),
                 "num_samples": args.num_samples,
                 "search_batch_size": args.search_batch_size,
                 "num_candidates": args.num_candidates,
                 "deno_steps": args.deno_steps,
                 "guidance_scale": args.guidance_scale,
+                "seed": args.seed,
+                "clip_model_dir": str(clip_model_dir),
+                "clip_batch_size": args.clip_batch_size,
             },
             indent=2,
             ensure_ascii=False,
@@ -161,8 +191,22 @@ def main() -> None:
         encoding="utf-8",
     )
 
-    # compute metrics
-    metrics = compute_fid_is_clipscore(best_dir, device=device)
+    # Release the selection CLIP before metric computation, which loads another CLIP model.
+    del clip, processor
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    metrics = compute_fid_is_clipscore(
+        best_dir,
+        real_dir,
+        device=device,
+        clip_model_dir=clip_model_dir,
+        clip_batch_size=args.clip_batch_size,
+    )
+    metrics["selection_reward"] = "clipscore"
+    metrics["num_selected"] = float(len(best_path_ls))
+    metrics["num_candidates"] = float(args.num_candidates)
     with open(best_dir / "final_metrics.json", "w", encoding='utf-8') as f:
         json.dump(metrics, f, indent=2, ensure_ascii=False)
     print(metrics)
