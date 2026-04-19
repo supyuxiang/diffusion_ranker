@@ -5,7 +5,7 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
 OUT_ROOT="${OUT_ROOT:-/root/autodl-tmp/uncond_random_search_clipscore_sweep}"
 
-MODEL_PATH="${MODEL_PATH:-/root/autodl-tmp/google_ddpm-celebahq-256}"
+MODEL_PATH="${MODEL_PATH:-/root/autodl-tmp/google-ddpm-ema-celebahq-256}"
 REAL_DIR="${REAL_DIR:-/root/autodl-tmp/celebahq256_png}"
 CLIP_MODEL_DIR="${CLIP_MODEL_DIR:-/root/autodl-tmp/openai_clip-vit-large-patch14}"
 CLIP_BATCH_SIZE="${CLIP_BATCH_SIZE:-64}"

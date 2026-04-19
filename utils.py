@@ -175,7 +175,7 @@ def model_name2path(model_name:str) -> Path:
     if model_name == 'dit-xl-2-256':
         return Path("/root/autodl-tmp/DiT-XL-2-256")
     if model_name == 'google_ddpm-celebahq-256':
-        return Path("/root/autodl-tmp/google_ddpm-celebahq-256")
+        return Path("/root/autodl-tmp/google-ddpm-ema-celebahq-256")
     if model_name == 'google_ddpm-cifar10-32':
         return Path("/root/autodl-tmp/google_ddpm-cifar10-32")
 

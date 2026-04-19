@@ -53,7 +53,7 @@ def _mean_imagereward_for_dir(gen_dir: Path, rm_model) -> float:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("Online random search with ImageReward reward (parallel size=8)")
     p.add_argument("--output_dir", type=str, default="/root/autodl-tmp/uncond_random_search_imagereward_ps8")
-    p.add_argument("--model_path", type=str, default="/root/autodl-tmp/google_ddpm-celebahq-256")
+    p.add_argument("--model_path", type=str, default="/root/autodl-tmp/google-ddpm-ema-celebahq-256")
     p.add_argument("--real_dir", type=str, default="/root/autodl-tmp/celebahq256_png")
     p.add_argument("--clip_model_dir", type=str, default="/root/autodl-tmp/openai_clip-vit-large-patch14")
     p.add_argument("--clip_batch_size", type=int, default=64)

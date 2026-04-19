@@ -135,7 +135,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("Online random search with Ranker reward")
     p.add_argument("--ranker_ckpt", type=str, required=True)
     p.add_argument("--output_dir", type=str, default="/root/autodl-tmp/uncond_random_search_ranker")
-    p.add_argument("--model_path", type=str, default="/root/autodl-tmp/google_ddpm-celebahq-256")
+    p.add_argument("--model_path", type=str, default="/root/autodl-tmp/google-ddpm-ema-celebahq-256")
     p.add_argument("--real_dir", type=str, default="/root/autodl-tmp/celebahq256_png")
     p.add_argument("--num_samples", type=int, default=50_000)
     p.add_argument("--batch_size", type=int, default=32)

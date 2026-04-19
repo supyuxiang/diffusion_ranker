@@ -79,7 +79,7 @@ def mc(
 
 @torch.inference_mode()
 def rollout() -> None:
-    ddpm_path = Path("/root/autodl-tmp/google_ddpm-celebahq-256")
+    ddpm_path = Path("/root/autodl-tmp/google-ddpm-ema-celebahq-256")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pipe = DDPMPipeline.from_pretrained(
         str(ddpm_path),
