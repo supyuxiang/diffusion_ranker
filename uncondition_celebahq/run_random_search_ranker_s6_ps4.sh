@@ -3,11 +3,11 @@ set -euo pipefail
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
-python /root/diffusion_ranker/uncondition/random_search_ranker_reward.py \
+python /root/diffusion_ranker/uncondition_celebahq/random_search_ranker_reward.py \
   --ranker_ckpt "${RANKER_CKPT:-/root/autodl-tmp/ranker_model/s6_l19/hd128_lr1e-4_ps4/ranker_best.pt}" \
   --output_dir "${OUT_DIR:-/root/autodl-tmp/uncond_random_search_ranker_s6_l19_hd128_lr1e-4_ps4}" \
   --model_path "${MODEL_PATH:-/root/autodl-tmp/google-ddpm-ema-celebahq-256}" \
-  --real_dir "${REAL_DIR:-/root/autodl-tmp/celebahq256_png}" \
+  --real_dir "${REAL_DIR:-/root/autodl-tmp/celebahq256_png_30k_flat}" \
   --num_samples "${NUM_SAMPLES:-50000}" \
   --batch_size "${BATCH_SIZE:-32}" \
   --parallel_size "${PARALLEL_SIZE:-4}" \
