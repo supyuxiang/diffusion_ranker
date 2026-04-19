@@ -30,10 +30,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 from utils import INCEPTION_WEIGHTS_PATH, compute_fid_is_clipscore, set_device, set_seed
+from class_condition.utils import _sorted_candidate_images, _reset_best_dir, save_best_images
 
 
-def _sorted_candidate_images(candidate_dir: Path) -> list[Path]:
-    return sorted(candidate_dir.glob("image_*_*.png"), key=lambda p: int(p.stem.split("_")[1]))
 
 
 def _copy_selected(best_path_ls: list[Path], output_dir: Path) -> None:
@@ -159,6 +158,7 @@ def main() -> None:
         candidate_pathes_dict,
         device,
     )
+    _reset_best_dir(best_dir)
     _copy_selected(best_path_ls, best_dir)
 
     output_dir.mkdir(parents=True, exist_ok=True)
