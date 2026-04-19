@@ -3,10 +3,10 @@
 example:
 
 python3 /root/diffusion_ranker/search/dit_random_search_is_reward.py \
-    --output_dir /root/autodl-tmp/dit_random_search_is_ps8_cfg1.0_deno10 \
+    --output_dir /root/autodl-tmp/dit_random_search_is_ps2_cfg1.0_deno10 \
     --num_samples 50000 \
     --search_batch_size 32 \
-    --num_candidates 8 \
+    --num_candidates 2 \
     --deno_steps 10 \
     --guidance_scale 1.0
 """
@@ -31,6 +31,7 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 from utils import INCEPTION_WEIGHTS_PATH, compute_fid_is_clipscore, set_device, set_seed
 from class_condition.utils import _sorted_candidate_images, _reset_best_dir, save_best_images
+from class_condition.reward import _batch_is_reward
 
 
 
@@ -53,20 +54,6 @@ def _build_inception_logits_extractor(device: torch.device):
     )
 
 
-@torch.inference_mode()
-def _batch_is_reward(paths: list[Path], feat_extractor, device: torch.device) -> float:
-    from torch_fidelity.datasets import TransformPILtoRGBTensor
-
-    pil_images = [Image.open(p).convert("RGB").copy() for p in paths]
-    transform = Compose([Resize(256), CenterCrop(256), TransformPILtoRGBTensor()])
-    tensors = torch.stack([transform(img) for img in pil_images], dim=0).to(
-        device, non_blocking=(device.type == "cuda")
-    )
-    logits = feat_extractor(tensors)
-    if isinstance(logits, tuple):
-        logits = logits[0]
-    probs = F.softmax(logits.float(), dim=-1)
-    return float(probs.max(dim=-1).values.mean().item())
 
 
 @torch.inference_mode()

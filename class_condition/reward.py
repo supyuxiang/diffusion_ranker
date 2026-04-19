@@ -12,6 +12,9 @@ sys.path.insert(0, str(_ROOT_DIR))
 from utils import *
 
 import numpy as np
+import torchvision.transforms as T
+from torchvision.transforms import Compose, Resize, CenterCrop
+import torch.nn.functional as F
 
 
 ############# fid reward ####################
@@ -254,8 +257,25 @@ def ranker_mean_logit_score(
 
     
     
+##########     is reward     ##############################
 
+@torch.inference_mode()
+def _batch_is_reward(paths: list[Path], feat_extractor, device: torch.device) -> float:
+    from torch_fidelity.datasets import TransformPILtoRGBTensor
 
+    pil_images = [Image.open(p).convert("RGB").copy() for p in paths]
+    transform = Compose([Resize(256), CenterCrop(256), TransformPILtoRGBTensor()])
+    tensors = torch.stack([transform(img) for img in pil_images], dim=0).to(
+        device, non_blocking=(device.type == "cuda")
+    )
+    logits = feat_extractor(tensors)
+    # breakpoint()
+    if isinstance(logits, tuple):
+        logits = logits[0]
+    probs = F.softmax(logits.float(), dim=-1)
+    return float(probs.max(dim=-1).values.mean().item()) # 考虑对每个样本计算概率，然后取平均
+
+########################     end is reward     ##############################
 
 
 
