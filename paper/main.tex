@@ -54,29 +54,28 @@ Inference-time parallel scaling---generating $N$ candidate trajectories and sele
 \end{abstract}
 
 
-
 \section{Introduction}
 
-Image diffusion models (IDMs) have become a dominant paradigm for image generation \citep{ho2020ddpm,nichol2021improved,rombach2022ldm,saharia2022imagen,podell2023sdxl}. They generate outputs through an iterative denoising process that gradually recovers images from noise. Because generation unfolds over multiple denoising steps, prior work has largely focused on inference-time scaling by increasing the number of steps or using more compute per step, improving sample quality at the cost of higher latency. More recently, a complementary direction has gained traction: parallel scaling, where one generates multiple trajectories in parallel and selects the best.
+Diffusion models have achieved remarkable success in image generation, yet their inference-time scaling remains inefficient. Existing approaches typically rely on external reward models (e.g., CLIPScore or learned aesthetic predictors) or expensive sampling strategies such as Monte Carlo rollouts. While effective, these methods introduce additional computational overhead and may suffer from misalignment between the reward model and the underlying generative process.
 
-Parallel scaling can be highly effective, but its success is ultimately limited by the selection mechanism. Current practice faces two major bottlenecks. First, selecting the best final generation among parallel candidates typically relies on an external reward model (e.g., GPT-2- or Llama-based verifiers \citep{liu2024}), which is often expensive to evaluate and may require substantial preference data to train. Second, when extending selection to middle steps of diffusion trajectories for reward-guided resampling, the quality of an intermediate state is often estimated via Monte Carlo rollouts, introducing substantial additional diffusion computation and making steering excessively inefficient.
+In this work, we revisit a fundamental question: \emph{what information is already encoded in diffusion hidden states during generation?} If the model internally represents signals related to sample quality and semantic alignment, it may be possible to directly exploit these representations for efficient inference-time selection, without resorting to external supervision.
 
-These challenges motivate two research questions:
+We begin by analyzing unconditional diffusion models. Surprisingly, we find that intermediate hidden states encode structured signals that strongly correlate with perceptual image quality. These include low-level attributes such as brightness, saturation, and color richness, as well as high-level metrics such as FID and CLIPScore. This suggests that diffusion representations are not merely transient computational artifacts, but instead capture meaningful global properties of generated samples.
 
-\textbf{RQ1: How to design a lightweight reward model for diffusion models?}
+We then extend our analysis to class-conditional diffusion models. Beyond encoding perceptual quality, we observe that hidden states also contain linearly decodable semantic information: class identities can be reliably predicted from intermediate representations via simple linear probes. This indicates that conditioning signals are integrated into the same representation space, making it jointly expressive over both quality and semantics.
 
-\textbf{RQ2: How to design an efficient reward estimation method for middle steps in diffusion models?}
+Taken together, these findings point to a unified view: diffusion hidden states form a structured representation space that encodes multi-dimensional signals, including perceptual quality and semantic identity. This observation motivates a new paradigm for inference-time scaling: instead of introducing external reward models, we can directly \emph{read out} these signals from hidden states to guide sample selection.
 
-To address RQ1, we propose \method, a lightweight reward model that reuses the diffusion model's intermediate hidden states. Instead of treating the IDM as a black box and scoring only the final image, \method pools hidden-state representations from each trajectory and applies a small cross-sample Transformer to compare candidates in latent space, producing scores for efficient best-of-N selection. Experiments show that our ranker is much stronger than small external reward models, and achieves performance comparable to large reward models while being substantially more efficient, validating the feasibility of using internal hidden states as a reward signal.
+Building on this insight, we focus on text-to-image generation as a challenging and practically relevant setting, where both visual quality and semantic alignment are critical. We propose to leverage intermediate diffusion representations to construct a lightweight ranking mechanism, enabling efficient selection among candidate samples without external reward models. Experiments demonstrate that our approach achieves competitive performance while significantly reducing computational cost, highlighting the potential of representation-based inference-time scaling.
 
-To address RQ2, we extend \method to middle step potential estimation. We train a middle step ranker to predict rollout-based potentials directly from hidden states at middle step, replacing costly Monte Carlo evaluation and enabling efficient reward-guided resampling. This allows our ranker to serve as a drop-in replacement for the reward model inside iterative resampling methods such as FK-Steering \citep{singhal2025fk}.
+Our contributions are summarized as follows:
 
-In conclusion, our main contributions are:
 \begin{itemize}
-    \item We introduce \method, a lightweight reward model for selecting diffusion trajectories using internal hidden states.
-    \item We extend the ranker to efficiently estimate middle step potentials, substantially reducing the latency of reward-guided resampling.
-    \item We demonstrate strong empirical results across both class-conditional and unconditional diffusion settings. Our framework is competitive with large reward models while using 0.59M parameters (vs. 447M for ImageReward and 427.6M for CLIP ViT-L/14), reducing computational overhead during both training and inference.
+    \item We provide a systematic analysis showing that diffusion hidden states encode both perceptual quality and semantic information across unconditional and conditional settings.
+    \item We propose a unified perspective that interprets hidden states as a structured, multi-dimensional representation space.
+    \item We demonstrate that these representations can be directly exploited for efficient inference-time selection in text-to-image generation, reducing reliance on external reward models.
 \end{itemize}
+
 
 \section{Related Work and Preliminaries}
 
@@ -218,57 +217,10 @@ Because the ranker operates on compact feature vectors and uses only a few Trans
 
 
 \subsection{Experiments}
-
-
-
-% \subsubsection{Unconditional MNIST generation}
-% \label{sec:exp_uncond_mnist}
-
-% \paragraph{Setting}
-% We also evaluate \method on unconditional MNIST generation with a DDPM backbone trained on \(28\times 28\) grayscale digits. We keep the same training/inference pipeline as CIFAR-10 and only change the dataset/model.
-
-% \paragraph{Reward design}
-% For MNIST, we use the same four reward definitions to keep protocol consistency:
-% \begin{itemize}
-%     \item \textbf{Brightness reward}: encourages target-consistent average luminance.
-%     \item \textbf{Saturation reward}: included as a unified attribute reward term under grayscale-compatible implementation.
-%     \item \textbf{Colorfulness reward}: included as a unified attribute reward term under grayscale-compatible implementation.
-% \end{itemize}
-
-% \paragraph{Metrics}
-% We report the same metric suite:
-% \textbf{brightness, saturation, colorfulness}.
-
-% \paragraph{Results}
-
-
-% \begin{table}[htbp]
-% \centering
-% \caption{Unconditional MNIST (\texttt{1aurent/ddpm-mnist}). We report attribute metrics (brightness/saturation/colorfulness). Denoising step = 100, batch size = 2}
-% \label{tab:main_uncond_cifar10}
-% \begin{tabular}{lcccccccc}
-% \toprule
-% Method & Budget & Brightness$\uparrow$ & Saturation$\uparrow$ & Colorfulness$\uparrow$ \\
-% \midrule
-% Base DDPM & 1 & 123.44$\pm$27.87 & 68.62$\pm$34.56 & 30.05$\pm$16.00 \\
-% \midrule
-% Best-of-$N$ + \method (Brightness, 600Step) & 8 & 150.84$\pm$27.74 & 56.65$\pm$28.75 & 29.56$\pm$16.87 \\
-% Best-of-$N$ + \method (Saturation, 600Step) & 8 & XX.XX & XX.XX & XX.XX \\
-% Best-of-$N$ + \method (Colorfulness, 600Step) & 8 & XX.XX & XX.XX & XX.XX \\
-% \midrule
-% FK (Difference) + \method (Brightness, 600Step) & 8 & XX.XX & XX.XX & X.XXX \\
-% FK (Difference) + \method (Saturation, 600Step) & 8 & XX.XX & XX.XX & XX.XX \\
-% FK (Difference) + \method (Colorfulness, 600Step) & 8 & XX.XX & XX.XX & XX.XX \\
-% \midrule
-% FK (Max) + \method (Brightness, 600Step) & 8 & XX.XX & XX.XX & X.XXX \\
-% FK (Max) + \method (Saturation, 600Step) & 8 & XX.XX & XX.XX & XX.XX \\
-% FK (Max) + \method (Colorfulness, 600Step) & 8 & XX.XX & XX.XX & XX.XX \\
-% \bottomrule
-% \end{tabular}
-% \end{table}
-
-
-
+We design experiments to answer three key questions:
+(1) What information is encoded in diffusion hidden states?
+(2) Can these signals be reliably read out with lightweight models?
+(3) Can such representations replace external reward models for inference-time selection?
 
 \subsubsection{Unconditional CIFAR-10 generation}
 \label{sec:exp_uncond_cifar10}
@@ -291,42 +243,41 @@ CIFAR-10 unconditional results are summarized in Table~\ref{tab:cifar10}.
 
 \begin{table}[t]
 \centering
-\caption{Unconditional CIFAR-10 (\texttt{google/ddpm-cifar10-32}). We report attribute metrics (brightness/saturation/colorfulness). Denoising step = 1000, parallel size=8, batch size = 2}
+\caption{Unconditional CIFAR-10 (\texttt{google/ddpm-ema-cifar10-32}). We report attribute metrics (brightness/saturation/colorfulness). Denoising step = 1000, parallel size=8, batch size = 2}
 \setlength{\tabcolsep}{6pt}
 \renewcommand{\arraystretch}{1.15}
-\begin{tabular}{lcccc}
-\toprule
+\begin{tabular}{lcccc}\toprule
 \textbf{Method} & \textbf{Brightness} & \textbf{Saturation} & \textbf{Colorfulness} \\
 \midrule
 Base DDPM & 123.44$\pm$27.87 & 68.62$\pm$34.56 & 30.05$\pm$16.00 \\
 \midrule
 \rowcolor{gray!15}
 \multicolumn{4}{c}{\textit{Best-of-$N$}} \\
-Early-step (Brightness) & \textbf{xx$\pm$xx} & xx$\pm$xx & xx$\pm$xx \\
+Early-step (Brightness) & 126.13$\pm$25.47 & 68.31$\pm$30.04 & 30.86$\pm$17.14 \\
 Early-step (Saturation) & 115.60$\pm$23.29 & 76.17$\pm$34.47 & 32.13$\pm$15.13 \\
 Early-step (Colorfulness) & 132.25$\pm$25.36 & 72.69$\pm$36.28 & 32.60$\pm$17.85 \\
 \midrule
 Mid-step (Brightness) & \textbf{150.84$\pm$27.74} & 56.65$\pm$28.75 & 29.56$\pm$16.87 \\
-Mid-step (Saturation) & 118.65$\pm$24.74 & \textbf{88.01$\pm$32.21} & 37.48$\pm$14.63 \\
-Mid-step (Colorfulness) & 122.29$\pm$25.77 & 92.76$\pm$37.25 & \textbf{42.77$\pm$18.69} \\
+Mid-step (Saturation) & 118.65$\pm$24.74 & 88.01$\pm$32.21 & 37.48$\pm$14.63 \\
+Mid-step (Colorfulness) & 122.29$\pm$25.77 & 92.76$\pm$37.25 & 42.77$\pm$18.69 \\
 \midrule
-Last-step (Brightness) & \textbf{xx$\pm$xx} & xx$\pm$xx & xx$\pm$xx \\
-Last-step (Saturation) & xx$\pm$xx & \textbf{xx$\pm$xx} & xx$\pm$xx \\
-Last-step (Colorfulness) & XX.XX & XX.XX & \textbf{xx$\pm$xx} \\
+Last-step (Brightness) & 150.33$\pm$22.26 & 53.78$\pm$31.47 & 27.75$\pm$18.81 \\
+Last-step (Saturation) & 111.33$\pm$23.31 & 103.47$\pm$36.87 & 42.59$\pm$16.18 \\
+Last-step (Colorfulness) & 120.38$\pm$25.30 & 88.76$\pm$34.80 & 43.21$\pm$18.93 \\
 \midrule
 \rowcolor{gray!15}
 \multicolumn{4}{c}{\textit{FK-Steering---using RankerReward as potential}} \\
-Early-step (Top-N/2) + mid-step & xx & xx & xx \\
-Early-step (Top-N/2) + mid-step & xx & xx & xx \\
-Early-step (Top-N/2) + mid-step & xx & xx & xx \\
+Early-step (Top-N/2) + mid-step (Brightness)& 144.56$\pm$23.67 & 60.65$\pm$30.27 & 30.04$\pm$16.04 \\
+Early-step (Top-N/2) + mid-step (Saturation) & 112.65$\pm$26.15 & 93.26$\pm$36.82 & 38.62$\pm$18.84 \\
+Early-step (Top-N/2) + mid-step (Colorfulness) & 121.27$\pm$25.21 & 87.18$\pm$34.43 & 40.18$\pm$17.96 \\
 \midrule
-Mid-step (Top-N/2) + last-step & xx & xx & xx \\
-Mid-step (Top-N/2) + last-step & xx & xx & xx \\
-Mid-step (Top-N/2) + last-step & xx & xx & xx \\
+Mid-step (Top-N/2) + last-step (Brightness) & 150.33$\pm$22.26 & 53.78$\pm$31.47 & 27.75$\pm$18.81 \\
+Mid-step (Top-N/2) + last-step (Saturation) & 111.65$\pm$23.70 & \textbf{103.66$\pm$36.92} & 42.60$\pm$16.41 \\
+Mid-step (Top-N/2) + last-step (Colorfulness) & 120.32$\pm$25.71 & 90.13$\pm$34.50 & \textbf{43.45$\pm$18.58} \\
 \midrule
-Early-step (Top-N/2) + last-step & xx & xx & xx \\
-Early-step (Top-N/2) + last-step & xx & xx & xx \\
-Early-step (Top-N/2) + last-step & xx & xx & xx \\
+Early-step (Top-N/2) + last-step (Brightness) & 144.20$\pm$23.14 & 56.66$\pm$27.70 & 29.30$\pm$16.64 \\
+Early-step (Top-N/2) + last-step (Saturation) & 111.84$\pm$24.13 & 95.55$\pm$35.64 & 39.81$\pm$16.58 \\
+Early-step (Top-N/2) + last-step (Colorfulness) & 119.67$\pm$23.64 & 87.00$\pm$32.22 & 43.11$\pm$18.70 \\
 \bottomrule
 \end{tabular}
 \label{tab:cifar10}
@@ -340,7 +291,7 @@ Early-step (Top-N/2) + last-step & xx & xx & xx \\
 \label{sec:exp_uncond_ddpm}
 
 \paragraph{Setting}
-We additionally evaluate \method on unconditional generation with the DDPM backbone \texttt{google/ddpm-celebahq-256} \citep{ho2020ddpm}. We follow the same inference-time scaling protocol used throughout this paper: for each sampling round, we maintain a candidate pool of trajectories generated from different random seeds, then select one trajectory per round. Since the backbone is unconditional, no class or text condition is injected into the ranker input. The ranker operates directly on diffusion-derived image representations and predicts scalar preference scores for candidate comparison.
+We additionally evaluate \method on unconditional generation with the DDPM backbone \texttt{google/ddpm-ema-celebahq-256} \citep{ho2020ddpm}. We follow the same inference-time scaling protocol used throughout this paper: for each sampling round, we maintain a candidate pool of trajectories generated from different random seeds, then select one trajectory per round. Since the backbone is unconditional, no class or text condition is injected into the ranker input. The ranker operates directly on diffusion-derived image representations and predicts scalar preference scores for candidate comparison.
 
 For supervision, we use fixed-prompt reward signals on final decoded images (e.g., ImageReward or CLIP-style similarity with prompt ``a photo of a human face'') to construct teacher targets. This keeps the reward definition aligned with unconditional face synthesis while preserving a unified training interface with the conditional setting.
 
@@ -352,7 +303,7 @@ Main unconditional DDPM results are shown in Table~\ref{tab:celeba}.
 
 \begin{table}[t]
 \centering
-\caption{Unconditional DDPM (\texttt{google/ddpm-celebahq-256}) on CelebA-HQ-style evaluation. Lower FID is better; higher IS/CLIPScore is better. Inference step=25, parallel size=8.}
+\caption{Unconditional DDPM (\texttt{google/ddpm-ema-celebahq-256}) on CelebA-HQ-style evaluation. Lower FID is better; higher IS/CLIPScore is better. Inference step=25, parallel size=8, batch size=16.}
 \setlength{\tabcolsep}{4pt}
 \renewcommand{\arraystretch}{1.15}
 \begin{tabular}{lccccc}
@@ -365,6 +316,7 @@ Base DDPM & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
 \multicolumn{6}{c}{\textit{Best-of-$N$}} \\
 \method (mid-step) & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
 CLIPScore  & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
+DINO & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
 ImageReward  & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx$\pm$xx & xx\\
 \midrule
 \rowcolor{gray!15}
@@ -414,7 +366,7 @@ Main quantitative results are summarized in Table~\ref{tab:main_class_cond}. We 
 \toprule
 Method & Reward & Candidate & FID$\downarrow$ & IS$\uparrow$ & CLIPScore$\uparrow$ & Latency (s/img)$\downarrow$ \\
 \midrule
-Base (no search) & -- & 1 & XX.XX & XX.XX & XX.XX & X.XXX \\
+Base (no search) & -- & 1 & 10.62 & 110.65 & 23.47 & $1\times$ \\
 \midrule
 \multirow{12}{*}{Best-of-$N$} & \multirow{3}{*}{FID} & 2 & 10.87 & 107.74 & 23.37 & X.XXX \\
  &  & 4 & 10.59 & 108.01 & 23.39 & X.XXX \\
@@ -422,15 +374,24 @@ Base (no search) & -- & 1 & XX.XX & XX.XX & XX.XX & X.XXX \\
 \cmidrule(lr){2-7}
  & \multirow{3}{*}{CLIPScore} & 2 & 10.37 & 113.74 & 23.76 & X.XXX \\
  &  & 4 & 9.88 & 119.60 & 24.09 & X.XXX \\
- &  & 8 & -- & -- & -- & X.XXX \\
+ &  & 8 & 9.39 & 124.81 & 24.35 & X.XXX \\
+ % \cmidrule(lr){2-7}
+ % & \multirow{3}{*}{Dino} & 2 & 11.62 & 103.80 & 23.27 & X.XXX \\
+ % &  & 4 & xxx & xxx & xxx & X.XXX \\
+ % &  & 8 & -- & -- & -- & X.XXX \\
 \cmidrule(lr){2-7}
  & \multirow{3}{*}{ImageReward} & 2 & 10.24 & 114.52 & 23.59 & X.XXX \\
  &  & 4 & 9.62 & 120.74 & 23.76 & X.XXX \\
  &  & 8 & 9.04 & 127.14 & 23.91 & X.XXX \\
 \cmidrule(lr){2-7}
- & \multirow{3}{*}{\method} & 2 & xxx & xxx & xxx & xxx \\
+ & \multirow{3}{*}{\method (Last-step)} & 2 & xxx & xxx & xxx & xxx \\
  &  & 4 & xxx & xxx & xxx & xxx \\
  &  & 8 & xxx & xxx & xxx & xxx \\
+\midrule
+\multirow{3}{*}{FK-Steering}
+& \method\ (Early+Mid, $N{=}8\!\to\!4\!\to\!1$) & 8 & xx.xx & xx.xx & xx.xx & xxx \\
+& \method\ (Mid+Last, $N{=}8\!\to\!4\!\to\!1$)  & 8 & xx.xx & xx.xx & xx.xx & xxx \\
+& \method\ (Early+Last, $N{=}8\!\to\!4\!\to\!1$) & 8 & xx.xx & xx.xx & xx.xx & xxx \\
 \bottomrule
 \end{tabular}
 \end{table}
