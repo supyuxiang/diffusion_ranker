@@ -2,7 +2,7 @@
 
 '''
 
-python /root/diffusion_ranker/uncondition/train_probe.py \
+python /root/diffusion_ranker/uncondition_celebahq/train_probe.py \
   --data_path /root/autodl-tmp/ddpm_hiddens_and_rewards_shards \
   --step_idx 24 \
   --layer_idx 19 \

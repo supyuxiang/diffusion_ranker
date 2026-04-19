@@ -3,7 +3,7 @@ set -euo pipefail
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
-python /root/diffusion_ranker/uncondition/ddpm_rollout_repr.py \
+python /root/diffusion_ranker/uncondition_celebahq/ddpm_rollout_repr.py \
   --model_name "${MODEL_NAME:-google_ddpm-celebahq-256}" \
   --num_candidates "${NUM_CAND:-16}" \
   --num_samples "${NUM_SAMPLES:-50000}" \

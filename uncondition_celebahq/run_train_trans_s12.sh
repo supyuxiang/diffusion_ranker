@@ -31,7 +31,7 @@ SPLIT_SEED="${SPLIT_SEED:-42}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-2}"
 SAVE_DIR="${SAVE_DIR:-/root/autodl-tmp/trans_model/s12_l19/hd128_h8_lr1e-4_wd1e-4}"
 
-python /root/diffusion_ranker/uncondition/train_trans.py \
+python /root/diffusion_ranker/uncondition_celebahq/train_trans.py \
   --data_path "${DATA_PATH}" \
   --step_idx "${STEP_IDX}" \
   --layer_idx "${LAYER_IDX}" \

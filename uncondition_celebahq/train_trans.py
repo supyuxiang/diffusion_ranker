@@ -8,7 +8,7 @@ Listwise training with grouped candidates:
 
 Example:
 
-python /root/diffusion_ranker/uncondition/train_trans.py \
+python /root/diffusion_ranker/uncondition_celebahq/train_trans.py \
   --data_path /root/autodl-tmp/ddpm_hiddens_and_rewards_shards \
   --step_idx 12 \
   --layer_idx 19 \

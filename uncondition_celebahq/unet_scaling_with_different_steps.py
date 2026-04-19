@@ -1,12 +1,12 @@
 """
 example:
 
-    CUDA_VISIBLE_DEVICES=0 python /root/diffusion_ranker/uncondition/unet_scaling_with_different_steps.py \
+    CUDA_VISIBLE_DEVICES=0 python /root/diffusion_ranker/uncondition_celebahq/unet_scaling_with_different_steps.py \
         --model_name google_ddpm-celebahq-256 \
         --batch_size 128 \
         --num_gen 50000 \
         --save_dir /root/autodl-tmp/outputs/unet_scaling_with_different_steps \
-        --real_dir /root/autodl-tmp/celebahq256_png 
+        --real_dir /root/autodl-tmp/celebahq256_png_30k_flat 
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--real_dir",
         type=str,
-        default="/root/autodl-tmp/celebahq256_png",
+        default="/root/autodl-tmp/celebahq256_png_30k_flat",
         help="真实图像根目录",
     )
     p.add_argument("--seed", type=int, default=42)

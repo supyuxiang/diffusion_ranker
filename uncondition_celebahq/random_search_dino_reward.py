@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 '''
-python /root/diffusion_ranker/uncondition/random_search_dino_reward.py \
+python /root/diffusion_ranker/uncondition_celebahq/random_search_dino_reward.py \
   --output_dir /root/autodl-tmp/uncond_random_search_dino_ps8 \
   --parallel_size 8 \
   --num_samples 100 \
@@ -136,7 +136,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("Online random search with DINO reward (parallel size=8)")
     p.add_argument("--output_dir", type=str, default="/root/autodl-tmp/uncond_random_search_dino_ps8")
     p.add_argument("--model_path", type=str, default="/root/autodl-tmp/google-ddpm-ema-celebahq-256")
-    p.add_argument("--real_dir", type=str, default="/root/autodl-tmp/celebahq256_png")
+    p.add_argument("--real_dir", type=str, default="/root/autodl-tmp/celebahq256_png_30k_flat")
     p.add_argument("--clip_model_dir", type=str, default="/root/autodl-tmp/openai_clip-vit-large-patch14")
     p.add_argument("--clip_batch_size", type=int, default=64)
     p.add_argument("--dino_model_dir", type=str, default="/root/autodl-tmp/facebook_dinov2-base")

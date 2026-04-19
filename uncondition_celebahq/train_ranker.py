@@ -9,7 +9,7 @@ predicts per-candidate scores. Training uses a combined loss:
 
 Example (single merged .pth):
 
-python /root/diffusion_ranker/uncondition/train_ranker.py \
+python /root/diffusion_ranker/uncondition_celebahq/train_ranker.py \
   --data_path /root/autodl-tmp/ddpm_hidden_store_demo.pth \
   --step_idx 12 \
   --layer_idx 19 \
@@ -20,7 +20,7 @@ python /root/diffusion_ranker/uncondition/train_ranker.py \
 
 Example (shard directory):
 
-python /root/diffusion_ranker/uncondition/train_ranker.py \
+python /root/diffusion_ranker/uncondition_celebahq/train_ranker.py \
   --data_path /root/autodl-tmp/ddpm_hiddens_and_rewards_shards \
   --step_idx 12 \
   --layer_idx 19 \
