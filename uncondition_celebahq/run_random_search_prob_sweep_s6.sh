@@ -7,7 +7,7 @@ PROBE_CKPT="${PROBE_CKPT:-/root/autodl-tmp/probe_model/s6_l19/hd128_lr1e-4_wd1e-
 OUT_ROOT="${OUT_ROOT:-/root/autodl-tmp/uncond_random_search_probe_sweep_s6}"
 
 MODEL_PATH="${MODEL_PATH:-/root/autodl-tmp/google-ddpm-ema-celebahq-256}"
-REAL_DIR="${REAL_DIR:-/root/autodl-tmp/celebahq256_png}"
+REAL_DIR="${REAL_DIR:-/root/autodl-tmp/celebahq256_png_30k_flat}"
 NUM_SAMPLES="${NUM_SAMPLES:-50000}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
 NUM_INFERENCE_STEPS="${NUM_INFERENCE_STEPS:-25}"
@@ -33,7 +33,7 @@ echo "[info] step_idx=${STEP_IDX}"
 for PS in 2 4 8; do
   OUT_DIR="${OUT_ROOT}/ps${PS}"
   echo "[run] parallel_size=${PS} -> ${OUT_DIR}"
-  python /root/diffusion_ranker/uncondition/random_search_prob_reward.py \
+  python /root/diffusion_ranker/uncondition_celebahq/random_search_prob_reward.py \
     --probe_ckpt "${PROBE_CKPT}" \
     --output_dir "${OUT_DIR}" \
     --model_path "${MODEL_PATH}" \
