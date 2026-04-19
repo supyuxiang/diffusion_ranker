@@ -47,7 +47,7 @@ def parse_args() -> argparse.Namespace:
         default="/root/autodl-tmp/dit_imagenet_hiddens_and_is_rewards_s1_6_9_l16_per64.pth",
     )
     p.add_argument("--model_name", type=str, default="dit-xl-2-256")
-    p.add_argument("--per_samples", type=int, default=64)
+    p.add_argument("--per_samples", type=int, default=128)
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--num_inference_steps", type=int, default=10)
     p.add_argument("--guidance_scale", type=float, default=1.0)
