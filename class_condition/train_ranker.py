@@ -159,8 +159,8 @@ class Trainer:
     def train_epoch(self):
         self.ranker.train()
         parallel_size = self.config.get('parallel_size', 8)
-        num_boostrap_samples = self.config.get('num_boostrap_samples', 8)
-        assert num_boostrap_samples * parallel_size >= training_samples_per_class, '一个batch训得不充分，考虑增大parallel_size或num_boostrap_samples'
+        num_bootstrap_samples = self.config.get('num_bootstrap_samples', 8)
+        assert num_bootstrap_samples * parallel_size >= training_samples_per_class, '一个batch训得不充分，考虑增大parallel_size或num_bootstrap_samples'
         epoch_loss = 0.0
 
         if self.shuffle_class:
@@ -170,12 +170,12 @@ class Trainer:
                 prompt_hs, candidate_hs, reward, label = prompt_hs.to(self.device), candidate_hs.to(self.device), reward.to(self.device), label.to(self.device)
                 
                 batch_loss = 0.0
-                for bootstrap_idx in range(num_boostrap_samples):
-                    indices = torch.randperm(self.batch_size)
+                for bootstrap_idx in range(num_bootstrap_samples):
+                    indices = torch.randperm(self.batch_size)[:parallel_size] # 随机采样parallel_size个样本
                     bootstrap_prompts_hs,bootstrap_candidates_hs,bootstrap_reward = prompt_hs[indices], candidate_hs[indices], reward[indices]
                     bootstrap_loss = self.process_bootstrap(bootstrap_prompts_hs, bootstrap_candidates_hs, bootstrap_reward, self.ranker)
                     batch_loss += bootstrap_loss
-                batch_loss /= num_boostrap_samples
+                batch_loss /= num_bootstrap_samples
                 pbar.set_postfix(loss=batch_loss)
                 
                 self.optimizer.zero_grad()
@@ -188,6 +188,23 @@ class Trainer:
         else:
             pbar = tqdm(self.train_dataloader, desc='Training', leave=False)
             for class_idx, class_group in enumerate(pbar):
+                batch_prompt_hs, batch_candidate_hs, batch_reward, batch_label = class_group
+                batch_prompt_hs, batch_candidate_hs, batch_reward, batch_label = batch_prompt_hs.to(self.device), batch_candidate_hs.to(self.device), batch_reward.to(self.device), batch_label.to(self.device)
+                batch_loss = 0.0
+                for bootstrap_idx in range(num_bootstrap_samples):
+                    indices = torch.randperm(len(batch_prompt_hs))[:parallel_size]
+                    bootstrap_prompts_hs,bootstrap_candidates_hs,bootstrap_reward = batch_prompt_hs[indices], batch_candidate_hs[indices], batch_reward[indices]
+                    bootstrap_loss = self.process_bootstrap(bootstrap_prompts_hs, bootstrap_candidates_hs, bootstrap_reward, self.ranker)
+                    batch_loss += bootstrap_loss
+                batch_loss /= num_bootstrap_samples 
+                pbar.set_postfix(loss=batch_loss) 
+                self.optimizer.zero_grad()
+                batch_loss.backward()
+                self.optimizer.step()
+            epoch_loss += batch_loss
+            epoch_loss /= len(self.train_dataloader)
+            return epoch_loss
+        
                 
 
 

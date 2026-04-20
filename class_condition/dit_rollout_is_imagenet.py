@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--model_name", type=str, default="dit-xl-2-256")
     p.add_argument("--per_samples", type=int, default=128)
-    p.add_argument("--batch_size", type=int, default=64)
+    p.add_argument("--batch_size", type=int, default=256)
     p.add_argument("--num_inference_steps", type=int, default=10)
     p.add_argument("--guidance_scale", type=float, default=1.0)
     p.add_argument("--seed", type=int, default=42)
