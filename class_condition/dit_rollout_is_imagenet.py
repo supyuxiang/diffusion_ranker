@@ -57,6 +57,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dtype", type=str, default="bf16", choices=("fp32", "fp16", "bf16"))
     p.add_argument("--target_step_indices", type=str, default="1,6,9")
     p.add_argument("--target_layer_idx", type=int, default=16)
+    p.add_argument("--mc", type=int, default=5)
     return p.parse_args()
 
 
@@ -123,6 +124,23 @@ def _reward_inception_confidence(images: list[Image.Image], feat_extractor, devi
     probs = F.softmax(logits.float(), dim=-1)  # (B, 1008)
     # reward per sample: max class confidence -> (B,)
     return probs.max(dim=-1).values.detach().cpu().to(torch.float32)
+
+
+@torch.inference_mode()
+def mc_for_estimate_reward(
+    latents,
+    timestep:int,
+    scheduler,
+    feat_extractor,
+    device: torch.device,
+    mc: int = 5,
+) -> torch.Tensor:
+    rewards_ls = []
+    for i in range(mc):
+        scheduler_copy = copy.deepcopy(scheduler)
+        gen = torch.Generator(device=device).manual_seed(int(args.seed) + i)
+        
+
 
 
 @torch.inference_mode()
@@ -231,9 +249,11 @@ def rollout() -> None:
                     x,
                     timestep=timesteps_b,
                     class_labels=class_labels_input,
-                ).sample
+                ).sample # predict noise
 
                 if float(args.guidance_scale) > 1:
+                    # eps: 2*batch_n, latent_channels, latent_size, latent_size
+                    # tail: 2*batch_n, latent_channels, latent_size, latent_size
                     eps, tail = noise_pred[:, :latent_channels], noise_pred[:, latent_channels:]
                     cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
                     half_eps = uncond_eps + float(args.guidance_scale) * (cond_eps - uncond_eps)
@@ -248,30 +268,30 @@ def rollout() -> None:
                 x = pipe.scheduler.step(model_output, t, x, generator=gen).prev_sample
                 del noise_pred, model_output
 
-            current_store_ref["store"] = None
-            images = _decode_dit_latents_to_pil(pipe, x, float(args.guidance_scale))
-            reward_t = _reward_inception_confidence(images, feat_extractor, device)
+            current_store_ref["store"] = None # clear current store
+            images = _decode_dit_latents_to_pil(pipe, x, float(args.guidance_scale)) # decode latents to images
+            reward_t = _reward_inception_confidence(images, feat_extractor, device) # compute reward
 
             for st_i in target_step_indices:
-                h_chunks = batch_hidden_store[st_i]
+                h_chunks = batch_hidden_store[st_i] # get hidden chunks for current step
                 h_key = f"s{st_i}_l{target_layer_idx}"
                 if h_chunks:
-                    h_t = torch.cat(h_chunks, dim=0)
-                    hidden_chunks_by_key[h_key].append(h_t)
-                    del h_t
+                    h_t = torch.cat(h_chunks, dim=0) # cat hidden chunks
+                    hidden_chunks_by_key[h_key].append(h_t) # append to hidden chunks by key
+                    del h_t # clear h_t
 
                 # reward is computed on final images; one reward vector aligns with this batch order.
-                reward_chunks_by_key[h_key].append(reward_t.clone())
+                reward_chunks_by_key[h_key].append(reward_t.clone()) # append to reward chunks by key
 
-            del latents, x, cls, cls_null, class_labels_input, batch_hidden_store, gen, label_t, images, reward_t
-            gc.collect()
+            del latents, x, cls, cls_null, class_labels_input, batch_hidden_store, gen, label_t, images, reward_t # clear variables
+            gc.collect() # collect garbage
             if device.type == "cuda":
-                torch.cuda.empty_cache()
+                torch.cuda.empty_cache() # empty cache
     finally:
-        handle.remove()
+        handle.remove() # remove hook
 
-    label_store = torch.cat(label_chunks, dim=0) if label_chunks else torch.empty(0, dtype=torch.long)
-    del label_chunks
+    label_store = torch.cat(label_chunks, dim=0) if label_chunks else torch.empty(0, dtype=torch.long) # cat label chunks
+    del label_chunks 
 
     saved_paths: list[Path] = []
     for st_i in target_step_indices:
