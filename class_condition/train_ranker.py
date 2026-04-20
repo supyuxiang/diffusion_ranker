@@ -47,6 +47,7 @@ class Trainer:
         self.shuffle_class = self.config.get('shuffle_class', False)
 
         if not self.shuffle_class:
+            self.batch_size = training_samples_per_class
             self.train_dataset = RankerDataset(
                 step_idx=self.config['step_idx'],
                 layer_idx=self.config['layer_idx'],
@@ -54,13 +55,15 @@ class Trainer:
             )
             self.train_dataloader = DataLoader(
                 self.train_dataset,
-                batch_size=self.config['batch_size'],
+                batch_size=self.batch_size,
                 shuffle=True,
                 num_workers=self.config.get('num_workers', 4),
             )
             self.val_dataset,self.val_dataloader = None,None
         
         else:
+            self.batch_size = self.config.get('batch_size', 32)
+
             self.full_dataset = RankerDataset(
                 step_idx=self.config['step_idx'],
                 layer_idx=self.config['layer_idx'],
@@ -72,16 +75,17 @@ class Trainer:
             self.train_dataset, self.val_dataset = random_split(self.full_dataset, split_ratio)
             self.train_dataloader = DataLoader(
                 self.train_dataset,
-                batch_size=self.config['batch_size'],
+                batch_size=self.batch_size,
                 shuffle=True,
                 num_workers=self.config.get('num_workers', 4),
             )
             self.val_dataloader = DataLoader(
                 self.val_dataset,
-                batch_size=self.config['batch_size'],
+                batch_size=self.batch_size,
                 shuffle=False,
                 num_workers=self.config.get('num_workers', 4),
             )
+
 
 
 
@@ -142,13 +146,54 @@ class Trainer:
         )
     
 
+    def process_bootstrap(self,prompt_hs,candidate_hs,reward,ranker):
+        ranker.train()
+        loss = self.loss_fn(
+            ranker(prompt_hs, candidate_hs),
+            reward,
+        )
+        return loss.item()
+
+
 
     def train_epoch(self):
         self.ranker.train()
+        parallel_size = self.config.get('parallel_size', 8)
+        num_boostrap_samples = self.config.get('num_boostrap_samples', 8)
+        assert num_boostrap_samples * parallel_size >= training_samples_per_class, '一个batch训得不充分，考虑增大parallel_size或num_boostrap_samples'
         epoch_loss = 0.0
-        batch_size = self.config.get('batch_size', 128)
-        
-        for batch
+
+        if self.shuffle_class:
+            pbar = tqdm(self.train_dataloader, desc='Training', leave=False)
+            for batch_idx, batch in enumerate(pbar):
+                prompt_hs, candidate_hs, reward, label = batch
+                prompt_hs, candidate_hs, reward, label = prompt_hs.to(self.device), candidate_hs.to(self.device), reward.to(self.device), label.to(self.device)
+                
+                batch_loss = 0.0
+                for bootstrap_idx in range(num_boostrap_samples):
+                    indices = torch.randperm(self.batch_size)
+                    bootstrap_prompts_hs,bootstrap_candidates_hs,bootstrap_reward = prompt_hs[indices], candidate_hs[indices], reward[indices]
+                    bootstrap_loss = self.process_bootstrap(bootstrap_prompts_hs, bootstrap_candidates_hs, bootstrap_reward, self.ranker)
+                    batch_loss += bootstrap_loss
+                batch_loss /= num_boostrap_samples
+                pbar.set_postfix(loss=batch_loss)
+                
+                self.optimizer.zero_grad()
+                batch_loss.backward()
+                self.optimizer.step()
+            epoch_loss += batch_loss
+            epoch_loss /= len(self.train_dataloader)
+            return epoch_loss
+
+        else:
+            pbar = tqdm(self.train_dataloader, desc='Training', leave=False)
+            for class_idx, class_group in enumerate(pbar):
+                
+
+
+
+
+
     
 
     def evaluate(self):
