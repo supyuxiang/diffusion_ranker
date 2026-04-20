@@ -3,6 +3,7 @@ import torch.nn as nn
 import argparse
 from omegaconf import OmegaConf
 from tqdm import tqdm
+from torch.utils.data import Dataset, DataLoader, random_split
 
 
 import sys
@@ -41,18 +42,48 @@ class Trainer:
         self.ranker.to(self.device)
     
     def build_dataloader(self):
-        from class_condition.dataset import RankerTrainingDataset
-        self.train_dataset = RankerTrainingDataset(
-            candidate_dir=self.config['candidate_dir'],
-            prompt_type=self.config['prompt_type'],
-        )
-        self.train_dataloader = DataLoader(
-            self.train_dataset,
-            batch_size=self.config['batch_size'],
-            shuffle=True,
-            num_workers=self.config.get('num_workers', 4),
-        )
-        self.val_dataset = None
+        from class_condition.dataset import RankerDataset
+
+        self.shuffle_class = self.config.get('shuffle_class', False)
+
+        if not self.shuffle_class:
+            self.train_dataset = RankerDataset(
+                step_idx=self.config['step_idx'],
+                layer_idx=self.config['layer_idx'],
+                prompt_type=self.config['prompt_type'],
+            )
+            self.train_dataloader = DataLoader(
+                self.train_dataset,
+                batch_size=self.config['batch_size'],
+                shuffle=True,
+                num_workers=self.config.get('num_workers', 4),
+            )
+            self.val_dataset,self.val_dataloader = None,None
+        
+        else:
+            self.full_dataset = RankerDataset(
+                step_idx=self.config['step_idx'],
+                layer_idx=self.config['layer_idx'],
+                prompt_type=self.config['prompt_type'],
+                shuffle_class=True,
+            )
+            
+            split_ratio = self.config.get('split_ratio', [0.9, 0.1])
+            self.train_dataset, self.val_dataset = random_split(self.full_dataset, split_ratio)
+            self.train_dataloader = DataLoader(
+                self.train_dataset,
+                batch_size=self.config['batch_size'],
+                shuffle=True,
+                num_workers=self.config.get('num_workers', 4),
+            )
+            self.val_dataloader = DataLoader(
+                self.val_dataset,
+                batch_size=self.config['batch_size'],
+                shuffle=False,
+                num_workers=self.config.get('num_workers', 4),
+            )
+
+
 
     def build_optimizer(self):
         optimizer = self.config.get('optimizer', 'adamw')
@@ -74,6 +105,8 @@ class Trainer:
         else:
             raise NotImplementedError(f"Invalid optimizer: {optimizer}")
     
+
+
     def build_scheduler(self):
         scheduler = self.config.get('scheduler', 'cosine')
         if scheduler == 'cosine':
@@ -99,6 +132,8 @@ class Trainer:
         else:
             raise NotImplementedError(f"Invalid scheduler: {scheduler}")
 
+
+
     def build_loss_fn(self):
         from class_condition.utils import RankerLoss
         self.loss_fn = RankerLoss(
@@ -106,6 +141,8 @@ class Trainer:
             kl_type=self.config.get('kl_type', 'kl'),
         )
     
+
+
     def train_epoch(self):
         self.ranker.train()
         epoch_loss = 0.0
