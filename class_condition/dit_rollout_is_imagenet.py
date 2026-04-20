@@ -21,6 +21,7 @@ Default setup:
 from __future__ import annotations
 
 import argparse
+import copy
 import gc
 import json
 import sys
@@ -128,18 +129,72 @@ def _reward_inception_confidence(images: list[Image.Image], feat_extractor, devi
 
 @torch.inference_mode()
 def mc_for_estimate_reward(
-    latents,
-    timestep:int,
-    scheduler,
+    pipe,
+    x_start: torch.Tensor,
+    start_step_idx: int,
+    timesteps: torch.Tensor,
+    scheduler_snapshot,
+    class_labels_input: torch.Tensor,
+    latent_channels: int,
+    guidance_scale: float,
     feat_extractor,
     device: torch.device,
+    seed_base: int,
     mc: int = 5,
 ) -> torch.Tensor:
-    rewards_ls = []
-    for i in range(mc):
-        scheduler_copy = copy.deepcopy(scheduler)
-        gen = torch.Generator(device=device).manual_seed(int(args.seed) + i)
-        
+    """
+    Estimate reward from a target-step latent by MC continuation rollout.
+    Returns per-sample reward mean with shape (B,).
+    """
+
+    if start_step_idx >= len(timesteps):
+        images = _decode_dit_latents_to_pil(pipe, x_start, guidance_scale)
+        return _reward_inception_confidence(images, feat_extractor, device)
+
+    rewards_ls: list[torch.Tensor] = []
+    for i in range(int(mc)):
+        scheduler = copy.deepcopy(scheduler_snapshot)
+        x = x_start.detach().clone()
+        gen = torch.Generator(device=device).manual_seed(int(seed_base) + i)
+
+        for st_i in range(int(start_step_idx), int(len(timesteps))):
+            t = timesteps[st_i]
+            if guidance_scale > 1:
+                half = x[: len(x) // 2]
+                x = torch.cat([half, half], dim=0)
+
+            x_in = scheduler.scale_model_input(x, t)
+            timesteps_b = _broadcast_timesteps(t, x_in)
+            noise_pred = pipe.transformer(
+                x_in,
+                timestep=timesteps_b,
+                class_labels=class_labels_input,
+            ).sample
+
+            if guidance_scale > 1:
+                eps, tail = noise_pred[:, :latent_channels], noise_pred[:, latent_channels:]
+                cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
+                half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
+                eps = torch.cat([half_eps, half_eps], dim=0)
+                noise_pred = torch.cat([eps, tail], dim=1)
+
+            if pipe.transformer.config.out_channels // 2 == latent_channels:
+                model_output, _ = torch.split(noise_pred, latent_channels, dim=1)
+            else:
+                model_output = noise_pred
+
+            x = scheduler.step(model_output, t, x, generator=gen).prev_sample
+            del noise_pred, model_output, x_in
+
+        images = _decode_dit_latents_to_pil(pipe, x, guidance_scale)
+        reward_t = _reward_inception_confidence(images, feat_extractor, device)  # (B,)
+        rewards_ls.append(reward_t)
+        del x, images, reward_t
+        gc.collect()
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    return torch.stack(rewards_ls, dim=0).mean(dim=0).to(torch.float32)  # (B,)
 
 
 
@@ -188,8 +243,11 @@ def rollout() -> None:
     current_step_idx = {"value": -1}
     current_batch_size = {"value": 0}
     current_store_ref: dict[str, dict[int, list[torch.Tensor]] | None] = {"store": None}
+    hook_enabled = {"value": True}
 
     def _hook(_module, _inp, out) -> None:
+        if not hook_enabled["value"]:
+            return
         s = current_step_idx["value"]
         store = current_store_ref["store"]
         if store is None or s not in store:
@@ -237,6 +295,8 @@ def rollout() -> None:
 
             batch_hidden_store: dict[int, list[torch.Tensor]] = {s: [] for s in target_step_indices}
             current_store_ref["store"] = batch_hidden_store # current store <- batch_hidden_store
+            batch_snapshot_x: dict[int, torch.Tensor] = {}
+            batch_snapshot_scheduler: dict[int, object] = {}
 
             for st_i, t in enumerate(timesteps):
                 current_step_idx["value"] = st_i # update current step idx
@@ -268,9 +328,32 @@ def rollout() -> None:
                 x = pipe.scheduler.step(model_output, t, x, generator=gen).prev_sample
                 del noise_pred, model_output
 
+                if st_i in target_step_indices:
+                    # snapshot latent/scheduler at this target step, then continue from st_i+1 in MC rollout
+                    batch_snapshot_x[st_i] = x.detach().clone()
+                    batch_snapshot_scheduler[st_i] = copy.deepcopy(pipe.scheduler)
+
             current_store_ref["store"] = None # clear current store
-            images = _decode_dit_latents_to_pil(pipe, x, float(args.guidance_scale)) # decode latents to images
-            reward_t = _reward_inception_confidence(images, feat_extractor, device) # compute reward
+            hook_enabled["value"] = False  # disable hook during MC continuation rollout
+            batch_reward_by_step: dict[int, torch.Tensor] = {}
+            for st_i in target_step_indices:
+                if st_i not in batch_snapshot_x:
+                    raise RuntimeError(f"target step {st_i} not captured for current batch")
+                batch_reward_by_step[st_i] = mc_for_estimate_reward(
+                    pipe=pipe,
+                    x_start=batch_snapshot_x[st_i],
+                    start_step_idx=st_i + 1,
+                    timesteps=timesteps,
+                    scheduler_snapshot=batch_snapshot_scheduler[st_i],
+                    class_labels_input=class_labels_input,
+                    latent_channels=latent_channels,
+                    guidance_scale=float(args.guidance_scale),
+                    feat_extractor=feat_extractor,
+                    device=device,
+                    seed_base=int(args.seed) + batch_i * 10000 + st_i * 100,
+                    mc=int(args.mc),
+                )
+            hook_enabled["value"] = True
 
             for st_i in target_step_indices:
                 h_chunks = batch_hidden_store[st_i] # get hidden chunks for current step
@@ -281,9 +364,9 @@ def rollout() -> None:
                     del h_t # clear h_t
 
                 # reward is computed on final images; one reward vector aligns with this batch order.
-                reward_chunks_by_key[h_key].append(reward_t.clone()) # append to reward chunks by key
+                reward_chunks_by_key[h_key].append(batch_reward_by_step[st_i].clone()) # append to reward chunks by key
 
-            del latents, x, cls, cls_null, class_labels_input, batch_hidden_store, gen, label_t, images, reward_t # clear variables
+            del latents, x, cls, cls_null, class_labels_input, batch_hidden_store, batch_reward_by_step, batch_snapshot_x, batch_snapshot_scheduler, gen, label_t # clear variables
             gc.collect() # collect garbage
             if device.type == "cuda":
                 torch.cuda.empty_cache() # empty cache
@@ -335,7 +418,8 @@ def rollout() -> None:
                     "label_order_note": (
                         "labels are generated in ascending class-id order, each class repeated exactly per_samples times"
                     ),
-                    "reward_note": "reward uses single-sample Inception max-softmax confidence on final images",
+                    "reward_note": "reward uses MC-mean Inception max-softmax confidence from target-step latent continuation",
+                    "reward_mc": int(args.mc),
                     "verifier": "inception_max_softmax_confidence",
                     "layer_index_ratio": float(target_ratio),
                 },
