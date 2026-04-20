@@ -1,0 +1,50 @@
+random search is-reward:   0%|          | 0/25000 [00:00<?, ?it/s]random search is-reward:   0%|          | 1/25000 [00:00<3:31:07,  1.97it/s]random search is-reward:   0%|          | 2/25000 [00:00<1:52:49,  3.69it/s]random search is-reward:   0%|          | 3/25000 [00:00<1:22:10,  5.07it/s]random search is-reward:   0%|          | 4/25000 [00:00<1:07:09,  6.20it/s]random search is-reward:   0%|          | 5/25000 [00:00<58:50,  7.08it/s]  random search is-reward:   0%|          | 6/25000 [00:01<54:00,  7.71it/s]random search is-reward:   0%|          | 7/25000 [00:01<50:31,  8.24it/s]random search is-reward:   0%|          | 8/25000 [00:01<48:14,  8.63it/s]random search is-reward:   0%|          | 9/25000 [00:01<46:46,  8.90it/s]random search is-reward:   0%|          | 10/25000 [00:01<45:30,  9.15it/s]random search is-reward:   0%|          | 11/25000 [00:01<44:22,  9.38it/s]random search is-reward:   0%|          | 13/25000 [00:01<42:35,  9.78it/s]random search is-reward:   0%|          | 15/25000 [00:01<41:46,  9.97it/s]random search is-reward:   0%|          | 17/25000 [00:02<41:21, 10.07it/s]random search is-reward:   0%|          | 19/25000 [00:02<41:11, 10.11it/s]random search is-reward:   0%|          | 21/25000 [00:02<40:59, 10.15it/s]random search is-reward:   0%|          | 23/25000 [00:02<40:26, 10.29it/s]random search is-reward:   0%|          | 25/25000 [00:02<40:07, 10.38it/s]random search is-reward:   0%|          | 27/25000 [00:03<40:20, 10.32it/s]random search is-reward:   0%|          | 29/25000 [00:03<40:20, 10.31it/s]random search is-reward:   0%|          | 31/25000 [00:03<39:59, 10.41it/s]random search is-reward:   0%|          | 33/25000 [00:03<39:55, 10.42it/s]random search is-reward:   0%|          | 35/25000 [00:03<40:07, 10.37it/s]random search is-reward:   0%|          | 37/25000 [00:04<40:03, 10.39it/s]random search is-reward:   0%|          | 39/25000 [00:04<40:01, 10.39it/s]random search is-reward:   0%|          | 41/25000 [00:04<39:46, 10.46it/s]random search is-reward:   0%|          | 43/25000 [00:04<39:27, 10.54it/s]random search is-reward:   0%|          | 45/25000 [00:04<39:26, 10.54it/s]random search is-reward:   0%|          | 47/25000 [00:05<39:19, 10.58it/s]random search is-reward:   0%|          | 49/25000 [00:05<39:24, 10.55it/s]random search is-reward:   0%|          | 51/25000 [00:05<41:36,  9.99it/s]random search is-reward:   0%|          | 53/25000 [00:05<43:48,  9.49it/s]random search is-reward:   0%|          | 54/25000 [00:05<43:55,  9.47it/s]random search is-reward:   0%|          | 55/25000 [00:05<44:04,  9.43it/s]random search is-reward:   0%|          | 55/25000 [00:05<44:58,  9.25it/s]
+Traceback (most recent call last):
+  File "/root/diffusion_ranker/class_condition/dit_random_search_is_reward.py", line 190, in <module>
+    main()
+  File "/root/diffusion_ranker/class_condition/dit_random_search_is_reward.py", line 141, in main
+    best_path_ls, round_logs = run_random_search_is_reward(
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/root/diffusion_ranker/class_condition/dit_random_search_is_reward.py", line 81, in run_random_search_is_reward
+    reward = _batch_is_reward(batch_candidate_paths, feat_extractor, device)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/root/diffusion_ranker/class_condition/reward.py", line 271, in _batch_is_reward
+    logits = feat_extractor(tensors)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch_fidelity/feature_extractor_inceptionv3.py", line 137, in forward
+    x = self.Conv2d_3b_1x1(x)
+        ^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch_fidelity/feature_extractor_inceptionv3.py", line 238, in forward
+    x = self.conv(x)
+        ^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/nn/modules/conv.py", line 548, in forward
+    return self._conv_forward(input, self.weight, self.bias)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/nn/modules/conv.py", line 543, in _conv_forward
+    return F.conv2d(
+           ^^^^^^^^^
+KeyboardInterrupt

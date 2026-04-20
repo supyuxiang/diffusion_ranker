@@ -6,8 +6,8 @@ import torch
 import torch.nn as nn
 from typing import Optional
 
-_ROOT_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_ROOT_DIR))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
 from utils import *
 
@@ -16,8 +16,15 @@ import torchvision.transforms as T
 from torchvision.transforms import Compose, Resize, CenterCrop
 import torch.nn.functional as F
 
+from class_condition.utils import _sorted_candidate_images
+
+
+# ------------------------------- I love Peking University -------------------------------
+
+
 
 ############# fid reward ####################
+
 
 def extract_features_from_images(
     images: list[Image.Image],
@@ -90,33 +97,32 @@ def fid_reward(batch_stats:dict,n_batch:int,selected_stats:dict,n_selected:int,r
 ########################     end fid reward     ##############################
 
 
+
 ######################## clipscore reward ##############################
 from PIL import Image
 from transformers import CLIPModel, CLIPProcessor
 
 
-with open('/root/diffusion_ranker/imagenet-simple-labels.json', 'r') as f:
+_DEFAULT_CLIP_DIR = Path("/root/autodl-tmp/openai_clip-vit-large-patch14")
+
+
+with open(ROOT / 'imagenet-simple-labels.json', 'r') as f:
     labels_1k = json.load(f)
 
 
-def _path_to_clip_prompt(path: Path, labels_1k: list[str]) -> str:
-    """``image_14007_00512.png`` → 取 stem 最后一段为 class_id。"""
-    stem = Path(path).stem
-    parts = stem.split("_")
-    # check
-    if len(parts) < 3:
-        raise ValueError(f"expected image_*_*_{{class}}.png, got {path.name}")
-    class_id = int(parts[-1])
-    if not (0 <= class_id < len(labels_1k)):
-        raise IndexError(f"class_id={class_id} out of range for labels ({len(labels_1k)})")
 
-    return f"A photo of a {labels_1k[class_id]}."
+def path2prompt(path_ls: list[Path]) -> list[str]:
+    prompt_ls = []
+    for p in path_ls:
+        stem = Path(p).stem
+        parts = stem.split('_')[-1] # 0-999
+        class_id = int(parts)
+        prompt = f"A photo of a {labels_1k[class_id]}."
+        prompt_ls.append(prompt)
+    return prompt_ls
 
 
 def load_clip(device: torch.device):
-
-    _DEFAULT_CLIP_DIR = Path("/root/autodl-tmp/openai_clip-vit-large-patch14")
-
     clip = CLIPModel.from_pretrained(str(_DEFAULT_CLIP_DIR), local_files_only=True)
     clip.to(device)
     clip.eval()
@@ -124,16 +130,21 @@ def load_clip(device: torch.device):
     return clip, processor
 
 
+@torch.inference_mode()
 def clipscore_reward(
     batch_paths: list[Path],
     clip,
     processor,
-    labels_1k: list[str],
 ) -> float:
+    # batch_paths here is already a sliced list[Path] from random search.
+    # Do not call _sorted_candidate_images (expects a directory Path).
+    batch_paths = [Path(p) for p in batch_paths]
+    if len(batch_paths) == 0:
+        raise ValueError("clipscore_reward received empty batch_paths; check candidate image counts and --num_samples.")
     batch_images = [
         Image.open(path).convert("RGB").copy() for path in batch_paths
     ]
-    batch_prompts = [_path_to_clip_prompt(path, labels_1k) for path in batch_paths]
+    batch_prompts = path2prompt(batch_paths)
 
     inputs = processor(
         text=batch_prompts,
@@ -143,12 +154,11 @@ def clipscore_reward(
     )
     inputs = {k:v.to(clip.device) for k,v in inputs.items()}
     # inference
-    with torch.no_grad():
-        out = clip(**inputs)
-        image_features = out.image_embeds / out.image_embeds.norm(dim=-1, keepdim=True)
-        text_features = out.text_embeds / out.text_embeds.norm(dim=-1,keepdim=True)
-        sim = (image_features * text_features).sum(dim=-1)
-    return float(sim.mean().item())
+    out = clip(**inputs)
+    image_features = out.image_embeds / out.image_embeds.norm(dim=-1, keepdim=True) #b,d
+    text_features = out.text_embeds / out.text_embeds.norm(dim=-1,keepdim=True) # b,d
+    sim = (image_features * text_features).sum(dim=-1) # b
+    return float(sim.mean().item()) # 
 
 ########################     end clipscore reward     ##############################
 
@@ -196,15 +206,18 @@ def load_imagereward(device: torch.device):
     print("[imagereward] checkpoint loaded")
     return model
 
+@torch.inference_mode()
 def imagereward_reward(batch_paths:list[Path],model) -> float:
     import numpy as np
     from PIL import Image
+    # batch_paths here is already a sliced list[Path] from random search.
+    batch_paths = [Path(p) for p in batch_paths]
+    if len(batch_paths) == 0:
+        raise ValueError("imagereward_reward received empty batch_paths; check candidate image counts and --num_samples.")
     batch_images = [
         Image.open(path).convert('RGB').copy() for path in batch_paths
     ]
-    batch_prompts = [
-        _path_to_clip_prompt(path, labels_1k) for path in batch_paths
-    ]
+    batch_prompts = path2prompt(batch_paths)
 
     reward_ls = []
     for prompt,image in zip(batch_prompts,batch_images):
@@ -259,23 +272,64 @@ def ranker_mean_logit_score(
     
 ##########     is reward     ##############################
 
-@torch.inference_mode()
-def _batch_is_reward(paths: list[Path], feat_extractor, device: torch.device) -> float:
-    from torch_fidelity.datasets import TransformPILtoRGBTensor
 
-    pil_images = [Image.open(p).convert("RGB").copy() for p in paths]
-    transform = Compose([Resize(256), CenterCrop(256), TransformPILtoRGBTensor()])
-    tensors = torch.stack([transform(img) for img in pil_images], dim=0).to(
-        device, non_blocking=(device.type == "cuda")
+
+def _build_inception_logits_extractor(device: torch.device):
+    from torch_fidelity.utils import create_feature_extractor
+
+    return create_feature_extractor(
+        "inception-v3-compat",
+        ["logits_unbiased"],
+        cuda=(device.type == "cuda"),
+        verbose=False,
+        feature_extractor_weights_path=INCEPTION_WEIGHTS_PATH,
     )
-    logits = feat_extractor(tensors)
-    # breakpoint()
-    if isinstance(logits, tuple):
-        logits = logits[0]
-    probs = F.softmax(logits.float(), dim=-1)
-    return float(probs.max(dim=-1).values.mean().item()) # 考虑对每个样本计算概率，然后取平均
+
+
+@torch.inference_mode()
+def is_reward(batch_paths:list[Path],feat_extractor, device:torch.device) -> float:
+    from torch_fidelity.datasets import TransformPILtoRGBTensor
+    # batch_paths here is already a sliced list[Path] from random search.
+    batch_paths = [Path(p) for p in batch_paths]
+    if len(batch_paths) == 0:
+        raise ValueError("is_reward received empty batch_paths; check candidate image counts and --num_samples.")
+    
+    pil_images = [
+        Image.open(p).convert('RGB').copy() for p in batch_paths
+    ]
+    T = Compose(
+        [
+            Resize(256),
+            CenterCrop(256),
+            TransformPILtoRGBTensor()
+        ]
+    )
+    
+    tensors = torch.stack(
+        [
+            T(img) for img in pil_images
+        ],
+        dim=0
+    )
+
+    tensors = tensors.to(device,non_blocking=True)
+    logits = feat_extractor(tensors)[0] # b,1000
+    probs = F.softmax(logits.float(),dim=-1) # b,1000
+    return float(probs.max(dim=-1).values.mean().item()) # batch mean
 
 ########################     end is reward     ##############################
+
+
+######################## dino reward  ############################
+
+
+def dino_reward(batch_paths:list[Path],dino_model,device:torch.device) -> float:
+    from torch_fidelity.datasets import TransformPILtoRGBTensor
+    pass
+
+
+def load_dino(device:torch.device):
+    pass
 
 
 

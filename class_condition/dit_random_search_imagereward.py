@@ -34,6 +34,9 @@ from class_condition.utils import _sorted_candidate_images, _reset_best_dir, sav
 
 
 
+# ------------------------------- I love Peking University -------------------------------
+
+
 
 @torch.inference_mode()
 def run_random_search_imagereward(
@@ -57,35 +60,27 @@ def run_random_search_imagereward(
 
         for candidate_idx, candidate_path_ls in candidate_pathes_dict.items():
             batch_candidate_paths = candidate_path_ls[start_idx : start_idx + n_this_batch]
-            if len(batch_candidate_paths) != n_this_batch:
-                raise ValueError(
-                    f"candidate_{candidate_idx:04d} has only {len(batch_candidate_paths)} images "
-                    f"for slice [{start_idx}:{start_idx + n_this_batch}], expected {n_this_batch}"
-                )
+
             reward = imagereward_reward(batch_candidate_paths, reward_model)
             if reward > best_reward:
                 best_reward = reward
                 best_candidate_idx = candidate_idx
 
-        assert best_candidate_idx != -1
         best_paths_this_loop = candidate_pathes_dict[best_candidate_idx][
             start_idx : start_idx + n_this_batch
         ]
         best_path_ls.extend(best_paths_this_loop)
         start_idx += n_this_batch
 
-    if len(best_path_ls) != num_samples:
-        raise RuntimeError(f"selected {len(best_path_ls)} images, expected {num_samples}")
-
     return best_path_ls
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--output_dir", default="/root/autodl-tmp/eval_dit_random_search_imagereward")
+    p.add_argument("--output_dir", default="/root/autodl-tmp/random_search_imagereward")
     p.add_argument("--num_samples", type=int, default=50_000)
     p.add_argument("--search_batch_size", type=int, default=32)
-    p.add_argument("--num_candidates", type=int, default=16)
+    p.add_argument("--num_candidates", type=int, default=8)
     p.add_argument("--deno_steps", type=int, default=10)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--guidance_scale", type=float, default=1.0)
@@ -101,13 +96,14 @@ def main() -> None:
     real_dir = args.real_dir.expanduser().resolve()
     clip_model_dir = args.clip_model_dir.expanduser().resolve()
 
+    # Keep directory naming stable for integer-like scales: 1.0 -> "1"
+    cfg_tag = f"{float(args.guidance_scale):g}"
     rollout_root = Path(
-        f"/root/autodl-tmp/dit_candidates_50k_cfg{args.guidance_scale}_deno{args.deno_steps}"
+        f"/root/autodl-tmp/rollout_candidate_step{args.deno_steps}_cfg{cfg_tag}"
     )
-    if not rollout_root.is_dir():
-        raise FileNotFoundError(f"missing rollout_root: {rollout_root}")
     candidate_dir_ls = [
-        rollout_root / f"candidate_{i:04d}" for i in range(args.num_candidates)
+        rollout_root / f'candidate_{seed}'
+        for seed in range(int(args.num_candidates))
     ]
 
     set_seed(args.seed)
@@ -115,14 +111,16 @@ def main() -> None:
     reward_model = load_imagereward(device)
 
     candidate_pathes_dict: dict[int, list[Path]] = {}
-    for i in range(args.num_candidates):
-        candidate_dir = candidate_dir_ls[i]
+    for seed in range(int(args.num_candidates)):
+        candidate_dir = candidate_dir_ls[seed]
         if not candidate_dir.is_dir():
             raise FileNotFoundError(f"missing candidate dir: {candidate_dir}")
         paths = _sorted_candidate_images(candidate_dir)
-        if len(paths) < args.num_samples:
-            raise ValueError(f"{candidate_dir} has only {len(paths)} images, expected >= {args.num_samples}")
-        candidate_pathes_dict[i] = paths
+        if len(paths) < int(args.num_samples):
+            raise ValueError(
+                f"{candidate_dir} has only {len(paths)} images, expected >= {int(args.num_samples)}"
+            )
+        candidate_pathes_dict[seed] = paths
 
     best_path_ls = run_random_search_imagereward(
         reward_model,
@@ -158,8 +156,7 @@ def main() -> None:
     # Release ImageReward before metric computation, which loads Inception and CLIP.
     del reward_model
     gc.collect()
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
+    torch.cuda.empty_cache()
 
     metrics = compute_fid_is_clipscore(
         best_dir,
@@ -173,7 +170,7 @@ def main() -> None:
     metrics["num_candidates"] = float(args.num_candidates)
     with open(best_dir / "final_metrics.json", "w", encoding='utf-8') as f:
         json.dump(metrics, f, indent=2, ensure_ascii=False)
-    print(metrics)
+    print(f"metrics: {metrics}")
 
 
 if __name__ == "__main__":

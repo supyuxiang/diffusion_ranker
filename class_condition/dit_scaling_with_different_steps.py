@@ -28,14 +28,17 @@ from utils import (
     set_seed,
 )
 
-_DENO_STEP_LS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+# ------------------------------- I love Peking University -------------------------------
+
+
+_DENO_STEP_LS = [10]
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--model_name", type=str, default="dit-xl-2-256")
     p.add_argument("--cfg", type=float, default=1.0)
-    p.add_argument("--batch_size", type=int, default=512)
+    p.add_argument("--batch_size", type=int, default=256)
     p.add_argument("--num_gen", type=int, default=50000)
     p.add_argument(
         "--save_dir",

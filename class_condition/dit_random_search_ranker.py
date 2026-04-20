@@ -26,14 +26,21 @@ from PIL import Image
 from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parent.parent
+THIS_DIR = Path(__file__).resolve().parent
+if str(THIS_DIR) in sys.path:
+    sys.path.remove(str(THIS_DIR))
 sys.path.insert(0, str(ROOT))
+sys.path.append(str(THIS_DIR))
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 _SEARCH = Path(__file__).resolve().parent
 _ROOT = _SEARCH.parent
 # 与 ``python3 search/...py`` 一致：脚本目录在 path 上，``reward`` 可解析；项目根供 ``utils`` / ``ranker``。
-sys.path.insert(0, str(_ROOT))
-sys.path.insert(0, str(_SEARCH))
+if str(_SEARCH) in sys.path:
+    sys.path.remove(str(_SEARCH))
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+sys.path.append(str(_SEARCH))
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 from ranker.model import DiffusionRanker_CrossAttention, DiffusionRanker_MLP, DiffusionRanker_Transformer
@@ -248,6 +255,84 @@ def _load_merged_repr_tensor(path: Path) -> torch.Tensor:
     if not isinstance(t, torch.Tensor) or t.dim() != 2:
         raise ValueError(f"{path}: 期望 2D Tensor，得到 {type(t)} shape={getattr(t, 'shape', None)}")
     return t
+
+
+class MergedSuiteAccessor:
+    def __init__(
+        self,
+        repr_dir: Path,
+        image_root: Path,
+        num_candidates: int,
+        repr_keys: list[str],
+    ) -> None:
+        if not repr_keys:
+            raise ValueError("repr_keys 不能为空")
+        self.image_root = Path(image_root).resolve()
+        self.num_candidates = int(num_candidates)
+        self.repr_keys = list(repr_keys)
+
+        repr_dir = Path(repr_dir).resolve()
+        if repr_dir.name == "mean":
+            self.repr_mean_dir = repr_dir
+            self.repr_last_dir = repr_dir.parent / "last"
+        else:
+            self.repr_mean_dir = repr_dir / "mean"
+            self.repr_last_dir = repr_dir / "last"
+        if not self.repr_mean_dir.is_dir():
+            raise FileNotFoundError(f"缺少 mean 目录: {self.repr_mean_dir}")
+        if not self.repr_last_dir.is_dir():
+            raise FileNotFoundError(f"缺少 last 目录: {self.repr_last_dir}")
+
+        self.mean_tensors: dict[str, torch.Tensor] = {}
+        self.last_tensors: dict[str, torch.Tensor] = {}
+        n_rows: int | None = None
+        for key in self.repr_keys:
+            mean_pt = self.repr_mean_dir / f"{key}.pt"
+            last_pt = self.repr_last_dir / f"{key}.pt"
+            if not mean_pt.is_file():
+                raise FileNotFoundError(f"缺少 {mean_pt}")
+            if not last_pt.is_file():
+                raise FileNotFoundError(f"缺少 {last_pt}")
+            t_mean = _load_merged_repr_tensor(mean_pt)
+            t_last = _load_merged_repr_tensor(last_pt)
+            if t_mean.shape != t_last.shape:
+                raise ValueError(f"{key}: mean/last 形状不一致 {tuple(t_mean.shape)} vs {tuple(t_last.shape)}")
+            if n_rows is None:
+                n_rows = int(t_mean.shape[0])
+            elif int(t_mean.shape[0]) != n_rows:
+                raise ValueError(f"{key}: 行数 {t_mean.shape[0]} 与其它 key 的 {n_rows} 不一致")
+            self.mean_tensors[key] = t_mean
+            self.last_tensors[key] = t_last
+
+        assert n_rows is not None
+        if n_rows % self.num_candidates != 0:
+            raise ValueError(
+                f"合并表征总行数 {n_rows} 不能被 num_candidates={self.num_candidates} 整除。"
+            )
+        self.per_candidate = n_rows // self.num_candidates
+
+    def get_batch(
+        self,
+        candidate_idx: int,
+        start: int,
+        end: int,
+    ) -> tuple[list[Image.Image], list[int], dict]:
+        if candidate_idx < 0 or candidate_idx >= self.num_candidates:
+            raise IndexError(f"candidate_idx 越界: {candidate_idx}")
+        if start < 0 or end < start or end > self.per_candidate:
+            raise IndexError(f"切片 [{start}:{end}) 越界（per_candidate={self.per_candidate}）")
+        row_start = candidate_idx * self.per_candidate + start
+        row_end = candidate_idx * self.per_candidate + end
+        candidate_dir = self.image_root / f"candidate_{candidate_idx:04d}"
+        imgs, labels = _load_images_labels_slice(candidate_dir, start, end)
+        repr_dict = {
+            k: {
+                "mean": self.mean_tensors[k][row_start:row_end].float().clone(),
+                "last": self.last_tensors[k][row_start:row_end].float().clone(),
+            }
+            for k in self.repr_keys
+        }
+        return imgs, labels, repr_dict
 
 
 def _sorted_candidate_image_paths(candidate_dir: Path) -> list[Path]:
@@ -536,22 +621,33 @@ def run_random_search_ranker(
     num_candidates: int,
     device: torch.device,
     seed: int,
-    precomputed_pool: list[tuple[list[Image.Image], list[int], dict]],
+    precomputed_pool: list[tuple[list[Image.Image], list[int], dict]] | None = None,
+    merged_suite: MergedSuiteAccessor | None = None,
 ) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
+    _reset_best_dir(output_dir)
     rng = np.random.default_rng(seed)
     img_counter = 0
     num_rounds = (num_samples + batch_size - 1) // batch_size
 
-    pool_n = len(precomputed_pool)
-    if pool_n < num_candidates:
-        raise ValueError(f"预计算候选数 {pool_n} < --num_candidates={num_candidates}")
-    b0 = len(precomputed_pool[0][1])
-    for i, (_, lab, _) in enumerate(precomputed_pool):
-        if len(lab) != b0:
-            raise ValueError(f"预计算各 candidate batch 大小须一致: 0={b0} vs {i}={len(lab)}")
-    if b0 != batch_size:
-        raise ValueError(f"预计算 batch 大小 {b0} != --batch_size={batch_size}")
+    if merged_suite is None and precomputed_pool is None:
+        raise ValueError("需要 precomputed_pool 或 merged_suite")
+
+    if merged_suite is not None:
+        pool_n = merged_suite.num_candidates
+        per_candidate = merged_suite.per_candidate
+        if num_samples > per_candidate:
+            raise ValueError(f"num_samples={num_samples} > merged 每个 candidate 的 {per_candidate}")
+    else:
+        assert precomputed_pool is not None
+        pool_n = len(precomputed_pool)
+        if pool_n < num_candidates:
+            raise ValueError(f"预计算候选数 {pool_n} < --num_candidates={num_candidates}")
+        b0 = len(precomputed_pool[0][1])
+        for i, (_, lab, _) in enumerate(precomputed_pool):
+            if len(lab) != b0:
+                raise ValueError(f"预计算各 candidate batch 大小须一致: 0={b0} vs {i}={len(lab)}")
+        if b0 != batch_size:
+            raise ValueError(f"预计算 batch 大小 {b0} != --batch_size={batch_size}")
 
     for _ in tqdm(range(num_rounds), desc="random search (ranker)"):
         n_this = min(batch_size, num_samples - img_counter)
@@ -564,15 +660,22 @@ def run_random_search_ranker(
 
         idxs = rng.choice(pool_n, size=num_candidates, replace=False).tolist()
         candidate_iter: list[tuple[list[Image.Image], list[int], dict]] = []
-        for j in idxs:
-            imgs_f, labels_f, repr_f = precomputed_pool[j]
-            if n_this < len(imgs_f):
-                imgs_s = imgs_f[:n_this]
-                labels_s = labels_f[:n_this]
-                repr_s = slice_repr_batch(repr_f, n_this)
-            else:
-                imgs_s, labels_s, repr_s = imgs_f, labels_f, repr_f
-            candidate_iter.append((imgs_s, labels_s, repr_s))
+        if merged_suite is not None:
+            start = img_counter
+            end = img_counter + n_this
+            for j in idxs:
+                candidate_iter.append(merged_suite.get_batch(j, start, end))
+        else:
+            assert precomputed_pool is not None
+            for j in idxs:
+                imgs_f, labels_f, repr_f = precomputed_pool[j]
+                if n_this < len(imgs_f):
+                    imgs_s = imgs_f[:n_this]
+                    labels_s = labels_f[:n_this]
+                    repr_s = slice_repr_batch(repr_f, n_this)
+                else:
+                    imgs_s, labels_s, repr_s = imgs_f, labels_f, repr_f
+                candidate_iter.append((imgs_s, labels_s, repr_s))
 
         for imgs, labels, repr_d in candidate_iter:
             score = mean_ranker_score_batch(
@@ -700,16 +803,18 @@ def main() -> None:
         )
 
     precomputed_pool = None
+    merged_suite = None
     if use_suite:
-        precomputed_pool, pre_meta = load_precomputed_pool_from_rollout_suite(
+        merged_suite = MergedSuiteAccessor(
             Path(args.precomputed_suite_repr_dir).expanduser().resolve(),
             Path(args.precomputed_suite_image_root).expanduser().resolve(),
             int(args.precomputed_suite_num_candidates),
-            batch_index=int(args.precomputed_suite_batch_index),
             repr_keys=[args.repr_key],
-            batch_size=int(args.batch_size),
         )
-        print(f"预计算 suite: {len(precomputed_pool)} candidates  layout={pre_meta.get('layout')}")
+        print(
+            f"预计算 suite: {merged_suite.num_candidates} candidates  "
+            f"per_candidate={merged_suite.per_candidate}  repr_keys={merged_suite.repr_keys}"
+        )
     elif use_pt_single:
         precomputed_pool = load_precomputed_candidate_pool(
             Path(args.precomputed_candidates_pt).expanduser().resolve(),
@@ -732,6 +837,7 @@ def main() -> None:
         device=device,
         seed=args.seed,
         precomputed_pool=precomputed_pool,
+        merged_suite=merged_suite,
     )
 
     cfg = {

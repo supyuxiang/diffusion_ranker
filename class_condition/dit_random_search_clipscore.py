@@ -30,10 +30,14 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 from utils import compute_fid_is_clipscore, set_device, set_seed
-from class_condition.reward import load_clip, clipscore_reward, labels_1k
+from class_condition.reward import load_clip, clipscore_reward
 from class_condition.utils import _sorted_candidate_images, _reset_best_dir, save_best_images
 
 _DEFAULT_CLIP_DIR = Path("/root/autodl-tmp/openai_clip-vit-large-patch14")
+
+
+
+# ------------------------------- I love Peking University -------------------------------
 
 
 
@@ -41,19 +45,17 @@ _DEFAULT_CLIP_DIR = Path("/root/autodl-tmp/openai_clip-vit-large-patch14")
 def run_random_search_clipscore(
     clip: CLIPModel,
     processor: CLIPProcessor,
-    labels_1k: list[str],
     num_samples: int,
     search_batch_size: int,
     candidate_pathes_dict: dict[int, list[Path]],
 ) -> list[Path]:
-    n_expected = num_samples
-    start_idx = 0
 
-    num_loops = (n_expected + search_batch_size - 1) // search_batch_size
-    
+    start_idx = 0
+    num_loops = (num_samples + search_batch_size - 1) // search_batch_size
     best_path_ls: list[Path] = [] # 以便后续save和计算metrics
+
     for _ in tqdm(range(num_loops), desc="random search clipscore"):
-        n_this_batch = min(search_batch_size, n_expected - start_idx)
+        n_this_batch = min(search_batch_size, num_samples - start_idx)
         if n_this_batch <= 0:
             break
 
@@ -62,31 +64,21 @@ def run_random_search_clipscore(
 
         for candidate_idx, candidate_path_ls in candidate_pathes_dict.items():
             batch_candidate_paths = candidate_path_ls[start_idx : start_idx + n_this_batch]
-            if len(batch_candidate_paths) != n_this_batch:
-                raise ValueError(
-                    f"candidate_{candidate_idx:04d} has only {len(batch_candidate_paths)} images "
-                    f"for slice [{start_idx}:{start_idx + n_this_batch}], expected {n_this_batch}"
-                )
 
             reward = clipscore_reward(
                 batch_candidate_paths,
                 clip,
                 processor,
-                labels_1k,
             )
             if reward > best_reward:
                 best_reward = reward
                 best_candidate_idx = candidate_idx
 
-        assert best_candidate_idx != -1
         win_paths_this_loop = candidate_pathes_dict[best_candidate_idx][
             start_idx : start_idx + n_this_batch
         ]
         best_path_ls.extend(win_paths_this_loop)
         start_idx += n_this_batch
-
-    if len(best_path_ls) != n_expected:
-        raise RuntimeError(f"selected {len(best_path_ls)} images, expected {n_expected}")
 
     return best_path_ls
 
@@ -104,7 +96,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num_candidates", type=int, default=16)
     p.add_argument("--deno_steps", type=int, default=10, help="与 rollout 目录名一致")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--guidance_scale", type=float, default=1.0)
+    p.add_argument("--guidance_scale", type=float, default=1)
     p.add_argument("--real_dir", type=Path, default=Path("/root/autodl-tmp/imagenet/val"))
     p.add_argument("--clip_model_dir", type=Path, default=_DEFAULT_CLIP_DIR)
     p.add_argument("--clip_batch_size", type=int, default=64)
@@ -118,13 +110,16 @@ def main() -> None:
     real_dir = args.real_dir.expanduser().resolve()
     clip_model_dir = args.clip_model_dir.expanduser().resolve()
 
+    # Keep directory naming stable for integer-like scales: 1.0 -> "1"
+    cfg_tag = f"{float(args.guidance_scale):g}"
     rollout_root = Path(
-        f"/root/autodl-tmp/dit_candidates_50k_cfg{args.guidance_scale}_deno{args.deno_steps}"
+        f"/root/autodl-tmp/rollout_candidate_step{args.deno_steps}_cfg{cfg_tag}"
     )
-    if not rollout_root.is_dir():
-        raise FileNotFoundError(f"missing rollout_root: {rollout_root}")
+    # /root/autodl-tmp/rollout_candidate_step10_cfg1
+    
     candidate_dir_ls = [
-        rollout_root / f"candidate_{i:04d}" for i in range(args.num_candidates)
+        rollout_root / f'candidate_{seed}'
+        for seed in range(int(args.num_candidates))
     ]
 
     set_seed(args.seed)
@@ -133,19 +128,20 @@ def main() -> None:
     clip, processor = load_clip(device)
 
     candidate_pathes_dict: dict[int, list[Path]] = {}
-    for i in range(args.num_candidates):
-        candidate_dir = candidate_dir_ls[i]
+    for seed in range(int(args.num_candidates)):
+        candidate_dir = candidate_dir_ls[seed]
         if not candidate_dir.is_dir():
             raise FileNotFoundError(f"missing candidate dir: {candidate_dir}")
         paths = _sorted_candidate_images(candidate_dir)
-        if len(paths) < args.num_samples:
-            raise ValueError(f"{candidate_dir} has only {len(paths)} images, expected >= {args.num_samples}")
-        candidate_pathes_dict[i] = paths
+        if len(paths) < int(args.num_samples):
+            raise ValueError(
+                f"{candidate_dir} has only {len(paths)} images, expected >= {int(args.num_samples)}"
+            )
+        candidate_pathes_dict[seed] = paths
 
     best_path_ls = run_random_search_clipscore(
         clip,
         processor,
-        labels_1k,
         args.num_samples,
         args.search_batch_size,
         candidate_pathes_dict,
@@ -180,8 +176,7 @@ def main() -> None:
     # Release the selection CLIP before metric computation, which loads another CLIP model.
     del clip, processor
     gc.collect()
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
+    torch.cuda.empty_cache()
 
     metrics = compute_fid_is_clipscore(
         best_dir,
@@ -190,12 +185,13 @@ def main() -> None:
         clip_model_dir=clip_model_dir,
         clip_batch_size=args.clip_batch_size,
     )
+
     metrics["selection_reward"] = "clipscore"
     metrics["num_selected"] = float(len(best_path_ls))
     metrics["num_candidates"] = float(args.num_candidates)
     with open(best_dir / "final_metrics.json", "w", encoding='utf-8') as f:
         json.dump(metrics, f, indent=2, ensure_ascii=False)
-    print(metrics)
+    print(f"metrics: {metrics}")
 
 
 if __name__ == "__main__":

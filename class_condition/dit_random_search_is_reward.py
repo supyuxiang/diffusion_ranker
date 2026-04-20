@@ -31,27 +31,16 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 from utils import INCEPTION_WEIGHTS_PATH, compute_fid_is_clipscore, set_device, set_seed
 from class_condition.utils import _sorted_candidate_images, _reset_best_dir, save_best_images
-from class_condition.reward import _batch_is_reward
+from class_condition.reward import is_reward, _build_inception_logits_extractor
 
 
+# ------------------------------- I love Peking University -------------------------------
 
 
 def _copy_selected(best_path_ls: list[Path], output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for path in best_path_ls:
         shutil.copy2(path, output_dir / path.name)
-
-
-def _build_inception_logits_extractor(device: torch.device):
-    from torch_fidelity.utils import create_feature_extractor
-
-    return create_feature_extractor(
-        "inception-v3-compat",
-        ["logits_unbiased"],
-        cuda=(device.type == "cuda"),
-        verbose=False,
-        feature_extractor_weights_path=INCEPTION_WEIGHTS_PATH,
-    )
 
 
 
@@ -78,12 +67,11 @@ def run_random_search_is_reward(
         best_candidate_idx = -1
         for candidate_idx, candidate_path_ls in candidate_pathes_dict.items():
             batch_candidate_paths = candidate_path_ls[start_idx : start_idx + n_this_batch]
-            reward = _batch_is_reward(batch_candidate_paths, feat_extractor, device)
+            reward = is_reward(batch_candidate_paths, feat_extractor, device)
             if reward > best_reward:
                 best_reward = reward
                 best_candidate_idx = candidate_idx
 
-        assert best_candidate_idx != -1
         best_paths_this_loop = candidate_pathes_dict[best_candidate_idx][
             start_idx : start_idx + n_this_batch
         ]
@@ -120,23 +108,30 @@ def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir).expanduser().resolve()
     best_dir = output_dir / "best_images"
+    # Keep directory naming stable for integer-like scales: 1.0 -> "1"
+    cfg_tag = f"{float(args.guidance_scale):g}"
     rollout_root = Path(
-        f"/root/autodl-tmp/dit_candidates_50k_cfg{args.guidance_scale}_deno{args.deno_steps}"
+        f"/root/autodl-tmp/rollout_candidate_step{args.deno_steps}_cfg{cfg_tag}"
     )
-    candidate_dir_ls = [rollout_root / f"candidate_{i:04d}" for i in range(args.num_candidates)]
+    candidate_dir_ls = [
+        rollout_root / f'candidate_{seed}'
+        for seed in range(int(args.num_candidates))
+    ]
 
     set_seed(args.seed)
     device = set_device()
     feat_extractor = _build_inception_logits_extractor(device)
 
     candidate_pathes_dict: dict[int, list[Path]] = {}
-    for i, candidate_dir in enumerate(candidate_dir_ls):
+    for seed, candidate_dir in enumerate(candidate_dir_ls):
         if not candidate_dir.is_dir():
             raise FileNotFoundError(f"missing candidate dir: {candidate_dir}")
         paths = _sorted_candidate_images(candidate_dir)
-        if len(paths) < args.num_samples:
-            raise ValueError(f"{candidate_dir} has only {len(paths)} images, expected >= {args.num_samples}")
-        candidate_pathes_dict[i] = paths
+        if len(paths) < int(args.num_samples):
+            raise ValueError(
+                f"{candidate_dir} has only {len(paths)} images, expected >= {int(args.num_samples)}"
+            )
+        candidate_pathes_dict[seed] = paths
 
     best_path_ls, round_logs = run_random_search_is_reward(
         feat_extractor,

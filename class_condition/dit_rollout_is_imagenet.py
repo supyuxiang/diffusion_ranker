@@ -11,8 +11,8 @@ This script is the rollout/data-building counterpart of
     max softmax( InceptionV3 logits )
 
 Default setup:
-- per_samples = 64
-- total_samples = 64000
+- per_samples = 128
+- total_samples = 128 * 1000 = 128000
 - num_inference_steps = 10
 - target_step_indices = [1, 6, 9]
 - target_layer_idx = 16
@@ -33,10 +33,12 @@ from tqdm import tqdm
 from torchvision.transforms import CenterCrop, Compose, Resize
 
 _ROOT = Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+sys.path.insert(0, str(_ROOT))
 
 from utils import INCEPTION_WEIGHTS_PATH, dit_loader, set_seed
+
+
+# ------------------------------- I love Peking University -------------------------------
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--save_path",
         type=str,
-        default="/root/autodl-tmp/dit_imagenet_hiddens_and_is_rewards_s1_6_9_l16_per64.pth",
+        default="/root/autodl-tmp/dit_imagenet_hiddens_and_is_rewards_s1_6_9_l16_per128.pth",
     )
     p.add_argument("--model_name", type=str, default="dit-xl-2-256")
     p.add_argument("--per_samples", type=int, default=128)
@@ -56,11 +58,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--target_step_indices", type=str, default="1,6,9")
     p.add_argument("--target_layer_idx", type=int, default=16)
     return p.parse_args()
-
-
-def _parse_int_list(s: str) -> list[int]:
-    vals = [int(x.strip()) for x in s.split(",") if x.strip()]
-    return sorted(set(vals))
 
 
 def _build_labels_all(per_samples: int, num_classes: int = 1000) -> list[int]:
@@ -116,13 +113,14 @@ def _reward_inception_confidence(images: list[Image.Image], feat_extractor, devi
     from torch_fidelity.datasets import TransformPILtoRGBTensor
 
     transform = Compose([Resize(256), CenterCrop(256), TransformPILtoRGBTensor()])
+    # images: list[PIL.Image], length = B
     tensors = torch.stack([transform(img) for img in images], dim=0).to(
         device, non_blocking=(device.type == "cuda")
-    )
-    logits = feat_extractor(tensors)
-    if isinstance(logits, tuple):
-        logits = logits[0]
-    probs = F.softmax(logits.float(), dim=-1)
+    )  # (B, 3, 256, 256), uint8 on device
+    logits = feat_extractor(tensors)  # tuple/list with first item shaped (B, 1000)
+    logits = logits[0]  # (B, 1008)
+    probs = F.softmax(logits.float(), dim=-1)  # (B, 1008)
+    # reward per sample: max class confidence -> (B,)
     return probs.max(dim=-1).values.detach().cpu().to(torch.float32)
 
 
@@ -131,29 +129,21 @@ def rollout() -> None:
     args = parse_args()
     set_seed(args.seed)
 
-    target_step_indices = _parse_int_list(args.target_step_indices)
-    if not target_step_indices:
-        raise ValueError("target_step_indices is empty")
-    if min(target_step_indices) < 0 or max(target_step_indices) >= int(args.num_inference_steps):
-        raise ValueError(
-            f"target_step_indices={target_step_indices} must be in [0, {int(args.num_inference_steps) - 1}]"
-        )
-    if int(args.per_samples) <= 0:
-        raise ValueError(f"per_samples must be positive, got {args.per_samples}")
+    target_step_indices = [
+        int(s)
+        for s in args.target_step_indices.strip().split(',') if s.strip()
+    ] # [1, 6, 9]
 
     save_path = Path(args.save_path).expanduser().resolve()
-    shard_dir = save_path.parent / f"{save_path.stem}_shards"
-    shard_dir.mkdir(parents=True, exist_ok=True)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pipe = dit_loader(args.model_name, device=device, dtype=args.dtype)
     pipe.set_progress_bar_config(disable=True)
     feat_extractor = _build_inception_logits_extractor(device)
 
-    n_blocks = len(pipe.transformer.transformer_blocks)
-    target_layer_idx = int(args.target_layer_idx)
-    if target_layer_idx < 0 or target_layer_idx >= n_blocks:
-        raise ValueError(f"target_layer_idx={target_layer_idx} out of range for n_blocks={n_blocks}")
+    n_blocks = len(pipe.transformer.transformer_blocks) # 28, idx:0->27
+    target_layer_idx = int(args.target_layer_idx) # 16: 0.6 * 28 -1 -> 16
 
     target_ratio = float(target_layer_idx) / float(max(1, n_blocks - 1))
     print(
@@ -161,17 +151,21 @@ def rollout() -> None:
         f"equivalent_ratio={target_ratio:g}"
     )
 
-    hidden_shard_paths: dict[str, list[Path]] = {
+    # In-memory accumulation, then save one big pt per (step, layer).
+    hidden_chunks_by_key: dict[str, list[torch.Tensor]] = {
         f"s{s}_l{target_layer_idx}": [] for s in target_step_indices
     }
-    reward_shard_paths: dict[int, list[Path]] = {s: [] for s in target_step_indices}
-    label_shard_paths: list[Path] = []
+    reward_chunks_by_key: dict[str, list[torch.Tensor]] = {
+        f"s{s}_l{target_layer_idx}": [] for s in target_step_indices
+    }
+    label_chunks: list[torch.Tensor] = []
 
-    labels_all = _build_labels_all(int(args.per_samples))
-    num_samples = len(labels_all)
-    latent_size = pipe.transformer.config.sample_size
-    latent_channels = pipe.transformer.config.in_channels
+    labels_all = _build_labels_all(int(args.per_samples)) # 128 * 1000, 1
+    num_samples = len(labels_all) # 128 * 1000
+    latent_size = pipe.transformer.config.sample_size # 
+    latent_channels = pipe.transformer.config.in_channels # 
 
+     # 定义全局变量，以便在 hook 函数中访问
     current_step_idx = {"value": -1}
     current_batch_size = {"value": 0}
     current_store_ref: dict[str, dict[int, list[torch.Tensor]] | None] = {"store": None}
@@ -203,9 +197,7 @@ def rollout() -> None:
 
             current_batch_size["value"] = batch_n
             label_t = torch.tensor(batch_labels, dtype=torch.long)
-            lab_path = shard_dir / f"label_b{batch_i:05d}.pt"
-            torch.save(label_t, lab_path)
-            label_shard_paths.append(lab_path)
+            label_chunks.append(label_t.clone())
 
             gen = torch.Generator(device=device).manual_seed(int(args.seed) + batch_i)
             latents = torch.randn(
@@ -262,17 +254,14 @@ def rollout() -> None:
 
             for st_i in target_step_indices:
                 h_chunks = batch_hidden_store[st_i]
+                h_key = f"s{st_i}_l{target_layer_idx}"
                 if h_chunks:
                     h_t = torch.cat(h_chunks, dim=0)
-                    h_key = f"s{st_i}_l{target_layer_idx}"
-                    h_path = shard_dir / f"hidden_{h_key}_b{batch_i:05d}.pt"
-                    torch.save(h_t, h_path)
-                    hidden_shard_paths[h_key].append(h_path)
+                    hidden_chunks_by_key[h_key].append(h_t)
                     del h_t
 
-                r_path = shard_dir / f"reward_s{st_i}_b{batch_i:05d}.pt"
-                torch.save(reward_t, r_path)
-                reward_shard_paths[st_i].append(r_path)
+                # reward is computed on final images; one reward vector aligns with this batch order.
+                reward_chunks_by_key[h_key].append(reward_t.clone())
 
             del latents, x, cls, cls_null, class_labels_input, batch_hidden_store, gen, label_t, images, reward_t
             gc.collect()
@@ -281,56 +270,66 @@ def rollout() -> None:
     finally:
         handle.remove()
 
-    reward_store_tensor: dict[str, torch.Tensor] = {}
-    for st_i in target_step_indices:
-        parts = [torch.load(p, map_location="cpu", weights_only=False) for p in reward_shard_paths[st_i]]
-        reward_store_tensor[f"s{st_i}"] = torch.cat(parts, dim=0) if parts else torch.empty(0)
-        del parts
-        gc.collect()
+    label_store = torch.cat(label_chunks, dim=0) if label_chunks else torch.empty(0, dtype=torch.long)
+    del label_chunks
 
-    hidden_store_target: dict[str, torch.Tensor] = {}
+    saved_paths: list[Path] = []
     for st_i in target_step_indices:
         key = f"s{st_i}_l{target_layer_idx}"
-        parts = [torch.load(p, map_location="cpu", weights_only=False) for p in hidden_shard_paths[key]]
-        hidden_store_target[key] = torch.cat(parts, dim=0) if parts else torch.empty(0)
-        del parts
+        hidden_t = (
+            torch.cat(hidden_chunks_by_key[key], dim=0)
+            if hidden_chunks_by_key[key]
+            else torch.empty(0)
+        )
+        reward_t = (
+            torch.cat(reward_chunks_by_key[key], dim=0)
+            if reward_chunks_by_key[key]
+            else torch.empty(0, dtype=torch.float32)
+        )
+        if hidden_t.shape[0] != reward_t.shape[0]:
+            raise RuntimeError(
+                f"{key}: rows mismatch hidden={hidden_t.shape[0]} reward={reward_t.shape[0]}"
+            )
+        if hidden_t.shape[0] != label_store.shape[0]:
+            raise RuntimeError(
+                f"{key}: rows mismatch hidden={hidden_t.shape[0]} labels={label_store.shape[0]}"
+            )
+
+        out_path = save_path.parent / f"{save_path.stem}_{key}.pt"
+        torch.save(
+            {
+                "hiddens": hidden_t,
+                "reward": reward_t,
+                "labels": label_store,
+                "meta": {
+                    "model_name": str(args.model_name),
+                    "target_step_index": int(st_i),
+                    "target_layer_index": int(target_layer_idx),
+                    "num_samples": int(num_samples),
+                    "per_samples": int(args.per_samples),
+                    "batch_size": int(args.batch_size),
+                    "num_inference_steps": int(args.num_inference_steps),
+                    "guidance_scale": float(args.guidance_scale),
+                    "seed": int(args.seed),
+                    "dtype": str(args.dtype),
+                    "label_order_note": (
+                        "labels are generated in ascending class-id order, each class repeated exactly per_samples times"
+                    ),
+                    "reward_note": "reward uses single-sample Inception max-softmax confidence on final images",
+                    "verifier": "inception_max_softmax_confidence",
+                    "layer_index_ratio": float(target_ratio),
+                },
+            },
+            out_path,
+        )
+        saved_paths.append(out_path)
+        del hidden_t, reward_t
         gc.collect()
 
-    label_parts = [torch.load(p, map_location="cpu", weights_only=False) for p in label_shard_paths]
-    label_store = torch.cat(label_parts, dim=0) if label_parts else torch.empty(0, dtype=torch.long)
-    del label_parts
-
-    full_data = {
-        "hidden_store_target": hidden_store_target,
-        "reward_store": reward_store_tensor,
-        "label_store": label_store,
-        "meta": {
-            "model_name": str(args.model_name),
-            "target_layer_indices": [target_layer_idx],
-            "target_step_indices": target_step_indices,
-            "num_samples": int(num_samples),
-            "per_samples": int(args.per_samples),
-            "batch_size": int(args.batch_size),
-            "num_inference_steps": int(args.num_inference_steps),
-            "guidance_scale": float(args.guidance_scale),
-            "seed": int(args.seed),
-            "dtype": str(args.dtype),
-            "label_order_note": (
-                "labels are generated in ascending class-id order, each class repeated exactly per_samples times"
-            ),
-            "reward_note": "reward_s* uses single-sample Inception max-softmax confidence on final images",
-            "verifier": "inception_max_softmax_confidence",
-            "layer_index_ratio": float(target_ratio),
-        },
-    }
-    torch.save(full_data, save_path)
     print(
         json.dumps(
             {
-                "saved": str(save_path),
-                "shard_dir": str(shard_dir),
-                "num_hidden_keys": len(hidden_store_target),
-                "num_reward_keys": len(reward_store_tensor),
+                "saved": [str(p) for p in saved_paths],
                 "num_labels": int(label_store.numel()),
             },
             ensure_ascii=False,

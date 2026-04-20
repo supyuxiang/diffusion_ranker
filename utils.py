@@ -333,22 +333,22 @@ def _load_images_from_dir(
     return batch
 
 
-def _remove_corrupted_images(gen_dir: str | Path) -> int:
-    """移除无法用 PIL 打开的损坏图片，返回移除数量（与 torch_fidelity 加载方式一致）"""
-    gen_dir = Path(gen_dir)
-    removed = 0
-    exts = (".png", ".jpg", ".jpeg", ".webp")
-    for p in list(gen_dir.iterdir()):
-        if not p.is_file() or p.suffix.lower() not in exts:
-            continue
-        try:
-            with Image.open(p) as img:
-                img.load()
-                img.convert("RGB")
-        except Exception:
-            p.unlink()
-            removed += 1
-    return removed
+# def _remove_corrupted_images(gen_dir: str | Path) -> int:
+#     """移除无法用 PIL 打开的损坏图片，返回移除数量（与 torch_fidelity 加载方式一致）"""
+#     gen_dir = Path(gen_dir)
+#     removed = 0
+#     exts = (".png", ".jpg", ".jpeg", ".webp")
+#     for p in list(gen_dir.iterdir()):
+#         if not p.is_file() or p.suffix.lower() not in exts:
+#             continue
+#         try:
+#             with Image.open(p) as img:
+#                 img.load()
+#                 img.convert("RGB")
+#         except Exception:
+#             p.unlink()
+#             removed += 1
+#     return removed
 
 
 def _fidelity_images_dataset(

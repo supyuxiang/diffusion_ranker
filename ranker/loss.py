@@ -26,7 +26,14 @@ class mse_kl_combined_loss(nn.Module):
         self.tau = tau
 
     def forward(self, pred_scores:torch.Tensor, teacher_scores:torch.Tensor):
-        mse = F.mse_loss(pred_scores, teacher_scores)
+        # MSE on probability targets (softmax over the candidate dimension), not raw logits.
+        # This matches the common "soft label regression" view for listwise ranking targets.
+        tau = float(self.tau)
+        if tau <= 0:
+            raise ValueError("tau must be positive")
+        p = F.softmax(pred_scores / tau, dim=0)
+        t = F.softmax(teacher_scores / tau, dim=0)
+        mse = F.mse_loss(p, t)
         kl = kl_reward_ranker_loss(pred_scores, teacher_scores, self.tau)
         alpha = float(self.alpha)
         total = alpha * mse + (1.0 - alpha) * kl
