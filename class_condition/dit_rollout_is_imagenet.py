@@ -191,8 +191,7 @@ def mc_for_estimate_reward(
         rewards_ls.append(reward_t)
         del x, images, reward_t
         gc.collect()
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
 
     return torch.stack(rewards_ls, dim=0).mean(dim=0).to(torch.float32)  # (B,)
 
@@ -401,9 +400,9 @@ def rollout() -> None:
         out_path = save_path.parent / f"{save_path.stem}_{key}.pt"
         torch.save(
             {
-                "hiddens": hidden_t,
-                "reward": reward_t,
-                "labels": label_store,
+                "hiddens": hidden_t, # hidden states at target step
+                "reward": reward_t, # reward at target step
+                "labels": label_store, # sample labels
                 "meta": {
                     "model_name": str(args.model_name),
                     "target_step_index": int(st_i),

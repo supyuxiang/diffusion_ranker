@@ -20,27 +20,26 @@ training_samples_per_class = 128
 class RankerTrainingDataset(Dataset):
     def __init__(
         self,
-        candidate_dir:Path,
-        reward_path:Path,
-        step_idx:int,
-        layer_idx:int,
+        hs_reward_path:Path,
+        step_idx:int, # choice of target step index
+        layer_idx:int=16, # ratio=0.6
         prompt_type:str | None = None,
         shuffle_class:bool=False,
     ):
         super().__init__()
-        self.candidate_dir = candidate_dir
-        self.reward_path = reward_path
+        self.hs_reward_path = hs_reward_path
         self.prompt_type = prompt_type
         self.shuffle_class = shuffle_class
         self.step_idx = step_idx
         self.layer_idx = layer_idx
         self.load_prompt_encoding()
-        self.load_candidate_hiddens()
+        self.load_hs_reward()
         self.load_reward()
     
     def load_prompt_encoding(self):
+        num_samples = int(training_samples_per_class * 1000)
         if not self.prompt_type:
-            self.prompt_hstate = None
+            full_prompt_encoding = torch.zeros(num_samples, 1000) # 1000 classes, 128 samples per class
         else:
             if self.prompt_type == 'one_hot':
                 path = ROOT / 'class_condition' / 'prompt_encoding' / 'one_hot.pt'
@@ -57,20 +56,30 @@ class RankerTrainingDataset(Dataset):
             elif self.prompt_type == 'llm_hidden_state':
                 path = ROOT / 'class_condition' / 'prompt_encoding' / 'llm_hidden_state.pt'
                 self.prompt_encoding = torch.load(path,map_location='cpu',weights_only=False)#
+                if self.prompt_encoding.dim() != 3:
+                    raise ValueError(
+                        f"llm_hidden_state prompt encoding expected 3D (1000, L, H), got {tuple(self.prompt_encoding.shape)}"
+                    )
+                # Use last-token hidden so prompt encoding reduces to 2D: (1000, H).
+                self.prompt_encoding = self.prompt_encoding[:, -1, :] # last token的hidden state
+                
             else:
                 raise ValueError(f"Invalid prompt type: {self.prompt_type}")
-            # shape: 1000, dim
-            num_samples = int(training_samples_per_class * 1000)
-            full_prompt_encoding = torch.zeros(num_samples, self.prompt_encoding.shape[1])
+            # prompt_encoding shape is 2D: (1000, D)
+            full_prompt_encoding = torch.zeros(
+                num_samples,
+                *self.prompt_encoding.shape[1:],
+                dtype=self.prompt_encoding.dtype,
+            )
             for class_idx in range(1000):
                 start_idx = class_idx * training_samples_per_class
                 end_idx = start_idx + training_samples_per_class
                 full_prompt_encoding[start_idx:end_idx] = self.prompt_encoding[class_idx]
         self.prompt_hstate = full_prompt_encoding
     
-    def load_candidate_hiddens(self):
+    def load_hs_reward(self):
         # 128 * 1000, hidden_dim
-        
+
 
 
         pass
