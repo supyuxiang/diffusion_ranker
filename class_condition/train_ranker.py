@@ -204,28 +204,55 @@ class Trainer:
             epoch_loss += batch_loss
             epoch_loss /= len(self.train_dataloader)
             return epoch_loss
-        
-                
 
 
 
-
-
+    def train(self):
+        best_loss = float('inf')
+        for epoch in range(self.config.get('num_epochs', 100)):
+            epoch_loss = self.train_epoch()
+            self.scheduler.step()
+            if epoch % self.config.get('save_interval', 10) == 0:
+                save_interval_path = Path(self.config.get('output_dir', '')) / f'ranker_{self.config.get("run_name", "default")}_epoch_{epoch}.pth'
+                self.save_ckpt(save_interval_path)
+            if epoch % self.config.get('eval_interval', 10) == 0 and self.val_dataloader is not None:
+                eval_loss = self.evaluate()
+                print('-'*100)
+                print(f'Epoch {epoch}, Loss: {epoch_loss}, Eval Loss: {eval_loss}')
+                print('-'*100)
+            if epoch_loss < best_loss:
+                best_loss = epoch_loss
+                save_best_path = Path(self.config.get('output_dir', '')) / f'ranker_{self.config.get("run_name", "default")}_best.pth'
+                self.save_ckpt(save_best_path)
+        print(f'Best Loss: {best_loss}')
+            
     
 
     def evaluate(self):
-        pass
+        eval_loss = 0.0
+        self.ranker.eval()
+        num_bootstrap_samples = self.config.get('num_bootstrap_samples', 8)
+        parallel_size = self.config.get('parallel_size', 8)
+        for batch in self.val_dataloader:
+            prompt_hs, candidate_hs, reward, label = batch
+            prompt_hs, candidate_hs, reward, label = prompt_hs.to(self.device), candidate_hs.to(self.device), reward.to(self.device), label.to(self.device)
+            batch_loss = 0.0
+            for bootstrap_idx in range(num_bootstrap_samples):
+                indices = torch.randperm(len(batch_prompt_hs))[:parallel_size]
+                bootstrap_prompts_hs,bootstrap_candidates_hs,bootstrap_reward = batch_prompt_hs[indices], batch_candidate_hs[indices], batch_reward[indices]
+                bootstrap_loss = self.process_bootstrap(bootstrap_prompts_hs, bootstrap_candidates_hs, bootstrap_reward, self.ranker)
+                batch_loss += bootstrap_loss
+            batch_loss /= num_bootstrap_samples
+            with torch.no_grad():
+                eval_loss += batch_loss
+        eval_loss /= len(self.val_dataloader)
+        return eval_loss
+    
 
-    def save_ckpt(self):
+    def save_ckpt(self, ckpt_path:Path):
         save_dir = Path(self.config.get('output_dir', '')) / f'ranker_{self.config.get("run_name", "default")}'
         save_dir.mkdir(parents=True, exist_ok=True)
-        ckpt_path = save_dir / 'ranker.pth'
         torch.save(self.ranker.state_dict(), ckpt_path)
-    
-    @staticmethod
-    def load_ckpt(ckpt_path:Path):
-        state_dict = torch.load(ckpt_path,map_location='cpu',weights_only=False)
-        return state_dict
 
     
 
