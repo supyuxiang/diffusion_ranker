@@ -6,7 +6,10 @@ single-sample Inception confidence reward.
 This script is the rollout/data-building counterpart of
 `search/dit_random_search_is_reward.py`:
 - generate ImageNet class-conditional DiT samples in class-id order
-- capture hidden states at target steps / one transformer block
+- capture hidden states at target steps / one transformer block;
+  sequence dim is reduced to one vector per sample via ``--hidden_pool``:
+  ``mean`` (``h.mean(dim=1)``) or ``last`` (``h[:, -1, :]``), so saved
+  ``hiddens`` are ``(num_samples, hidden_dim)`` for the ranker / dataset
 - score final images with single-sample IS-style reward:
     max softmax( InceptionV3 logits )
 
@@ -21,6 +24,7 @@ Default setup:
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 import copy
 import gc
 import json
@@ -42,6 +46,12 @@ from utils import INCEPTION_WEIGHTS_PATH, dit_loader, set_seed
 # ------------------------------- I love Peking University -------------------------------
 
 
+_HIDDEN_POOL_SEQ: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
+    "mean": lambda h: h.mean(dim=1),
+    "last": lambda h: h[:, -1, :],
+}
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("ImageNet DiT rollout with single-sample IS reward")
     p.add_argument(
@@ -59,6 +69,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--target_step_indices", type=str, default="1,6,9")
     p.add_argument("--target_layer_idx", type=int, default=16)
     p.add_argument("--mc", type=int, default=5)
+    p.add_argument(
+        "--hidden_pool",
+        type=str,
+        default="mean",
+        choices=tuple(_HIDDEN_POOL_SEQ.keys()),
+        help="Reduce DiT block (B,L,D) to (B,D): mean over L, or last token along L.",
+    )
     return p.parse_args()
 
 
@@ -219,9 +236,10 @@ def rollout() -> None:
     target_layer_idx = int(args.target_layer_idx) # 16: 0.6 * 28 -1 -> 16
 
     target_ratio = float(target_layer_idx) / float(max(1, n_blocks - 1))
+    pool_hidden_fn = _HIDDEN_POOL_SEQ[str(args.hidden_pool)]
     print(
         f"[info] transformer blocks={n_blocks}, target_layer_idx={target_layer_idx}, "
-        f"equivalent_ratio={target_ratio:g}"
+        f"equivalent_ratio={target_ratio:g}, hidden_pool={args.hidden_pool}"
     )
 
     # In-memory accumulation, then save one big pt per (step, layer).
@@ -254,6 +272,7 @@ def rollout() -> None:
         h = out[0] if isinstance(out, (tuple, list)) else out
         if float(args.guidance_scale) > 1:
             h = h[: current_batch_size["value"]]
+        h = pool_hidden_fn(h)
         store[s].append(h.detach().to(torch.float16).cpu())
 
     handle = pipe.transformer.transformer_blocks[target_layer_idx].register_forward_hook(_hook)
@@ -400,7 +419,7 @@ def rollout() -> None:
         out_path = save_path.parent / f"{save_path.stem}_{key}.pt"
         torch.save(
             {
-                "hiddens": hidden_t, # hidden states at target step
+                "hiddens": hidden_t,  # (num_samples, hidden_dim), seq reduced per --hidden_pool
                 "reward": reward_t, # reward at target step
                 "labels": label_store, # sample labels
                 "meta": {
@@ -421,6 +440,7 @@ def rollout() -> None:
                     "reward_mc": int(args.mc),
                     "verifier": "inception_max_softmax_confidence",
                     "layer_index_ratio": float(target_ratio),
+                    "hidden_pool": str(args.hidden_pool),
                 },
             },
             out_path,
