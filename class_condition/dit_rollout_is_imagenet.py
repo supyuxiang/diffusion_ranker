@@ -65,6 +65,7 @@ def _build_labels_all(per_samples: int, num_classes: int = 1000) -> list[int]:
 
 
 def _broadcast_timesteps(t, latent_model_input: torch.Tensor) -> torch.Tensor:
+    # 把时间步 t 统一成模型可用的 batch 形状时间向量: (batch_size,)
     if not torch.is_tensor(t):
         is_mps = latent_model_input.device.type == "mps"
         is_npu = latent_model_input.device.type == "npu"
@@ -176,8 +177,6 @@ def rollout() -> None:
         if store is None or s not in store:
             return
         h = out[0] if isinstance(out, (tuple, list)) else out
-        if h.dim() != 3:
-            return
         if float(args.guidance_scale) > 1:
             h = h[: current_batch_size["value"]]
         store[s].append(h.detach().to(torch.float16).cpu())
@@ -196,37 +195,38 @@ def rollout() -> None:
                 break
 
             current_batch_size["value"] = batch_n
-            label_t = torch.tensor(batch_labels, dtype=torch.long)
-            label_chunks.append(label_t.clone())
+            label_t = torch.tensor(batch_labels, dtype=torch.long) # sample labels, batch_size
+            label_chunks.append(label_t.clone()) # store sample labels, batch_size
 
-            gen = torch.Generator(device=device).manual_seed(int(args.seed) + batch_i)
+            gen = torch.Generator(device=device).manual_seed(int(args.seed) + batch_i) # build gen
             latents = torch.randn(
                 (batch_n, latent_channels, latent_size, latent_size),
                 generator=gen,
                 device=device,
                 dtype=pipe.transformer.dtype,
-            )
-            x = torch.cat([latents] * 2, dim=0) if float(args.guidance_scale) > 1 else latents
+            ) # sample initial noisy: batch_n, latent_channels, latent_size, latent_size
+            x = torch.cat([latents] * 2, dim=0) if float(args.guidance_scale) > 1 else latents # cfg>1则需要考虑uncod和cond的加权求和,于是需要cat两个latents
+            # x: batch_n * 2, latent_channels, latent_size, latent_size
 
-            cls = torch.tensor(batch_labels, device=device).reshape(-1)
-            cls_null = torch.tensor([1000] * batch_n, device=device)
+            cls = torch.tensor(batch_labels, device=device).reshape(-1) # ensure shape is (batch_n,)
+            cls_null = torch.tensor([1000] * batch_n, device=device) # 1000: null class for cfg>1
             class_labels_input = (
                 torch.cat([cls, cls_null], dim=0) if float(args.guidance_scale) > 1 else cls
-            )
+            ) # shape: (batch_n * 2,) if cfg>1 else (batch_n,)
 
-            pipe.scheduler.set_timesteps(int(args.num_inference_steps))
+            pipe.scheduler.set_timesteps(int(args.num_inference_steps)) # 10， set 调度器timesteps: 10, [0, 9]
             timesteps = pipe.scheduler.timesteps
 
             batch_hidden_store: dict[int, list[torch.Tensor]] = {s: [] for s in target_step_indices}
-            current_store_ref["store"] = batch_hidden_store
+            current_store_ref["store"] = batch_hidden_store # current store <- batch_hidden_store
 
             for st_i, t in enumerate(timesteps):
-                current_step_idx["value"] = st_i
+                current_step_idx["value"] = st_i # update current step idx
                 if float(args.guidance_scale) > 1:
                     half = x[: len(x) // 2]
-                    x = torch.cat([half, half], dim=0)
-                x = pipe.scheduler.scale_model_input(x, t)
-                timesteps_b = _broadcast_timesteps(t, x)
+                    x = torch.cat([half, half], dim=0) # copy half 
+                x = pipe.scheduler.scale_model_input(x, t) # scale model input
+                timesteps_b = _broadcast_timesteps(t, x) # 
                 noise_pred = pipe.transformer(
                     x,
                     timestep=timesteps_b,
