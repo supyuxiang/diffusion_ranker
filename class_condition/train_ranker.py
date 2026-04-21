@@ -142,11 +142,14 @@ class Trainer:
 
 
     def build_loss_fn(self):
-        from class_condition.utils import RankerLoss
+        from class_condition.utils import RankerLoss, js_loss, kl_loss, mse_loss
         self.loss_fn = RankerLoss(
             alpha=self.config.get('alpha', 0.8),
             kl_type=self.config.get('kl_type', 'kl'),
         )
+        self.mse_loss_fn = mse_loss
+        self.kl_type = self.config.get('kl_type', 'kl')
+        self.div_loss_fn = kl_loss if self.kl_type == 'kl' else js_loss
     
 
     # def process_bootstrap(self,prompt_hs,candidate_hs,reward,ranker):
@@ -188,45 +191,55 @@ class Trainer:
             rew = mini_batch_reward.reshape(mini_b * k, 1)
             prompt = prompt_hs.expand(mini_b * k, -1)
             student_logits = self.ranker(cand, prompt)
-            loss = self.loss_fn(student_logits, rew)
+            target = rew
+            loss = self.loss_fn(student_logits, target)
         elif self.ranker_type == 'listwise':
             mini_batch_prompt_hs = torch.stack([prompt_hs for _ in range(self.num_bootstrap)],dim=0) # mini_b,1,d_prompt
             student_logits = self.ranker(mini_batch_candidate_hs, mini_batch_prompt_hs) # mini_b,k
-            loss = self.loss_fn(student_logits, mini_batch_reward) # mini_b
+            target = mini_batch_reward
+            loss = self.loss_fn(student_logits, target) # mini_b
         elif self.ranker_type == 'cross_attention':
             mini_batch_prompt_hs = torch.stack([prompt_hs.squeeze(0) for _ in range(self.num_bootstrap)],dim=0) # mini_b,d_prompt
             student_logits = self.ranker(mini_batch_candidate_hs, mini_batch_prompt_hs) # mini_b,k
-            loss = self.loss_fn(student_logits, mini_batch_reward) # mini_b
+            target = mini_batch_reward
+            loss = self.loss_fn(student_logits, target) # mini_b
         else: 
             raise NotImplementedError(f"Invalid ranker type: {self.ranker_type}")
-        return loss
+        mse_term = self.mse_loss_fn(student_logits, target).detach()
+        div_term = self.div_loss_fn(student_logits, target).detach()
+        return loss, mse_term, div_term
 
             
     def train_epoch(self):
         self.ranker.train()
         epoch_loss = 0.0
+        epoch_mse = 0.0
+        epoch_div = 0.0
         self.parallel_size = self.config.get('parallel_size', 8)
         self.num_bootstrap = self.config.get('num_bootstrap', 8)
 
         pbar = tqdm(self.train_dataloader, desc='Training', leave=False)
         for class_idx, class_group in enumerate(pbar):
             batch_prompt_hs, batch_candidate_hs, batch_reward, _ = class_group
-            batch_loss = self.process_batch(batch_prompt_hs,batch_candidate_hs,batch_reward)
-            # pbar.set_postfix(loss=float(batch_loss.detach().item())) 
+            batch_loss, batch_mse, batch_div = self.process_batch(batch_prompt_hs,batch_candidate_hs,batch_reward)
             self.optimizer.zero_grad()
             batch_loss.backward()
             self.optimizer.step()
             epoch_loss += float(batch_loss.detach().item())
+            epoch_mse += float(batch_mse.item())
+            epoch_div += float(batch_div.item())
         epoch_loss /= len(self.train_dataloader) # 没有对mini_batch求平均
-        return epoch_loss
+        epoch_mse /= len(self.train_dataloader)
+        epoch_div /= len(self.train_dataloader)
+        return epoch_loss, epoch_mse, epoch_div
 
 
 
     def train(self):
         best_loss = float('inf')
         for epoch in range(self.config.get('num_epochs', 100)):
-            epoch_loss = self.train_epoch()
-            print(f'epoch {epoch} loss: {epoch_loss}')
+            epoch_loss, epoch_mse, epoch_div = self.train_epoch()
+            print(f'epoch {epoch} loss: {epoch_loss:.6f} | mse: {epoch_mse:.6f} | {self.kl_type}: {epoch_div:.6f}')
             self.scheduler.step()
             if epoch % self.config.get('save_interval', 10) == 0:
                 save_interval_path = Path(self.config.get('output_dir', '')) / f'ranker_{self.config.get("run_name", "default")}_epoch_{epoch}.pth'

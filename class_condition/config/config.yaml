@@ -10,7 +10,7 @@ seed: 42
 hs_reward_path: /root/autodl-tmp/dit_imagenet_hiddens_and_is_rewards_s1_6_9_l16_per128_s6_l16.pt
 
 # Align with keys in saved rollout meta / RankerDataset
-step_idx: 6
+step_idx: 9
 layer_idx: 16
 
 # null => no external prompt table (zeros); or one_hot|clip|bert|llm_tokenizer|llm_hidden_state
@@ -24,7 +24,7 @@ num_workers: 4
 # Ranker (DiT-XL/2 hidden dim after seq pool is typically 1152)
 input_dim_candidate: 1152
 input_dim_prompt: 1024 # prompt_type=bert uses prompt dim 1024
-hidden_dim: 256
+hidden_dim: 64
 num_heads: 8
 dropout: 0.1
 num_layers: 2
@@ -47,7 +47,7 @@ total_iters: 100
 step_size: 10
 gamma: 0.1
 
-alpha: 0.8
+alpha: 0.1
 kl_type: kl
 ranker_type: listwise
 criterion: null
