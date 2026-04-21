@@ -218,11 +218,6 @@ class DiffusionRanker_MLP(nn.Module):
     ):
         super(DiffusionRanker_MLP,self).__init__()
         self.hidden_dim = hidden_dim
-        self.input_prompt_norm = nn.LayerNorm(prompt_hidden_dim)
-        self.input_candidate_norm = nn.LayerNorm(candidate_hidden_dim)
-        self.prompt_hidden_norm = nn.LayerNorm(hidden_dim)
-        self.candidate_hidden_norm = nn.LayerNorm(hidden_dim)
-        self.fusion_norm = nn.LayerNorm(hidden_dim)
         # self.linear_prompt = nn.Linear(prompt_hidden_dim,hidden_dim)
         self.process_prompt = nn.Sequential(
             nn.Linear(prompt_hidden_dim,hidden_dim),
@@ -246,7 +241,6 @@ class DiffusionRanker_MLP(nn.Module):
         self.layers = nn.ModuleList(
             [self.ffn for _ in range(num_layers)]
         )
-        self.layer_norms = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(num_layers)])
         self.projection = nn.Linear(hidden_dim,output_dim)
         self._init_weights()
         if half:
@@ -280,10 +274,8 @@ class DiffusionRanker_MLP(nn.Module):
         # prompt_hstates: b,prompt_hidden_dim
         if prompt_hstates is not None:
             # prompt_hstates = self.linear_prompt(prompt_hstates)
-            prompt_hstates = self.input_prompt_norm(prompt_hstates)
             prompt_hstates = self.process_prompt(prompt_hstates)
             # prompt_hstates: b,hidden_dim
-            prompt_hstates = self.prompt_hidden_norm(prompt_hstates)
             prompt_hstates = prompt_hstates.unsqueeze(1)
         else:
             prompt_hstates = torch.zeros(
@@ -294,16 +286,13 @@ class DiffusionRanker_MLP(nn.Module):
                 dtype=candidate_hstates.dtype,
             ) # b,1,hidden_dim 
 
-        candidate_hstates = self.input_candidate_norm(candidate_hstates)
         candidate_hstates = self.linear_candidate(candidate_hstates)
-        candidate_hstates = self.candidate_hidden_norm(candidate_hstates)
         # candidate_hstates: b,k,hidden_dim
         # prompt_hstates: b,1,hidden_dim
         
         x = torch.cat((prompt_hstates,candidate_hstates),dim=1) # b,k+1,hidden_dim
-        x = self.fusion_norm(x)
-        for layer, norm in zip(self.layers, self.layer_norms):
-            x = norm(x + layer(x))
+        for layer in self.layers:
+            x = x + layer(x)
         # b,k+1,hidden_dim
         if self.criterion is None:
             # Pointwise regression should use an explicit head instead of picking one hidden channel.
@@ -440,21 +429,6 @@ class DiffusionRanker_CrossAttention(nn.Module):
         return sum(
             p.numel() for p in self.parameters()
         )
-
-
-
-class MLP(nn.Module):
-    def __init__(self, hidden_size, num_layers):
-        super(MLP, self).__init__()
-        layers = []
-        for _ in range(num_layers):
-            layers.append(nn.Linear(hidden_size, hidden_size))
-            layers.append(nn.ReLU())
-        self.mlp = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.mlp(x)
-
 
 
 

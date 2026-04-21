@@ -155,7 +155,7 @@ class Trainer:
     def train_epoch(self):
         self.ranker.train()
         parallel_size = self.config.get('parallel_size', 8)
-        num_bootstrap_samples = self.config.get('num_bootstrap_samples', 8)
+        num_bootstrap_samples = self.config.get('num_bootstrap_samples', 8) # mini_b
         assert num_bootstrap_samples * parallel_size >= training_samples_per_class, '一个batch训得不充分，考虑增大parallel_size或num_bootstrap_samples'
         epoch_loss = 0.0
 
