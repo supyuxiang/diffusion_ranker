@@ -35,7 +35,7 @@ class RankerDataset(Dataset):
         self.hs_and_reward_path = Path(f'/root/autodl-tmp/dit_imagenet_hiddens_and_is_rewards_s1_6_9_l16_per128_s{step_idx}_l{layer_idx}.pt')
         self.load_prompt_encoding()
         self.load_hs_and_reward()
-        self.normalize_hs()
+        # self.normalize_hs()
         self.normalize_reward()
         if shuffle_class:
             self.shuffle_class()
