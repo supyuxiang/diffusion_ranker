@@ -1,18 +1,18 @@
-import torch
-import torch.nn as nn
-import argparse
-from omegaconf import OmegaConf
-from tqdm import tqdm
-from torch.utils.data import Dataset, DataLoader, random_split
-
-
 import sys
 from pathlib import Path
+
+import hydra
+import torch
+from omegaconf import DictConfig, OmegaConf
+from tqdm import tqdm
+from torch.utils.data import DataLoader, random_split
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from class_condition.dataset import RankerDataset, training_samples_per_class
 from class_condition.ranker import DiffusionRanker_Transformer
-from utils import set_device
+from utils import set_device, set_seed
 
 
 # ------------------------------- I love Peking University -------------------------------
@@ -42,17 +42,16 @@ class Trainer:
         self.ranker.to(self.device)
     
     def build_dataloader(self):
-        from class_condition.dataset import RankerDataset
-
         self.shuffle_class = self.config.get('shuffle_class', False)
+        ds_kw = dict(
+            step_idx=self.config['step_idx'],
+            layer_idx=self.config['layer_idx'],
+            prompt_type=self.config.get('prompt_type'),
+        )
 
         if not self.shuffle_class:
             self.batch_size = training_samples_per_class
-            self.train_dataset = RankerDataset(
-                step_idx=self.config['step_idx'],
-                layer_idx=self.config['layer_idx'],
-                prompt_type=self.config['prompt_type'],
-            )
+            self.train_dataset = RankerDataset(**ds_kw)
             self.train_dataloader = DataLoader(
                 self.train_dataset,
                 batch_size=self.batch_size,
@@ -64,12 +63,7 @@ class Trainer:
         else:
             self.batch_size = self.config.get('batch_size', 32)
 
-            self.full_dataset = RankerDataset(
-                step_idx=self.config['step_idx'],
-                layer_idx=self.config['layer_idx'],
-                prompt_type=self.config['prompt_type'],
-                shuffle_class=True,
-            )
+            self.full_dataset = RankerDataset(shuffle_class=True, **ds_kw)
             
             split_ratio = self.config.get('split_ratio', [0.9, 0.1])
             self.train_dataset, self.val_dataset = random_split(self.full_dataset, split_ratio)
@@ -114,7 +108,7 @@ class Trainer:
     def build_scheduler(self):
         scheduler = self.config.get('scheduler', 'cosine')
         if scheduler == 'cosine':
-            self.scheduler = torch.optim.lr_scheduler(
+            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
                 T_max=self.config.get('T_max', 100),
                 eta_min=self.config.get('eta_min', 0),
@@ -148,8 +142,11 @@ class Trainer:
 
     def process_bootstrap(self,prompt_hs,candidate_hs,reward,ranker):
         ranker.train()
+        w_dtype = next(ranker.parameters()).dtype
+        prompt_hs = prompt_hs.to(dtype=w_dtype)
+        candidate_hs = candidate_hs.to(dtype=w_dtype)
         loss = self.loss_fn(
-            ranker(prompt_hs, candidate_hs),
+            ranker(candidate_hs, prompt_hs),
             reward,
         )
         return loss.item()
@@ -173,6 +170,7 @@ class Trainer:
                 for bootstrap_idx in range(num_bootstrap_samples):
                     indices = torch.randperm(self.batch_size)[:parallel_size] # 随机采样parallel_size个样本
                     bootstrap_prompts_hs,bootstrap_candidates_hs,bootstrap_reward = prompt_hs[indices], candidate_hs[indices], reward[indices]
+                    bootstrap_candidates_hs = bootstrap_candidates_hs.unsqueeze(0) # (1, K, hidden_dim)
                     bootstrap_loss = self.process_bootstrap(bootstrap_prompts_hs, bootstrap_candidates_hs, bootstrap_reward, self.ranker)
                     batch_loss += bootstrap_loss
                 batch_loss /= num_bootstrap_samples
@@ -194,6 +192,7 @@ class Trainer:
                 for bootstrap_idx in range(num_bootstrap_samples):
                     indices = torch.randperm(len(batch_prompt_hs))[:parallel_size]
                     bootstrap_prompts_hs,bootstrap_candidates_hs,bootstrap_reward = batch_prompt_hs[indices], batch_candidate_hs[indices], batch_reward[indices]
+                    bootstrap_candidates_hs = bootstrap_candidates_hs.unsqueeze(0) # (1, K, hidden_dim)
                     bootstrap_loss = self.process_bootstrap(bootstrap_prompts_hs, bootstrap_candidates_hs, bootstrap_reward, self.ranker)
                     batch_loss += bootstrap_loss
                 batch_loss /= num_bootstrap_samples 
@@ -238,9 +237,15 @@ class Trainer:
             prompt_hs, candidate_hs, reward, label = prompt_hs.to(self.device), candidate_hs.to(self.device), reward.to(self.device), label.to(self.device)
             batch_loss = 0.0
             for bootstrap_idx in range(num_bootstrap_samples):
-                indices = torch.randperm(len(batch_prompt_hs))[:parallel_size]
-                bootstrap_prompts_hs,bootstrap_candidates_hs,bootstrap_reward = batch_prompt_hs[indices], batch_candidate_hs[indices], batch_reward[indices]
-                bootstrap_loss = self.process_bootstrap(bootstrap_prompts_hs, bootstrap_candidates_hs, bootstrap_reward, self.ranker)
+                indices = torch.randperm(len(candidate_hs))[:parallel_size]
+                bootstrap_prompts_hs, bootstrap_candidates_hs, bootstrap_reward = (
+                    prompt_hs[indices],
+                    candidate_hs[indices],
+                    reward[indices],
+                )
+                bootstrap_loss = self.process_bootstrap(
+                    bootstrap_candidates_hs, bootstrap_prompts_hs, bootstrap_reward, self.ranker
+                )
                 batch_loss += bootstrap_loss
             batch_loss /= num_bootstrap_samples
             with torch.no_grad():
@@ -257,21 +262,23 @@ class Trainer:
     
 
 
-def set_args():
-    p = argparse.ArgumentParser()
-    return p.parse_args()
+def _cfg_to_trainer_dict(cfg: DictConfig) -> dict:
+    """Hydra DictConfig -> plain dict for Trainer (drops Hydra-reserved keys)."""
+    d = OmegaConf.to_container(cfg, resolve=True)
+    assert isinstance(d, dict)
+    d.pop("hydra", None)
+    return d
 
 
-
-def main():
-    args = set_args()
-    config = OmegaConf.load(args.config_path)
-    trainer = Trainer(config)
+@hydra.main(version_base=None, config_path="config", config_name="config")
+def main(cfg: DictConfig) -> None:
+    set_seed(int(cfg.get("seed", 42)))
+    trainer = Trainer(_cfg_to_trainer_dict(cfg))
     trainer.train()
 
 
-
-
+if __name__ == "__main__":
+    main()
 
 
 

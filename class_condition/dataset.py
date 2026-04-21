@@ -30,9 +30,9 @@ class RankerDataset(Dataset):
         self.shuffle_class = shuffle_class
         self.step_idx = step_idx
         self.layer_idx = layer_idx
+        self.hs_and_reward_path = Path(f'/root/autodl-tmp/dit_imagenet_hiddens_and_is_rewards_s1_6_9_l16_per128_s{step_idx}_l{layer_idx}.pt')
         self.load_prompt_encoding()
-        self.load_hs_reward()
-        self.load_reward()
+        self.load_hs_and_reward()
         if shuffle_class:
             self.shuffle_class()
 
@@ -79,10 +79,10 @@ class RankerDataset(Dataset):
                 full_prompt_encoding[start_idx:end_idx] = self.prompt_encoding[class_idx]
         self.prompt_hstate = full_prompt_encoding # 1000*128, prompt_encoding_hidden_dim
     
-    def load_hs_reward(self):
+    def load_hs_and_reward(self):
         step_idx = self.step_idx
         layer_idx = self.layer_idx
-        path = Path(self.hs_reward_path).expanduser().resolve()
+        path = Path(self.hs_and_reward_path).expanduser().resolve()
         hs_reward = torch.load(path,map_location='cpu',weights_only=False)
         self.hs = hs_reward['hiddens'] # 1000*128, hidden_dim
         self.reward = hs_reward['reward'] # 1000*128, 1
