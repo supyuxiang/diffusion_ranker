@@ -35,6 +35,7 @@ class RankerDataset(Dataset):
         self.hs_and_reward_path = Path(f'/root/autodl-tmp/dit_imagenet_hiddens_and_is_rewards_s1_6_9_l16_per128_s{step_idx}_l{layer_idx}.pt')
         self.load_prompt_encoding()
         self.load_hs_and_reward()
+        self.normalize_hs()
         self.normalize_reward()
         if shuffle_class:
             self.shuffle_class()
@@ -97,6 +98,13 @@ class RankerDataset(Dataset):
     
     def normalize_reward(self):
         self.reward = (self.reward - self.reward.mean()) / (self.reward.std() + 1e-8) # normalize 
+
+    def normalize_hs(self):
+        # Per-feature z-score across all samples so candidate scale is comparable to prompt/reward.
+        hs = self.hs.float()
+        hs_mean = hs.mean(dim=0, keepdim=True)
+        hs_std = hs.std(dim=0, keepdim=True)
+        self.hs = (hs - hs_mean) / (hs_std + 1e-8)
 
     
     def __len__(self):
