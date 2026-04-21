@@ -170,7 +170,7 @@ class Trainer:
                 for bootstrap_idx in range(num_bootstrap_samples):
                     indices = torch.randperm(self.batch_size)[:parallel_size] # 随机采样parallel_size个样本
                     bootstrap_prompts_hs,bootstrap_candidates_hs,bootstrap_reward = prompt_hs[indices], candidate_hs[indices], reward[indices]
-                    bootstrap_candidates_hs = bootstrap_candidates_hs.unsqueeze(0) # (1, K, hidden_dim)
+                    bootstrap_candidates_hs = bootstrap_candidates_hs.unsqueeze(1)  # (B,1,D) ranker expects (B,K,D)
                     bootstrap_loss = self.process_bootstrap(bootstrap_prompts_hs, bootstrap_candidates_hs, bootstrap_reward, self.ranker)
                     batch_loss += bootstrap_loss
                 batch_loss /= num_bootstrap_samples
@@ -192,7 +192,7 @@ class Trainer:
                 for bootstrap_idx in range(num_bootstrap_samples):
                     indices = torch.randperm(len(batch_prompt_hs))[:parallel_size]
                     bootstrap_prompts_hs,bootstrap_candidates_hs,bootstrap_reward = batch_prompt_hs[indices], batch_candidate_hs[indices], batch_reward[indices]
-                    bootstrap_candidates_hs = bootstrap_candidates_hs.unsqueeze(0) # (1, K, hidden_dim)
+                    bootstrap_candidates_hs = bootstrap_candidates_hs.unsqueeze(1)  # (B,1,D) ranker expects (B,K,D)
                     bootstrap_loss = self.process_bootstrap(bootstrap_prompts_hs, bootstrap_candidates_hs, bootstrap_reward, self.ranker)
                     batch_loss += bootstrap_loss
                 batch_loss /= num_bootstrap_samples 
@@ -243,8 +243,9 @@ class Trainer:
                     candidate_hs[indices],
                     reward[indices],
                 )
+                bootstrap_candidates_hs = bootstrap_candidates_hs.unsqueeze(1)
                 bootstrap_loss = self.process_bootstrap(
-                    bootstrap_candidates_hs, bootstrap_prompts_hs, bootstrap_reward, self.ranker
+                    bootstrap_prompts_hs, bootstrap_candidates_hs, bootstrap_reward, self.ranker
                 )
                 batch_loss += bootstrap_loss
             batch_loss /= num_bootstrap_samples
