@@ -47,6 +47,8 @@ class TransformerBlock(nn.Module):
         return output
 
 
+
+
 class DiffusionRanker_Transformer(nn.Module):
     def __init__(
         self,
@@ -96,30 +98,26 @@ class DiffusionRanker_Transformer(nn.Module):
 
 
     def forward(self,candidate_hstates,prompt_hstates,key_padding_mask=None):
-        # candidate_hstates: (B, K, input_dim_candidate) -> linear -> (B, K, hidden_dim)
-        b, k, _ = candidate_hstates.shape # b,k,hidden_dim
+        # candidate_hstates: mini_b,k,d_candidate, prompt_hstates: mini_b,1,d_prompt
+        mini_b, k, d_candidate = candidate_hstates.shape # mini_b,k,d_candidate
 
-        candidate_hstates = self.linear_candidate(candidate_hstates)  # (B, K, hidden_dim)
+        candidate_hstates = self.linear_candidate(candidate_hstates)  # (mini_b,k, hidden_dim)
 
-        if prompt_hstates is not None: # b, input_dim_prompt
-            # prompt_hstates: (B, K, input_dim_prompt) -> linear -> (B, K, hidden_dim)
-            prompt_hstates = self.linear_prompt(prompt_hstates)  # (B, hidden_dim)
-            prompt_hstates = prompt_hstates.unsqueeze(0) # (1, B, hidden_dim)
+        if prompt_hstates is not None: # mini_b,1, d_prompt
+            # prompt_hstates: 
+            prompt_hstates = self.linear_prompt(prompt_hstates)  # mini_b,1,hidden_dim
         else:
             # 与有 prompt 时相同占位形状，便于与 (K, B, H) 在 dim=1 对齐
             prompt_hstates = torch.zeros(
+                mini_b,
                 1,
-                candidate_hstates.shape[0],
-                candidate_hstates.shape[2],
+                self.hidden_dim,
                 device=candidate_hstates.device,
                 dtype=candidate_hstates.dtype,
-            )# 1,b,hidden_dim
-            
-        # 1,b,hidden_dim -> b,1,hidden_dim
-        prompt_hstates = prompt_hstates.permute(1,0,2) # 1,b,hidden_dim
+            )# mini_b,1,hidden_dim
 
         # concat prompt_hstates and candidate_hstates
-        x = torch.cat((prompt_hstates, candidate_hstates),dim=1) # b,k+1,hidden_dim
+        x = torch.cat((prompt_hstates, candidate_hstates),dim=1) # mini_b,k+1,hidden_dim
 
         # candidate_hstates = candidate_hstates.permute(
         #     1,0,2
@@ -128,13 +126,14 @@ class DiffusionRanker_Transformer(nn.Module):
 
         for layer in self.layers:
             x = layer(x,key_padding_mask=key_padding_mask)
-        # b,k+1,hidden_dim
+        # mini_b,k+1,hidden_d
 
         # b,k+1,hidden_dim -> b, k+1, 1
-        logits = torch.matmul(x,self.output_weights) # b, k+1, 1
-        logits = logits.squeeze(-1) # b,k+1
-        # logits = logits[:,1:] + logits[:,0:1] # b,k
-        logits = logits[:,1:] # b,k
+        logits = torch.matmul(x,self.output_weights) # mini_b, k+1, 1
+        logits = logits.squeeze(-1) # mini_b,k+1
+        # logits = logits[:,1:] + logits[:,0:1] # mini_b,k
+        logits = logits[:,1:] # mini_b,k
+        # logits = nn.Sigmoid()(logits) # mini_b,k
         return logits
         
         # logits = torch.matmul(x,self.output_weights) # k+1, b ,1
@@ -147,7 +146,61 @@ class DiffusionRanker_Transformer(nn.Module):
         return sum(
             p.numel() for p in self.parameters()
         )
-    
+
+
+
+
+
+# class DiffusionRanker_Transformer_SingleClass(nn.module):
+#     def __init__(
+#         self,
+#         input_dim_candidate:int,
+#         input_dim_prompt:int,
+#         hidden_dim:int,
+#         num_heads:int,
+#         dropout:float,
+#         num_layers:int,
+#     ):
+#         super(DiffusionRanker_Transformer_SingleClass,self).__init__()
+#         self.input_dim_prompt = input_dim_prompt
+#         self.input_dim_candidate = input_dim_candidate
+
+#         self.linear_candidate = nn.Linear(input_dim_candidate,hidden_dim)
+#         self.linear_prompt = nn.Linear(input_dim_prompt,hidden_dim)
+#         self.layers = nn.ModuleList(
+#             [
+#                 TransformerBlock(hidden_dim,num_heads,dropout)
+#                 for _ in range(num_layers)
+#             ]
+#         )
+#         self.output_weights = nn.Parameter(torch.empty(hidden_dim,1))
+#         nn.init.xavier_uniform_(self.output_weights)
+#         self._init_weights()
+#         if half:
+#             self.to(torch.bfloat16)
+
+#     def _init_weights(self):
+#         for layer in self.layers:
+#             for module in layer.modules():
+#                 if isinstance(module, nn.Linear):
+#                     nn.init.xavier_uniform_(module.weight)
+#                     if module.bias is not None:
+#                         nn.init.zeros_(module.bias)
+#         for module in self.linear_candidate.modules():
+#             pass
+
+#     def forward(self,candidate_hstates,prompt_hstates,key_padding_mask=None):
+#         # candidate_hstates: b,k,d_candidate
+#         # prompt_hstates: 1,d_prompt
+#         pass
+
+
+        
+
+
+
+
+
 
 
 
@@ -240,9 +293,10 @@ class DiffusionRanker_MLP(nn.Module):
         x = torch.cat((prompt_hstates,candidate_hstates),dim=1) # b,k+1,hidden_dim
         for layer in self.layers:
             x = x + layer(x)
-        # b,1,hidden_dim
+        # b,k+1,hidden_dim
         if self.criterion is None:
-            return x[:,1:,0] # b,k
+            # Pointwise regression should use an explicit head instead of picking one hidden channel.
+            return self.projection(x[:,1:,:]).squeeze(-1)  # b,k
         elif 'cos' in self.criterion:
             t = float(self.criterion.split("_t")[-1])
             x = nn.functional.normalize(x,p=2.0,dim=-1,eps=1e-4)

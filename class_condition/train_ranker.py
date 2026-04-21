@@ -11,7 +11,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from class_condition.dataset import RankerDataset, training_samples_per_class
-from class_condition.ranker import DiffusionRanker_Transformer
+from class_condition.ranker import (
+    DiffusionRanker_CrossAttention,
+    DiffusionRanker_MLP,
+    DiffusionRanker_Transformer,
+)
 from utils import set_device, set_seed
 
 
@@ -30,56 +34,61 @@ class Trainer:
     
 
     def build_ranker(self):
-        self.ranker = DiffusionRanker_Transformer(
-            input_dim_candidate=self.config['input_dim_candidate'],
-            input_dim_prompt=self.config['input_dim_prompt'],
-            hidden_dim=self.config['hidden_dim'],
-            num_heads=self.config['num_heads'],
-            dropout=self.config['dropout'],
-            num_layers=self.config['num_layers'],
-            half=self.config['half'],
-        )
+        ranker_type = self.config.get('ranker_type', 'listwise')
+        self.ranker_type = ranker_type
+        if ranker_type == 'listwise':
+            self.ranker = DiffusionRanker_Transformer(
+                input_dim_candidate=self.config['input_dim_candidate'],
+                input_dim_prompt=self.config['input_dim_prompt'],
+                hidden_dim=self.config['hidden_dim'],
+                num_heads=self.config['num_heads'],
+                dropout=self.config['dropout'],
+                num_layers=self.config['num_layers'],
+                half=self.config['half'],
+            )
+        elif ranker_type == 'pointwise':
+            self.ranker = DiffusionRanker_MLP(
+                candidate_hidden_dim=self.config['input_dim_candidate'],
+                prompt_hidden_dim=self.config['input_dim_prompt'],
+                hidden_dim=self.config['hidden_dim'],
+                output_dim=1,
+                num_layers=self.config['num_layers'],
+                dropout=self.config['dropout'],
+                half=self.config['half'],
+                criterion=self.config.get('criterion', 'mse'),
+            )
+        elif ranker_type == 'cross_attention':
+            self.ranker = DiffusionRanker_CrossAttention(
+                candidate_hidden_dim=self.config['input_dim_candidate'],
+                prompt_hidden_dim=self.config['input_dim_prompt'],
+                hidden_dim=self.config['hidden_dim'],
+                num_heads=self.config['num_heads'],
+                num_layers=self.config['num_layers'],
+                dropout=self.config['dropout'],
+                half=self.config['half'],
+            )
+        else:
+            raise NotImplementedError(f"Invalid ranker type: {ranker_type}")
         self.ranker.to(self.device)
     
     def build_dataloader(self):
-        self.shuffle_class = self.config.get('shuffle_class', False)
         ds_kw = dict(
             step_idx=self.config['step_idx'],
             layer_idx=self.config['layer_idx'],
             prompt_type=self.config.get('prompt_type'),
         )
 
-        if not self.shuffle_class:
-            self.batch_size = training_samples_per_class
-            self.train_dataset = RankerDataset(**ds_kw)
-            self.train_dataloader = DataLoader(
-                self.train_dataset,
-                batch_size=self.batch_size,
-                shuffle=True,
-                num_workers=self.config.get('num_workers', 4),
-            )
-            self.val_dataset,self.val_dataloader = None,None
-        
-        else:
-            self.batch_size = self.config.get('batch_size', 32)
+        self.batch_size = self.config.get('batch_size',32)
+        assert training_samples_per_class % self.batch_size == 0
 
-            self.full_dataset = RankerDataset(shuffle_class=True, **ds_kw)
-            
-            split_ratio = self.config.get('split_ratio', [0.9, 0.1])
-            self.train_dataset, self.val_dataset = random_split(self.full_dataset, split_ratio)
-            self.train_dataloader = DataLoader(
-                self.train_dataset,
-                batch_size=self.batch_size,
-                shuffle=True,
-                num_workers=self.config.get('num_workers', 4),
-            )
-            self.val_dataloader = DataLoader(
-                self.val_dataset,
-                batch_size=self.batch_size,
-                shuffle=False,
-                num_workers=self.config.get('num_workers', 4),
-            )
-
+        self.train_dataset = RankerDataset(**ds_kw)
+        self.train_dataloader = DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.config.get('num_workers', 4),
+        )
+        self.val_dataset,self.val_dataloader = None,None
 
 
 
@@ -140,68 +149,76 @@ class Trainer:
         )
     
 
-    def process_bootstrap(self,prompt_hs,candidate_hs,reward,ranker):
-        ranker.train()
-        w_dtype = next(ranker.parameters()).dtype
-        prompt_hs = prompt_hs.to(dtype=w_dtype)
-        candidate_hs = candidate_hs.to(dtype=w_dtype)
-        student_logits = ranker(candidate_hs, prompt_hs)
-        reward = reward.to(device=student_logits.device, dtype=student_logits.dtype).reshape_as(student_logits)
-        loss = self.loss_fn(student_logits, reward)
+    # def process_bootstrap(self,prompt_hs,candidate_hs,reward,ranker):
+    #     ranker.train()
+    #     w_dtype = next(ranker.parameters()).dtype
+    #     prompt_hs = prompt_hs.to(dtype=w_dtype)
+    #     candidate_hs = candidate_hs.to(dtype=w_dtype)
+    #     student_logits = ranker(candidate_hs, prompt_hs)
+    #     reward = reward.to(device=student_logits.device, dtype=student_logits.dtype).reshape_as(student_logits)
+    #     loss = self.loss_fn(student_logits, reward)
+    #     return loss
+
+    def process_batch(self,batch_prompt_hs,batch_candidate_hs,batch_reward):
+        # batch_prompt_hs: b,d_prompt
+        # batch_candidate_hs: b,d_candidate
+        # batch_reward: b,1
+        batch_prompt_hs, batch_candidate_hs, batch_reward = batch_prompt_hs.to(self.device), batch_candidate_hs.to(self.device), batch_reward.to(self.device)
+        w_dtype = next(self.ranker.parameters()).dtype
+        prompt_hs = batch_prompt_hs[0:1].to(dtype=w_dtype) # 
+        prompt_hs
+        batch_candidate_hs = batch_candidate_hs.to(dtype=w_dtype)
+        batch_reward = batch_reward.to(dtype=w_dtype)
+        
+        #shuffle batch
+        mini_batch_candidate_hs = []
+        mini_batch_reward=[]
+        for _ in range(self.num_bootstrap):
+            indices = torch.randperm(batch_candidate_hs.shape[0])[:self.parallel_size]
+            candidate_hs = batch_candidate_hs[indices] # k,d_candidate
+            reward = batch_reward[indices]
+            mini_batch_candidate_hs.append(candidate_hs)
+            mini_batch_reward.append(reward)
+        mini_batch_candidate_hs = torch.stack(mini_batch_candidate_hs,dim=0) # mini_b,k,d_candidate
+        mini_batch_reward = torch.stack(mini_batch_reward,dim=0) # mini_b,1
+        if self.ranker_type == 'pointwise':
+            # pointwise ranker: one candidate per sample, prompt shape (B, D_prompt)
+            mini_b, k, d_candidate = mini_batch_candidate_hs.shape
+            cand = mini_batch_candidate_hs.reshape(mini_b * k, 1, d_candidate)
+            rew = mini_batch_reward.reshape(mini_b * k, 1)
+            prompt = prompt_hs.expand(mini_b * k, -1)
+            student_logits = self.ranker(cand, prompt)
+            loss = self.loss_fn(student_logits, rew)
+        elif self.ranker_type == 'listwise':
+            mini_batch_prompt_hs = torch.stack([prompt_hs for _ in range(self.num_bootstrap)],dim=0) # mini_b,1,d_prompt
+            student_logits = self.ranker(mini_batch_candidate_hs, mini_batch_prompt_hs) # mini_b,k
+            loss = self.loss_fn(student_logits, mini_batch_reward) # mini_b
+        elif self.ranker_type == 'cross_attention':
+            mini_batch_prompt_hs = torch.stack([prompt_hs.squeeze(0) for _ in range(self.num_bootstrap)],dim=0) # mini_b,d_prompt
+            student_logits = self.ranker(mini_batch_candidate_hs, mini_batch_prompt_hs) # mini_b,k
+            loss = self.loss_fn(student_logits, mini_batch_reward) # mini_b
+        else: 
+            raise NotImplementedError(f"Invalid ranker type: {self.ranker_type}")
         return loss
 
-
-
+            
     def train_epoch(self):
         self.ranker.train()
-        parallel_size = self.config.get('parallel_size', 8)
-        num_bootstrap_samples = self.config.get('num_bootstrap_samples', 8)
-        assert num_bootstrap_samples * parallel_size >= training_samples_per_class, '一个batch训得不充分，考虑增大parallel_size或num_bootstrap_samples'
         epoch_loss = 0.0
+        self.parallel_size = self.config.get('parallel_size', 8)
+        self.num_bootstrap = self.config.get('num_bootstrap', 8)
 
-        if self.shuffle_class:
-            pbar = tqdm(self.train_dataloader, desc='Training', leave=False)
-            for batch_idx, batch in enumerate(pbar):
-                prompt_hs, candidate_hs, reward, label = batch
-                prompt_hs, candidate_hs, reward, label = prompt_hs.to(self.device), candidate_hs.to(self.device), reward.to(self.device), label.to(self.device)
-                
-                batch_loss = 0.0
-                for bootstrap_idx in range(num_bootstrap_samples):
-                    indices = torch.randperm(self.batch_size)[:parallel_size] # 随机采样parallel_size个样本
-                    bootstrap_prompts_hs,bootstrap_candidates_hs,bootstrap_reward = prompt_hs[indices], candidate_hs[indices], reward[indices]
-                    bootstrap_candidates_hs = bootstrap_candidates_hs.unsqueeze(1)  # (B,1,D) ranker expects (B,K,D)
-                    bootstrap_loss = self.process_bootstrap(bootstrap_prompts_hs, bootstrap_candidates_hs, bootstrap_reward, self.ranker)
-                    batch_loss += bootstrap_loss
-                batch_loss /= num_bootstrap_samples
-                pbar.set_postfix(loss=float(batch_loss.detach().item()))
-                
-                self.optimizer.zero_grad()
-                batch_loss.backward()
-                self.optimizer.step()
+        pbar = tqdm(self.train_dataloader, desc='Training', leave=False)
+        for class_idx, class_group in enumerate(pbar):
+            batch_prompt_hs, batch_candidate_hs, batch_reward, _ = class_group
+            batch_loss = self.process_batch(batch_prompt_hs,batch_candidate_hs,batch_reward)
+            # pbar.set_postfix(loss=float(batch_loss.detach().item())) 
+            self.optimizer.zero_grad()
+            batch_loss.backward()
+            self.optimizer.step()
             epoch_loss += float(batch_loss.detach().item())
-            epoch_loss /= len(self.train_dataloader)
-            return epoch_loss
-
-        else:
-            pbar = tqdm(self.train_dataloader, desc='Training', leave=False)
-            for class_idx, class_group in enumerate(pbar):
-                batch_prompt_hs, batch_candidate_hs, batch_reward, batch_label = class_group
-                batch_prompt_hs, batch_candidate_hs, batch_reward, batch_label = batch_prompt_hs.to(self.device), batch_candidate_hs.to(self.device), batch_reward.to(self.device), batch_label.to(self.device)
-                batch_loss = 0.0
-                for bootstrap_idx in range(num_bootstrap_samples):
-                    indices = torch.randperm(len(batch_prompt_hs))[:parallel_size]
-                    bootstrap_prompts_hs,bootstrap_candidates_hs,bootstrap_reward = batch_prompt_hs[indices], batch_candidate_hs[indices], batch_reward[indices]
-                    bootstrap_candidates_hs = bootstrap_candidates_hs.unsqueeze(1)  # (B,1,D) ranker expects (B,K,D)
-                    bootstrap_loss = self.process_bootstrap(bootstrap_prompts_hs, bootstrap_candidates_hs, bootstrap_reward, self.ranker)
-                    batch_loss += bootstrap_loss
-                batch_loss /= num_bootstrap_samples 
-                pbar.set_postfix(loss=float(batch_loss.detach().item())) 
-                self.optimizer.zero_grad()
-                batch_loss.backward()
-                self.optimizer.step()
-            epoch_loss += float(batch_loss.detach().item())
-            epoch_loss /= len(self.train_dataloader)
-            return epoch_loss
+        epoch_loss /= len(self.train_dataloader) # 没有对mini_batch求平均
+        return epoch_loss
 
 
 
@@ -209,6 +226,7 @@ class Trainer:
         best_loss = float('inf')
         for epoch in range(self.config.get('num_epochs', 100)):
             epoch_loss = self.train_epoch()
+            print(f'epoch {epoch} loss: {epoch_loss}')
             self.scheduler.step()
             if epoch % self.config.get('save_interval', 10) == 0:
                 save_interval_path = Path(self.config.get('output_dir', '')) / f'ranker_{self.config.get("run_name", "default")}_epoch_{epoch}.pth'
@@ -242,7 +260,7 @@ class Trainer:
                     candidate_hs[indices],
                     reward[indices],
                 )
-                bootstrap_candidates_hs = bootstrap_candidates_hs.unsqueeze(1)
+                bootstrap_reward = bootstrap_reward.unsqueeze(1) # (k,1)
                 bootstrap_loss = self.process_bootstrap(
                     bootstrap_prompts_hs, bootstrap_candidates_hs, bootstrap_reward, self.ranker
                 )

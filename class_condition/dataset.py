@@ -26,6 +26,8 @@ class RankerDataset(Dataset):
         shuffle_class:bool=False,
     ):
         super().__init__()
+        if isinstance(prompt_type, str) and prompt_type.strip().lower() in {"none", "null", ""}:
+            prompt_type = None
         self.prompt_type = prompt_type
         self.shuffle_class = shuffle_class
         self.step_idx = step_idx
@@ -33,6 +35,7 @@ class RankerDataset(Dataset):
         self.hs_and_reward_path = Path(f'/root/autodl-tmp/dit_imagenet_hiddens_and_is_rewards_s1_6_9_l16_per128_s{step_idx}_l{layer_idx}.pt')
         self.load_prompt_encoding()
         self.load_hs_and_reward()
+        self.normalize_reward()
         if shuffle_class:
             self.shuffle_class()
 
@@ -91,6 +94,9 @@ class RankerDataset(Dataset):
         assert self.hs.shape[0] == self.num_samples
         assert self.reward.shape[0] == self.num_samples
         assert self.labels.shape[0] == self.num_samples
+    
+    def normalize_reward(self):
+        self.reward = (self.reward - self.reward.mean()) / (self.reward.std() + 1e-8) # normalize 
 
     
     def __len__(self):
