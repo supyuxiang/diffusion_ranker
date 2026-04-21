@@ -14,7 +14,7 @@ step_idx: 6
 layer_idx: 16
 
 # null => no external prompt table (zeros); or one_hot|clip|bert|llm_tokenizer|llm_hidden_state
-prompt_type: null
+prompt_type: bert
 
 shuffle_class: false
 split_ratio: [0.9, 0.1]
@@ -23,15 +23,15 @@ num_workers: 4
 
 # Ranker (DiT-XL/2 hidden dim after seq pool is typically 1152)
 input_dim_candidate: 1152
-input_dim_prompt: 1000
-hidden_dim: 512
+input_dim_prompt: 1024
+hidden_dim: 256
 num_heads: 8
 dropout: 0.1
 num_layers: 2
 half: true
 
 optimizer: adamw
-lr: 0.0001
+lr: 1e-3
 weight_decay: 0.0001
 beta1: 0.9
 beta2: 0.999
@@ -54,7 +54,7 @@ parallel_size: 8
 num_bootstrap_samples: 32
 
 num_epochs: 100
-save_interval: 10
-eval_interval: 10
+save_interval: 1
+eval_interval: 1
 output_dir: /root/autodl-tmp/ranker_ckpts
 run_name: imagenet_dit_is
