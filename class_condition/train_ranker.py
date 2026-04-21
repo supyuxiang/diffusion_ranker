@@ -145,11 +145,10 @@ class Trainer:
         w_dtype = next(ranker.parameters()).dtype
         prompt_hs = prompt_hs.to(dtype=w_dtype)
         candidate_hs = candidate_hs.to(dtype=w_dtype)
-        loss = self.loss_fn(
-            ranker(candidate_hs, prompt_hs),
-            reward,
-        )
-        return loss.item()
+        student_logits = ranker(candidate_hs, prompt_hs)
+        reward = reward.to(device=student_logits.device, dtype=student_logits.dtype).reshape_as(student_logits)
+        loss = self.loss_fn(student_logits, reward)
+        return loss
 
 
 
@@ -174,12 +173,12 @@ class Trainer:
                     bootstrap_loss = self.process_bootstrap(bootstrap_prompts_hs, bootstrap_candidates_hs, bootstrap_reward, self.ranker)
                     batch_loss += bootstrap_loss
                 batch_loss /= num_bootstrap_samples
-                pbar.set_postfix(loss=batch_loss)
+                pbar.set_postfix(loss=float(batch_loss.detach().item()))
                 
                 self.optimizer.zero_grad()
                 batch_loss.backward()
                 self.optimizer.step()
-            epoch_loss += batch_loss
+            epoch_loss += float(batch_loss.detach().item())
             epoch_loss /= len(self.train_dataloader)
             return epoch_loss
 
@@ -196,11 +195,11 @@ class Trainer:
                     bootstrap_loss = self.process_bootstrap(bootstrap_prompts_hs, bootstrap_candidates_hs, bootstrap_reward, self.ranker)
                     batch_loss += bootstrap_loss
                 batch_loss /= num_bootstrap_samples 
-                pbar.set_postfix(loss=batch_loss) 
+                pbar.set_postfix(loss=float(batch_loss.detach().item())) 
                 self.optimizer.zero_grad()
                 batch_loss.backward()
                 self.optimizer.step()
-            epoch_loss += batch_loss
+            epoch_loss += float(batch_loss.detach().item())
             epoch_loss /= len(self.train_dataloader)
             return epoch_loss
 
@@ -250,7 +249,7 @@ class Trainer:
                 batch_loss += bootstrap_loss
             batch_loss /= num_bootstrap_samples
             with torch.no_grad():
-                eval_loss += batch_loss
+                eval_loss += float(batch_loss.detach().item())
         eval_loss /= len(self.val_dataloader)
         return eval_loss
     
