@@ -404,14 +404,14 @@ def rollout() -> None:
                     "target_step_index": int(st_i),
                     "target_layer_index": int(target_layer_idx),
                     "num_samples": int(num_samples),
-                    "per_samples": int(args.per_samples),
+                    "class_idx": int(args.class_idx),
                     "batch_size": int(args.batch_size),
                     "num_inference_steps": int(args.num_inference_steps),
                     "guidance_scale": float(args.guidance_scale),
                     "seed": int(args.seed),
                     "dtype": str(args.dtype),
                     "label_order_note": (
-                        "labels are generated in ascending class-id order, each class repeated exactly per_samples times"
+                        "single-class rollout: all labels are identical and equal to class_idx"
                     ),
                     "reward_note": "reward uses MC-mean Inception max-softmax confidence from target-step latent continuation",
                     "reward_mc": int(args.mc),
