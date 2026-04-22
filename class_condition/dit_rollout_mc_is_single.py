@@ -35,15 +35,15 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--model_name", type=str, default="dit-xl-2-256")
     p.add_argument("--class_idx", type=int, default=666)
-    p.add_argument("--num_samples", type=int, default=1000)
-    p.add_argument("--batch_size", type=int, default=256)
+    p.add_argument("--num_samples", type=int, default=5000)
+    p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--num_inference_steps", type=int, default=10)
     p.add_argument("--guidance_scale", type=float, default=1.0)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", type=str, default="bf16", choices=("fp32", "fp16", "bf16"))
     p.add_argument("--target_step_indices", type=str, default="1,6,9")
     p.add_argument("--target_layer_idx", type=int, default=16)
-    p.add_argument("--mc", type=int, default=5)
+    p.add_argument("--mc", type=int, default=8)
     p.add_argument(
         "--hidden_pool",
         type=str,
