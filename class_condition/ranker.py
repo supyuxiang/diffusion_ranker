@@ -431,6 +431,141 @@ class DiffusionRanker_CrossAttention(nn.Module):
         )
 
 
+class DiffusionRanker_SingleClass(nn.Module):
+    def __init__(
+        self,
+        input_dim_candidate:int,
+        hidden_dim:int,
+        num_heads:int,
+        dropout:float,
+        num_layers:int,
+        half:bool=True,
+    ):
+        super(DiffusionRanker_SingleClass,self).__init__()
+        self.input_dim_candidate = input_dim_candidate
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.num_layers = num_layers
+        self.half = half
+        
+        self.linear_candidate = nn.Linear(input_dim_candidate,hidden_dim)
+        self.layers = nn.ModuleList(
+            [
+                TransformerBlock(hidden_dim,num_heads,dropout)
+                for _ in range(num_layers)
+            ]
+        )
+        self.output_weights = nn.Parameter(torch.empty(hidden_dim,1))
+        nn.init.xavier_uniform_(self.output_weights)
+        self._init_weights()
+        if half:
+            self.to(torch.bfloat16)
+    
+    def _init_weights(self):
+        for layer in self.layers:
+            for module in layer.modules():
+                if isinstance(module, nn.Linear):
+                    nn.init.xavier_uniform_(module.weight)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
+        for module in self.linear_candidate.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+        for module in self.output_weights.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+    
+    def forward(self,candidate_hstates,prompt_hstates):
+        # candidate_hstates: b,k,d_candidate
+        # prompt_hstates: 1,d_prompt
+        pass
+    
+    def count_params(self):
+        return sum(
+            p.numel() for p in self.parameters()
+        )
+
+
+class DiffusionProb_SingleClass(nn.Module):
+    def __init__(
+        self,
+        hs_dim:int,
+        hidden_dim:int,
+        num_layers:int,
+        dropout:float,
+        half:bool=True,
+    ):
+        super(DiffusionProb_SingleClass,self).__init__()
+        self.hs_dim = hs_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.dropout = dropout
+        self.half = half
+        
+        self.linear_candidate = nn.Linear(hs_dim,hidden_dim)
+        self.layers = nn.ModuleList(
+            [
+                MLPBlock(hidden_dim,dropout)
+                for _ in range(num_layers)
+            ]
+        )
+        
+        self.reward_head = nn.Linear(hidden_dim,1)
+        nn.init.xavier_uniform_(self.reward_head.weight)
+        nn.init.zeros_(self.reward_head.bias)
+
+        self._init_weights()
+        if half:
+            self.to(torch.bfloat16)
+    
+    def _init_weights(self):
+        for layer in self.layers:
+            for module in layer.modules():
+                if isinstance(module,nn.Linear):
+                    nn.init.xavier_uniform_(module.weight)
+                    nn.init.zeros_(module.bias)
+            for module in self.linear_candidate.modules():
+                if isinstance(module,nn.Linear):
+                    nn.init.xavier_uniform_(module.weight)
+                    nn.init.zeros_(module.bias)
+            
+    
+    def forward(self,hs):
+        x = self.linear_candidate(hs)
+        for layer in self.layers:
+            x = x + layer(x)
+        x = self.reward_head(x)
+        return x
+
+
+
+class MLPBlock(nn.Module):
+    def __init__(self,hidden_dim:int,dropout:float):
+        super(MLPBlock,self).__init__()
+        self.hidden_dim = hidden_dim
+        self.dropout = dropout
+        self.layers = nn.Sequential(
+            nn.Linear(hidden_dim,hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim,hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+    
+    def forward(self,x:Tensor)->Tensor:
+        return self.layers(x)
+    
+    def count_params(self):
+        return sum(
+            p.numel() for p in self.parameters()
+        )
+
 
 
 
