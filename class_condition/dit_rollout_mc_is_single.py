@@ -423,6 +423,7 @@ def rollout() -> None:
             out_path,
         )
         saved_paths.append(out_path)
+        
         del hidden_t, reward_t
         gc.collect()
         torch.cuda.empty_cache()
