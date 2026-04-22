@@ -3,14 +3,19 @@ from PIL import Image
 from torchvision.transforms import Compose,Resize,CenterCrop,ToTensor
 import torch
 
+import sys
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from utils import dit_loader
 
+from pathlib import Path
 
 device = torch.device('cuda')
-feat_extractor = _build_inception_logits_extractor(device)
-img = Image.open('/root/27548.png')
 
-reward = _reward_inception_confidence([img], feat_extractor, device)
-print(reward)
+pipe = dit_loader(model_name='dit-xl-2-256',device=device)
+
+
+
 
 
 
