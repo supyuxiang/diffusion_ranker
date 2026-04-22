@@ -79,9 +79,6 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _build_labels_all(per_samples: int, num_classes: int = 1000) -> list[int]:
-    return [c for c in range(num_classes) for _ in range(per_samples)]
-
 
 def _broadcast_timesteps(t, latent_model_input: torch.Tensor) -> torch.Tensor:
     # 把时间步 t 统一成模型可用的 batch 形状时间向量: (batch_size,)
@@ -251,7 +248,8 @@ def rollout() -> None:
     }
     label_chunks: list[torch.Tensor] = []
 
-    labels_all = _build_labels_all(int(args.per_samples)) # 128 * 1000, 1
+    labels_all = [c for c in range(1000) for _ in range(int(args.per_samples))] # 128 * 1000, 1
+    
     num_samples = len(labels_all) # 128 * 1000
     latent_size = pipe.transformer.config.sample_size # 
     latent_channels = pipe.transformer.config.in_channels # 
@@ -393,6 +391,9 @@ def rollout() -> None:
 
     label_store = torch.cat(label_chunks, dim=0) if label_chunks else torch.empty(0, dtype=torch.long) # cat label chunks
     del label_chunks 
+    gc.collect()
+    torch.cuda.empty_cache()
+    
 
     saved_paths: list[Path] = []
     for st_i in target_step_indices:
@@ -407,6 +408,7 @@ def rollout() -> None:
             if reward_chunks_by_key[key]
             else torch.empty(0, dtype=torch.float32)
         )
+        # check shape
         if hidden_t.shape[0] != reward_t.shape[0]:
             raise RuntimeError(
                 f"{key}: rows mismatch hidden={hidden_t.shape[0]} reward={reward_t.shape[0]}"
@@ -415,6 +417,7 @@ def rollout() -> None:
             raise RuntimeError(
                 f"{key}: rows mismatch hidden={hidden_t.shape[0]} labels={label_store.shape[0]}"
             )
+        # check end
 
         out_path = save_path.parent / f"{save_path.stem}_{key}.pt"
         torch.save(
@@ -448,6 +451,7 @@ def rollout() -> None:
         saved_paths.append(out_path)
         del hidden_t, reward_t
         gc.collect()
+        torch.cuda.empty_cache()
 
     print(
         json.dumps(
