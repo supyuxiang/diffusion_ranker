@@ -15,10 +15,10 @@ for deno_steps in "${deno_steps_ls[@]}"; do
   fi
   for ps in "${ps_ls[@]}"; do
     python /root/diffusion_ranker/class_condition/dit_random_search_is_reward.py \
-      --output_dir "/root/autodl-tmp/class_condition/dit_random_search_is_reward_steps${deno_steps}_ps${ps}" \
+      --output_dir "/root/autodl-tmp/class_condition/dit_random_search_is_reward_steps${deno_steps}_cfg1.25_ps${ps}" \
       --num_samples 50000 \
       --deno_steps "${deno_steps}" \
-      --guidance_scale 1 \
+      --guidance_scale 1.25 \
       --num_candidates "${ps}" \
       --seed 42 \
       --search_batch_size 2
