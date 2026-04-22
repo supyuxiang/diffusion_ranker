@@ -180,7 +180,9 @@ def model_name2path(model_name:str) -> Path:
         return Path("/root/autodl-tmp/google_ddpm-ema-cifar10-32")
 
 
-def _dtype_str_to_torch(dtype: str) -> torch.dtype:
+def _dtype_str_to_torch(dtype: str | torch.dtype) -> torch.dtype:
+    if isinstance(dtype, torch.dtype):
+        return dtype
     d = dtype.lower().strip()
     if d in ("fp32", "float32"):
         return torch.float32
