@@ -135,8 +135,8 @@ def _reward_inception_confidence(images: list[Image.Image], feat_extractor, devi
         device, non_blocking=(device.type == "cuda")
     )  # (B, 3, 256, 256), uint8 on device
     logits = feat_extractor(tensors)  # tuple/list with first item shaped (B, 1000)
-    logits = logits[0]  # (B, 1008)
-    probs = F.softmax(logits.float(), dim=-1)  # (B, 1008)
+    logits = logits[0]  # (B, 1000)
+    probs = F.softmax(logits.float(), dim=-1)  # (B, 1000)
     # reward per sample: max class confidence -> (B,)
     return probs.max(dim=-1).values.detach().cpu().to(torch.float32)
 

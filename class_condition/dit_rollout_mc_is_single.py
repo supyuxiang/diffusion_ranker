@@ -74,7 +74,7 @@ def _broadcast_timesteps(t, latent_model_input: torch.Tensor) -> torch.Tensor:
 
 def _decode_dit_latents_to_pil(pipe, x: torch.Tensor, guidance_scale: float) -> list[Image.Image]:
     if guidance_scale > 1:
-        latents, _ = x.chunk(2, dim=0)
+        latents, _ = x.chunk(2, dim=0) # 一分为二, 一半是uncod, 一半是cond
     else:
         latents = x
     latents = 1 / pipe.vae.config.scaling_factor * latents
@@ -83,7 +83,7 @@ def _decode_dit_latents_to_pil(pipe, x: torch.Tensor, guidance_scale: float) -> 
 
     out_images: list[Image.Image] = []
     for bi in range(samples.shape[0]):
-        arr = samples[bi].detach().cpu().permute(1, 2, 0).float().numpy()
+        arr = samples[bi].detach().cpu().permute(1, 2, 0).float().numpy() # c,h,w -> h,w,c
         out_images.append(Image.fromarray((arr * 255.0).round().clip(0, 255).astype("uint8")))
     return out_images
 
@@ -109,8 +109,8 @@ def _reward_inception_confidence(images: list[Image.Image], feat_extractor, devi
         device, non_blocking=(device.type == "cuda")
     )  # (B, 3, 256, 256), uint8 on device
     logits = feat_extractor(tensors)  # tuple/list with first item shaped (B, 1000)
-    logits = logits[0]  # (B, 1008)
-    probs = F.softmax(logits.float(), dim=-1)  # (B, 1008)
+    logits = logits[0]  # (B, 1000)
+    probs = F.softmax(logits.float(), dim=-1)  # (B, 1000)
     # reward per sample: max class confidence -> (B,)
     return probs.max(dim=-1).values.detach().cpu().to(torch.float32)
 
