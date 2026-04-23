@@ -2,24 +2,24 @@ seed: 42
 
 # Single-class data source settings
 class_idx: 153
-step_idx: 6
+step_idx: 9
 layer_idx: 16
 normalize_rewards: true
 
 split_ratio: [0.9, 0.1]
-batch_size: 128
+batch_size: 64
 num_workers: 4
 
 # Model
 # input_dim_candidate: 1152  # optional; if unset, use dataset hidden_dim automatically
-hidden_dim: 256
-num_layers: 4
+hidden_dim: 64
+num_layers: 2
 dropout: 0.1
 half: true
 
 # Optimizer
 optimizer: adamw
-lr: 1e-4
+lr: 1e-3
 weight_decay: 1e-4
 beta1: 0.9
 beta2: 0.999
@@ -32,6 +32,7 @@ T_max: 100
 eta_min: 0.0
 
 # Training objective
+alpha: 0.1
 parallel_size: 8
 num_bootstrap: 8
 
