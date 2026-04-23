@@ -14,8 +14,7 @@ from PIL import Image
 from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT))
 
 from class_condition.reward import labels_1k, load_clip, load_imagereward
 from utils import dit_loader, set_seed
@@ -438,8 +437,7 @@ def main() -> None:
     print(json.dumps(summary, indent=2, ensure_ascii=False))
 
     gc.collect()
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
+    torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
