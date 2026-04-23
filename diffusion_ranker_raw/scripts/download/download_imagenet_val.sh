@@ -1,0 +1,4 @@
+export HF_TOKEN="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"
+export HF_ENDPOINT=https://hf-mirror.com && mkdir -p /hy-tmp/imagenet-1k-val && huggingface-cli download --repo-type dataset --local-dir /hy-tmp/imagenet-1k-val mlx-vision/imagenet-1k val.zip class_map.csv class_map.json README.md
+
+mkdir -p /hy-tmp/imagenet-val-zip && test -d /hy-tmp/imagenet-val-zip/val && echo "val already exists" && ls /hy-tmp/imagenet-val-zip/val | wc -l || unzip -q -o /hy-tmp/imagenet-1k-val/val.zip -d /hy-tmp/imagenet-val-zip && echo "unzip done" && ls /hy-tmp/imagenet-val-zip/val | head -5 && find /hy-tmp/imagenet-val-zip/val -type f | wc -l

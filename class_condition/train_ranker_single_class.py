@@ -1,4 +1,5 @@
 import sys
+import os
 from pathlib import Path
 
 import hydra
@@ -15,7 +16,15 @@ from class_condition.ranker import DiffusionProb_SingleClass
 from utils import set_device, set_seed
 
 
-map_path = lambda class_idx,s,l : f'/root/autodl-tmp/dit_imagenet_hiddens_and_is_rewards_s1_6_9_l16_class{class_idx}_s{s}_l{l}.pt'
+SINGLE_CLASS_DATA_ROOT = Path(
+    os.environ.get("SINGLE_CLASS_DATA_ROOT", "/root/autodl-tmp/class_condition/single_class")
+).expanduser().resolve()
+
+
+map_path = lambda class_idx,s,l : str(
+    SINGLE_CLASS_DATA_ROOT
+    / f"dit_imagenet_hiddens_and_is_rewards_s1_6_9_l16_class{class_idx}_s{s}_l{l}.pt"
+)
 
 
 class SingleClassDataset(Dataset):
