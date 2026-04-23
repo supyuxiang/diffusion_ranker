@@ -507,6 +507,7 @@ class DiffusionProb_SingleClass(nn.Module):
         self.dropout = dropout
         self.half = half
         
+        self.input_norm = nn.LayerNorm(hs_dim)
         self.linear_candidate = nn.Linear(hs_dim,hidden_dim)
         self.layers = nn.ModuleList(
             [
@@ -514,6 +515,7 @@ class DiffusionProb_SingleClass(nn.Module):
                 for _ in range(num_layers)
             ]
         )
+        self.output_norm = nn.LayerNorm(hidden_dim)
         
         self.reward_head = nn.Linear(hidden_dim,1)
         nn.init.xavier_uniform_(self.reward_head.weight)
@@ -536,9 +538,11 @@ class DiffusionProb_SingleClass(nn.Module):
             
     
     def forward(self,hs):
-        x = self.linear_candidate(hs)
+        x = self.input_norm(hs)
+        x = self.linear_candidate(x)
         for layer in self.layers:
             x = x + layer(x)
+        x = self.output_norm(x)
         x = self.reward_head(x)
         return x
 
