@@ -90,7 +90,7 @@ class Trainer:
             layer_idx=layer_idx,
             normalize_rewards=bool(self.config.get("normalize_rewards", True)),
         )
-        split_ratio = [0.9,0.1]
+        split_ratio = self.config.get("split_ratio", [0.9, 0.1])
 
         n_total = len(self.dataset)
         n_train = int(round(n_total * split_ratio[0]))
@@ -164,11 +164,17 @@ class Trainer:
             raise NotImplementedError(f"Invalid scheduler: {scheduler}")
 
     def build_loss_fn(self):
-        def loss_fn(batch_pred:torch.Tensor,batch_target:torch.Tensor,alpha=0.8):
+        alpha = float(self.config.get("alpha", 0.8))
+
+        def loss_fn(parallel_batch_pred:torch.Tensor,parallel_batch_target:torch.Tensor):
             # both are logits, shape :[b,1]
-            mse_item = F.mse_loss(batch_pred,batch_target)
-            kl_item = F.kl_div(F.log_softmax(batch_pred,dim=1),F.log_softmax(batch_target,dim=1),reduction='batchmean')
-            return alpha * mse_item + (1-alpha) * kl_item
+            mse_item = F.mse_loss(parallel_batch_pred,parallel_batch_target)
+            kl_item = F.kl_div(
+                F.log_softmax(parallel_batch_pred, dim=0),
+                F.softmax(parallel_batch_target, dim=0),
+                reduction='batchmean'
+            )
+            return alpha * mse_item + (1-alpha) * kl_item,mse_item,kl_item
         self.loss_fn = loss_fn
 
 
@@ -201,12 +207,10 @@ class Trainer:
 
         for bootstrap_hidden,bootstrap_target in zip(bootstrap_hiddens,bootstrap_targets):
             pred = self.ranker(bootstrap_hidden)
-            loss = self.loss_fn(pred, bootstrap_target)
-            mse = F.mse_loss(pred, bootstrap_target).detach()
-            kl = F.kl_div(F.log_softmax(pred,dim=1),F.log_softmax(bootstrap_target,dim=1),reduction='batchmean').detach()
+            loss,mse,kl = self.loss_fn(pred, bootstrap_target)
             batch_loss_sum = batch_loss_sum + loss
-            batch_mse_sum += float(mse.item())
-            batch_kl_sum += float(kl.item())
+            batch_mse_sum += float(mse)
+            batch_kl_sum += float(kl)
         return batch_loss_sum / num_bootstrap, batch_mse_sum / num_bootstrap, batch_kl_sum / num_bootstrap
 
     def train_epoch(self):
@@ -214,7 +218,6 @@ class Trainer:
         loss_sum = 0.0
         mse_sum = 0.0
         kl_sum = 0.0
-        batch_cnt = 0
 
         pbar = tqdm(self.train_dataloader, desc="Training", leave=False)
         for batch_hs, batch_target in pbar:
@@ -225,11 +228,8 @@ class Trainer:
             loss_sum += float(loss.item())
             mse_sum += float(mse)
             kl_sum += float(kl)
-            batch_cnt += 1
 
-        if batch_cnt == 0:
-            return float("nan"), float("nan"), float("nan")
-        return loss_sum / batch_cnt, mse_sum / batch_cnt, kl_sum / batch_cnt
+        return loss_sum / len(self.train_dataloader), mse_sum / len(self.train_dataloader), kl_sum / len(self.train_dataloader)
 
     @torch.inference_mode()
     def evaluate(self):
@@ -237,15 +237,13 @@ class Trainer:
         loss_sum = 0.0
         mse_sum = 0.0
         kl_sum = 0.0
-        batch_cnt = 0
         pbar = tqdm(self.val_dataloader, desc="Evaluating", leave=False)
         for batch_hs, batch_target in pbar:
             loss, mse, kl = self.process_batch(batch_hs, batch_target)
             loss_sum += float(loss.item())
             mse_sum += float(mse)
             kl_sum += float(kl)
-            batch_cnt += 1
-        return loss_sum / batch_cnt, mse_sum / batch_cnt, kl_sum / batch_cnt
+        return loss_sum / len(self.val_dataloader), mse_sum / len(self.val_dataloader), kl_sum / len(self.val_dataloader)
 
     def save_ckpt(self, ckpt_path: Path, epoch: int, train_loss: float, val_loss: float, val_mse: float, val_kl: float):
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
@@ -285,7 +283,7 @@ class Trainer:
             val_loss, val_mse, val_kl = (float("nan"), float("nan"), float("nan"))
             if self.scheduler is not None:
                 self.scheduler.step()
-            if epoch % eval_interval == 0:
+            if self.val_dataloader is not None and epoch % eval_interval == 0:
                 val_loss, val_mse, val_kl = self.evaluate()
 
             lr_now = self.optimizer.param_groups[0]["lr"]
