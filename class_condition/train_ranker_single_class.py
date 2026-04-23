@@ -318,7 +318,7 @@ def _cfg_to_trainer_dict(cfg: DictConfig) -> dict:
     return d
 
 
-@hydra.main(version_base=None, config_path="config", config_name="config")
+@hydra.main(version_base=None, config_path="config", config_name="config_single_class")
 def main(cfg: DictConfig) -> None:
     set_seed(int(cfg.get("seed", 42)))
     trainer = Trainer(_cfg_to_trainer_dict(cfg))
