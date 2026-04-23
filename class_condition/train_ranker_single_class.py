@@ -223,8 +223,8 @@ class Trainer:
             loss.backward()
             self.optimizer.step()
             loss_sum += float(loss.item())
-            mse_sum += float(mse.item())
-            kl_sum += float(kl.item())
+            mse_sum += float(mse)
+            kl_sum += float(kl)
             batch_cnt += 1
 
         if batch_cnt == 0:
@@ -242,8 +242,8 @@ class Trainer:
         for batch_hs, batch_target in pbar:
             loss, mse, kl = self.process_batch(batch_hs, batch_target)
             loss_sum += float(loss.item())
-            mse_sum += float(mse.item())   
-            kl_sum += float(kl.item())
+            mse_sum += float(mse)
+            kl_sum += float(kl)
             batch_cnt += 1
         return loss_sum / batch_cnt, mse_sum / batch_cnt, kl_sum / batch_cnt
 
