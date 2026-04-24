@@ -5,12 +5,12 @@ import hydra
 import torch
 from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from class_condition.dataset import RankerDataset, training_samples_per_class
+from class_condition.dataset import RankerDataset
 from class_condition.ranker import (
     DiffusionRanker_CrossAttention,
     DiffusionRanker_MLP,
@@ -79,16 +79,83 @@ class Trainer:
         )
 
         self.batch_size = self.config.get('batch_size',32)
-        assert training_samples_per_class % self.batch_size == 0
 
-        self.train_dataset = RankerDataset(**ds_kw)
+        train_hs_reward_path = self.config.get(
+            'train_hs_reward_path',
+            self.config.get('hs_reward_path'),
+        )
+        if train_hs_reward_path is None:
+            raise ValueError("Missing train_hs_reward_path/hs_reward_path in config.")
+        self.train_dataset = self._build_dataset_from_path(train_hs_reward_path, **ds_kw)
         self.train_dataloader = DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.config.get('num_workers', 4),
         )
-        self.val_dataset,self.val_dataloader = None,None
+
+        val_hs_reward_path = self.config.get('val_hs_reward_path')
+        if val_hs_reward_path is None:
+            val_hs_reward_path = str(train_hs_reward_path).replace('per512', 'per128')
+        self.val_dataset = self._build_dataset_from_path(val_hs_reward_path, **ds_kw)
+        self.val_dataloader = DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.config.get('num_workers', 4),
+        )
+
+    def _build_dataset_from_path(self, hs_reward_path: str | Path, **ds_kw) -> RankerDataset:
+        ds = RankerDataset(**ds_kw)
+        path = Path(hs_reward_path).expanduser().resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"Dataset file not found: {path}")
+        hs_reward = torch.load(path, map_location='cpu', weights_only=False)
+        ds.hs = hs_reward['hiddens']
+        ds.reward = hs_reward['reward']
+        ds.labels = hs_reward['labels']
+        ds.num_samples = int(ds.hs.shape[0])
+        if ds.reward.shape[0] != ds.num_samples or ds.labels.shape[0] != ds.num_samples:
+            raise ValueError(f"Inconsistent sample count in {path}.")
+        ds.reward = (ds.reward - ds.reward.mean()) / (ds.reward.std() + 1e-8)
+        ds.prompt_hstate = self._build_prompt_hstate(ds.prompt_type, ds.labels, ds.num_samples)
+        return ds
+
+    def _build_prompt_hstate(self, prompt_type: str | None, labels: torch.Tensor, num_samples: int) -> torch.Tensor:
+        if not prompt_type:
+            return torch.zeros(num_samples, 1000)
+
+        if prompt_type == 'one_hot':
+            path = ROOT / 'class_condition' / 'prompt_encoding' / 'one_hot.pt'
+            prompt_encoding = torch.load(path, map_location='cpu', weights_only=False)
+        elif prompt_type == 'clip':
+            path = ROOT / 'class_condition' / 'prompt_encoding' / 'clip.pt'
+            prompt_encoding = torch.load(path, map_location='cpu', weights_only=False)
+        elif prompt_type == 'bert':
+            path = ROOT / 'class_condition' / 'prompt_encoding' / 'bert.pt'
+            prompt_encoding = torch.load(path, map_location='cpu', weights_only=False)
+        elif prompt_type == 'llm_tokenizer':
+            path = ROOT / 'class_condition' / 'prompt_encoding' / 'llm_tokenizer.pt'
+            prompt_encoding = torch.load(path, map_location='cpu', weights_only=False)
+        elif prompt_type == 'llm_hidden_state':
+            path = ROOT / 'class_condition' / 'prompt_encoding' / 'llm_hidden_state.pt'
+            prompt_encoding = torch.load(path, map_location='cpu', weights_only=False)
+            if prompt_encoding.dim() != 3:
+                raise ValueError(
+                    f"llm_hidden_state prompt encoding expected 3D (1000, L, H), got {tuple(prompt_encoding.shape)}"
+                )
+            prompt_encoding = prompt_encoding[:, -1, :]
+        else:
+            raise ValueError(f"Invalid prompt type: {prompt_type}")
+
+        class_ids = labels.view(-1).long()
+        if class_ids.min().item() >= 1 and class_ids.max().item() == prompt_encoding.shape[0]:
+            class_ids = class_ids - 1
+        if class_ids.min().item() < 0 or class_ids.max().item() >= prompt_encoding.shape[0]:
+            raise ValueError(
+                f"Label ids out of range [0, {prompt_encoding.shape[0] - 1}] for prompt table."
+            )
+        return prompt_encoding[class_ids]
 
 
 
@@ -152,15 +219,42 @@ class Trainer:
         self.div_loss_fn = kl_loss if self.kl_type == 'kl' else js_loss
     
 
-    # def process_bootstrap(self,prompt_hs,candidate_hs,reward,ranker):
-    #     ranker.train()
-    #     w_dtype = next(ranker.parameters()).dtype
-    #     prompt_hs = prompt_hs.to(dtype=w_dtype)
-    #     candidate_hs = candidate_hs.to(dtype=w_dtype)
-    #     student_logits = ranker(candidate_hs, prompt_hs)
-    #     reward = reward.to(device=student_logits.device, dtype=student_logits.dtype).reshape_as(student_logits)
-    #     loss = self.loss_fn(student_logits, reward)
-    #     return loss
+    def process_bootstrap(self,prompt_hs,candidate_hs,reward,ranker):
+        w_dtype = next(ranker.parameters()).dtype
+        prompt_hs = prompt_hs.to(dtype=w_dtype)
+        candidate_hs = candidate_hs.to(dtype=w_dtype)
+
+        if self.ranker_type == 'pointwise':
+            # pointwise expects candidate: (B, 1, D), prompt: (B, D)
+            if candidate_hs.dim() == 2:
+                candidate_hs = candidate_hs.unsqueeze(1)
+            if prompt_hs.dim() == 1:
+                prompt_hs = prompt_hs.unsqueeze(0)
+            student_logits = ranker(candidate_hs, prompt_hs)
+        elif self.ranker_type == 'listwise':
+            # listwise expects candidate: (mini_b, k, D), prompt: (mini_b, 1, Dp)
+            if candidate_hs.dim() == 2:
+                candidate_hs = candidate_hs.unsqueeze(0)
+            if prompt_hs.dim() == 1:
+                prompt_hs = prompt_hs.unsqueeze(0).unsqueeze(0)
+            elif prompt_hs.dim() == 2:
+                prompt_hs = prompt_hs[0:1].unsqueeze(0)
+            student_logits = ranker(candidate_hs, prompt_hs)
+        elif self.ranker_type == 'cross_attention':
+            # cross-attention expects candidate: (mini_b, k, D), prompt: (mini_b, Dp)
+            if candidate_hs.dim() == 2:
+                candidate_hs = candidate_hs.unsqueeze(0)
+            if prompt_hs.dim() == 1:
+                prompt_hs = prompt_hs.unsqueeze(0)
+            elif prompt_hs.dim() == 2:
+                prompt_hs = prompt_hs[0:1]
+            student_logits = ranker(candidate_hs, prompt_hs)
+        else:
+            raise NotImplementedError(f"Invalid ranker type: {self.ranker_type}")
+
+        reward = reward.to(device=student_logits.device, dtype=student_logits.dtype).reshape_as(student_logits)
+        loss = self.loss_fn(student_logits, reward)
+        return loss
 
     def process_batch(self,batch_prompt_hs,batch_candidate_hs,batch_reward):
         # batch_prompt_hs: b,d_prompt

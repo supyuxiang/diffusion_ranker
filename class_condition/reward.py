@@ -331,6 +331,84 @@ def dino_reward(batch_paths:list[Path],dino_model,device:torch.device) -> float:
 def load_dino(device:torch.device):
     pass
 
+########################     end dino reward     ##############################
+
+
+########################    brightness reward   #################################
+
+
+def brightness_reward_single(image:Image.Image) -> float:
+    from PIL import Image
+    img = image.convert('RGB')
+    arr = np.asarray(img, dtype=np.float32)
+    # ITU-R BT.601 luma transform (0~255 for uint8 RGB input)
+    brightness = 0.299 * arr[..., 0] + 0.587 * arr[..., 1] + 0.114 * arr[..., 2]
+    return float(brightness.mean())
+
+
+def brightness_reward_batch(image_ls:list[Image.Image]) -> float:
+    from PIL import Image
+    brightness_ls = []
+    for img in image_ls:
+        brightness_ls.append(brightness_reward_single(img))
+    return float(np.mean(brightness_ls))
+
+########################     end brightness reward     ##############################
+
+
+########################    saturation reward   #################################
+
+
+def saturation_reward_single(image: Image.Image) -> float:
+    img = image.convert("RGB")
+    x = np.asarray(img, dtype=np.float32)  # H,W,3 in 0~255
+    cmax = x.max(axis=-1)  # H,W
+    cmin = x.min(axis=-1)  # H,W
+    s01 = np.where(cmax > 0.0, (cmax - cmin) / cmax, 0.0)  # H,W in [0,1]
+    sat = s01 * 255.0
+    return float(sat.mean())
+
+
+def saturation_reward_batch(image_ls: list[Image.Image]) -> float:
+    vals = [saturation_reward_single(img) for img in image_ls]
+    return float(np.mean(vals))
+
+
+########################     end saturation reward     ##############################
+
+
+########################    colorfulness reward   #################################
+
+
+def colorfulness_reward_single(image: Image.Image) -> float:
+    img = image.convert("RGB")
+    x = np.asarray(img, dtype=np.float32)  # H,W,3 in 0~255
+    r = x[..., 0]
+    g = x[..., 1]
+    b = x[..., 2]
+    rg = np.abs(r - g)
+    yb = np.abs((r + g) * 0.5 - b)
+    std_rg = float(np.std(rg))
+    std_yb = float(np.std(yb))
+    mean_rg = float(np.mean(rg))
+    mean_yb = float(np.mean(yb))
+    return float(np.sqrt(std_rg**2 + std_yb**2) + 0.3 * np.sqrt(mean_rg**2 + mean_yb**2))
+
+
+def colorfulness_reward_batch(image_ls: list[Image.Image]) -> float:
+    vals = [colorfulness_reward_single(img) for img in image_ls]
+    return float(np.mean(vals))
+
+
+########################     end colorfulness reward     ##############################
+
+
+
+
+
+
+
+
 
 
     

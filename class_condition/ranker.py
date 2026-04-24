@@ -63,6 +63,7 @@ class DiffusionRanker_Transformer(nn.Module):
         super(DiffusionRanker_Transformer,self).__init__()
         self.input_dim_prompt = input_dim_prompt
         self.input_dim_candidate = input_dim_candidate
+        self.hidden_dim = hidden_dim
 
         self.linear_candidate = nn.Linear(input_dim_candidate,hidden_dim)
         self.linear_prompt = nn.Linear(input_dim_prompt,hidden_dim)
