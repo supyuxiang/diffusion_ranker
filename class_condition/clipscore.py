@@ -408,10 +408,32 @@ class ClipScoreTrainer:
         ds_train_full = self._load_pt_dataset(self.train_path)
         ds_val_full = self._load_pt_dataset(self.val_path)
         if self.train_path.resolve() == self.val_path.resolve():
-            train_ds, val_ds = self._split_9_1(ds_train_full)
+            train_subset, val_subset = self._split_9_1(ds_train_full)
+            train_indices = torch.tensor(train_subset.indices, dtype=torch.long)
+            val_indices = torch.tensor(val_subset.indices, dtype=torch.long)
+            train_h = ds_train_full.hiddens[train_indices]
+            val_h = ds_train_full.hiddens[val_indices]
+            train_r_raw = ds_train_full.rewards[train_indices]
+            val_r_raw = ds_train_full.rewards[val_indices]
         else:
-            train_ds, _ = self._split_9_1(ds_train_full)
-            _, val_ds = self._split_9_1(ds_val_full)
+            train_subset, _ = self._split_9_1(ds_train_full)
+            _, val_subset = self._split_9_1(ds_val_full)
+            train_indices = torch.tensor(train_subset.indices, dtype=torch.long)
+            val_indices = torch.tensor(val_subset.indices, dtype=torch.long)
+            train_h = ds_train_full.hiddens[train_indices]
+            val_h = ds_val_full.hiddens[val_indices]
+            train_r_raw = ds_train_full.rewards[train_indices]
+            val_r_raw = ds_val_full.rewards[val_indices]
+
+        # Normalize labels with train-set stats only.
+        self.reward_mean = float(train_r_raw.mean().item())
+        self.reward_std = float(train_r_raw.std().item())
+        denom = self.reward_std + 1e-8
+        train_r = (train_r_raw - self.reward_mean) / denom
+        val_r = (val_r_raw - self.reward_mean) / denom
+
+        train_ds = ClipScoreDataset(train_h, train_r)
+        val_ds = ClipScoreDataset(val_h, val_r)
         self.train_loader = DataLoader(train_ds, batch_size=self.batch_size, shuffle=True, num_workers=4)
         self.val_loader = DataLoader(val_ds, batch_size=self.batch_size, shuffle=False, num_workers=4)
         x0, _ = ds_train_full[0]
@@ -483,6 +505,8 @@ class ClipScoreTrainer:
             "train_data": str(self.train_path),
             "val_data": str(self.val_path),
             "epochs": int(self.num_epochs),
+            "reward_norm_mean": float(self.reward_mean),
+            "reward_norm_std": float(self.reward_std),
         }
         (self.output_dir / "train_history.json").write_text(json.dumps(hist, ensure_ascii=False, indent=2), encoding="utf-8")
         (self.output_dir / "final_metrics.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
