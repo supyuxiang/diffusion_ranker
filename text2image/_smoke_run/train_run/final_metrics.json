@@ -1,0 +1,15 @@
+{
+  "data_pt": "/root/diffusion_ranker/text2image/_smoke_run/data/pixart_ir_hs_reward_n4_s1_l14_mc1.pt",
+  "best_ckpt": "/root/diffusion_ranker/text2image/_smoke_run/train_run/prob_best.pt",
+  "best_epoch": 0,
+  "best_val_loss_norm": 0.6372494101524353,
+  "final_val_loss_norm": 0.6372494101524353,
+  "val_pearson_raw": 0.0,
+  "num_train": 3,
+  "num_val": 1,
+  "epochs": 1,
+  "lr": 0.001,
+  "val_interval": 1,
+  "reward_mean_train": 0.6354150176048279,
+  "reward_std_train": 0.45826324820518494
+}
