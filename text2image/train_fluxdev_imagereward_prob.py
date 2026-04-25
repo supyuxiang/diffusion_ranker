@@ -249,7 +249,7 @@ def collect_hidden_and_reward(
     height: int = 1024,
     width: int = 1024,
     seed: int = 42,
-    dtype_name: str = "bf16",
+    dtype_name: str = "fp16",
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -592,9 +592,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--negative_prompt", type=str, default="blurry, low quality, watermark, text, deformed")
     p.add_argument("--output_dir", type=str, default="/root/autodl-tmp/text2image_fluxdev_ir_prob")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--dtype", type=str, default="bf16", choices=("fp32", "fp16", "bf16"))
+    p.add_argument("--dtype", type=str, default="fp16", choices=("fp32", "fp16", "bf16"))
     p.add_argument("--num_samples", type=int, default=1000)
-    p.add_argument("--collect_batch_size", type=int, default=2)
+    p.add_argument("--collect_batch_size", type=int, default=1)
     p.add_argument("--num_inference_steps", type=int, default=28)
     p.add_argument("--guidance_scale", type=float, default=3.5)
     p.add_argument("--true_cfg_scale", type=float, default=1.0)
@@ -603,7 +603,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--target_step_idx", type=int, default=14)
     p.add_argument("--target_block_type", type=str, default="dual", choices=("dual", "single"))
     p.add_argument("--target_layer_idx", type=int, default=9)
-    p.add_argument("--mc", type=int, default=4)
+    p.add_argument("--mc", type=int, default=8)
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--val_interval", type=int, default=1)
