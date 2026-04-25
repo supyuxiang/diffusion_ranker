@@ -282,11 +282,8 @@ def collect_training_data(
                     mc=int(mc),
                 )
                 h_chunks = batch_hidden_store[st_i]
-                if not h_chunks:
-                    raise RuntimeError(f"hidden chunks missing for step {st_i}")
                 h_t = torch.cat(h_chunks, dim=0)
-                if h_t.shape[0] != reward_t.shape[0]:
-                    raise RuntimeError(f"rows mismatch for step {st_i}: hidden={h_t.shape[0]} reward={reward_t.shape[0]}")
+                assert h_chunks is not None and h_t.shape[0] == reward_t.shape[0]
                 hidden_store[st_i].append(h_t)
                 reward_store[st_i].append(reward_t)
 
