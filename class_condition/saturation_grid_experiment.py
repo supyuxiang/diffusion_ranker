@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num_inference_steps", type=int, default=10)
     p.add_argument("--guidance_scale", type=float, default=1.0)
     p.add_argument("--collect_batch_size", type=int, default=32)
-    p.add_argument("--per_class", type=int, default=10)
+    p.add_argument("--num_samples_per_setting", type=int, default=5000)
     p.add_argument("--train_batch_size", type=int, default=64)
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--lr", type=float, default=5e-4)
@@ -52,8 +52,8 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _expected_data_path(data_dir: Path, step_idx: int, layer_idx: int, per_class: int, mc: int) -> Path:
-    return data_dir / f"saturation_hs_reward_s{step_idx}_l{layer_idx}_per{per_class}_mc{mc}.pt"
+def _expected_data_path(data_dir: Path, step_idx: int, layer_idx: int, n: int, mc: int) -> Path:
+    return data_dir / f"saturation_hs_reward_s{step_idx}_l{layer_idx}_n{n}_mc{mc}.pt"
 
 
 def _load_existing_metrics(path: Path) -> list[dict]:
@@ -139,7 +139,7 @@ def main() -> None:
                 layer_data_dir,
                 step_idx=s,
                 layer_idx=layer_idx,
-                per_class=int(args.per_class),
+                n=int(args.num_samples_per_setting),
                 mc=int(args.mc),
             )
             for s in STEP_IDXS
@@ -150,7 +150,7 @@ def main() -> None:
             print(f"[collect] layer={layer_idx} steps={STEP_IDXS}")
             collect_training_data(
                 output_dir=layer_data_dir,
-                per_class=int(args.per_class),
+                num_samples_per_setting=int(args.num_samples_per_setting),
                 target_step_indices=STEP_IDXS,
                 target_layer_idx=int(layer_idx),
                 mc=int(args.mc),
@@ -171,7 +171,7 @@ def main() -> None:
                 layer_data_dir,
                 step_idx=step_idx,
                 layer_idx=layer_idx,
-                per_class=int(args.per_class),
+                n=int(args.num_samples_per_setting),
                 mc=int(args.mc),
             )
 
