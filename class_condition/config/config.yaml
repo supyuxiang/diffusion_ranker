@@ -18,7 +18,7 @@ prompt_type: one_hot # none, bert, one_hot, clip, llm_tokenizer, llm_hidden_stat
 
 # shuffle_class: false
 split_ratio: [0.9, 0.1]
-batch_size: 64
+batch_size: 32
 num_workers: 4
 
 # Ranker (DiT-XL/2 hidden dim after seq pool is typically 1152)
@@ -52,11 +52,11 @@ kl_type: kl
 ranker_type: listwise
 criterion: null
 
-parallel_size: 8
+parallel_size: 2
 num_bootstrap: 8
 
 num_epochs: 100
 save_interval: 1
 eval_interval: 1
-output_dir: /root/autodl-tmp/ranker_ckpts
+output_dir: /root/autodl-tmp/ranker_ckpts_ps2
 run_name: imagenet_dit_is_listwise
