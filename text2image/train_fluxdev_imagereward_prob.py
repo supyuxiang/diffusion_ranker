@@ -144,7 +144,6 @@ def _mc_rollout_imagereward_flux(
                     encoder_hidden_states=prompt_embeds,
                     txt_ids=text_ids,
                     img_ids=latent_image_ids,
-                    joint_attention_kwargs=pipe.joint_attention_kwargs,
                     return_dict=False,
                 )[0]
 
@@ -158,7 +157,6 @@ def _mc_rollout_imagereward_flux(
                         encoder_hidden_states=negative_prompt_embeds,
                         txt_ids=negative_text_ids,
                         img_ids=latent_image_ids,
-                        joint_attention_kwargs=pipe.joint_attention_kwargs,
                         return_dict=False,
                     )[0]
                 noise_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
@@ -354,7 +352,6 @@ def collect_hidden_and_reward(
                         encoder_hidden_states=prompt_embeds,
                         txt_ids=text_ids,
                         img_ids=latent_image_ids,
-                        joint_attention_kwargs=pipe.joint_attention_kwargs,
                         return_dict=False,
                     )[0]
 
@@ -368,7 +365,6 @@ def collect_hidden_and_reward(
                             encoder_hidden_states=negative_prompt_embeds,
                             txt_ids=negative_text_ids,
                             img_ids=latent_image_ids,
-                            joint_attention_kwargs=pipe.joint_attention_kwargs,
                             return_dict=False,
                         )[0]
                     noise_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
@@ -588,7 +584,7 @@ def train_prob_and_eval(
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("FLUX.1-dev hidden -> ImageReward prob trainer")
     p.add_argument("--model_path", type=str, default="/root/autodl-tmp/FLUX.1-dev")
-    p.add_argument("--prompt", type=str, required=True, help="Unique prompt for all generated samples.")
+    p.add_argument("--prompt", type=str, default='A cinematic portrait of a young woman in neon rain, ultra detailed, volumetric lighting, film grain, 35mm, shallow depth of field', help="Unique prompt for all generated samples.")
     p.add_argument("--negative_prompt", type=str, default="blurry, low quality, watermark, text, deformed")
     p.add_argument("--output_dir", type=str, default="/root/autodl-tmp/text2image_fluxdev_ir_prob")
     p.add_argument("--seed", type=int, default=42)
