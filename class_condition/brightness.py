@@ -59,11 +59,10 @@ class BrighnessProb(nn.Module):
 
 class BrightnessDataset(Dataset):
     def __init__(self, hiddens: torch.Tensor, rewards: torch.Tensor):
-        if hiddens.dim() != 2:
-            raise ValueError(f"hiddens must be 2D, got {tuple(hiddens.shape)}")
+        # hiddens: (b,d_hidden), rewards: (b,1)
+        assert hiddens.dim() == 2 and rewards.dim() == 2 and hiddens.shape[0] == rewards.shape[0]
+        # check end 
         rewards = rewards.view(-1).float()
-        if hiddens.shape[0] != rewards.shape[0]:
-            raise ValueError(f"rows mismatch: hiddens={hiddens.shape[0]} rewards={rewards.shape[0]}")
         self.hiddens = hiddens.float()
         self.rewards = rewards
 
