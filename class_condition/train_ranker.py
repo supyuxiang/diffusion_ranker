@@ -264,7 +264,6 @@ class Trainer:
         batch_prompt_hs, batch_candidate_hs, batch_reward = batch_prompt_hs.to(self.device), batch_candidate_hs.to(self.device), batch_reward.to(self.device)
         w_dtype = next(self.ranker.parameters()).dtype
         prompt_hs = batch_prompt_hs[0:1].to(dtype=w_dtype) # 
-        prompt_hs
         batch_candidate_hs = batch_candidate_hs.to(dtype=w_dtype)
         batch_reward = batch_reward.to(dtype=w_dtype)
         
