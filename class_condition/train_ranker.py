@@ -104,6 +104,7 @@ class Trainer:
             shuffle=False,
             num_workers=self.config.get('num_workers', 4),
         )
+        
 
     def _build_dataset_from_path(self, hs_reward_path: str | Path, **ds_kw) -> RankerDataset:
         ds = RankerDataset(**ds_kw)
@@ -123,7 +124,7 @@ class Trainer:
 
     def _build_prompt_hstate(self, prompt_type: str | None, labels: torch.Tensor, num_samples: int) -> torch.Tensor:
         if not prompt_type:
-            return torch.zeros(num_samples, 1000)
+            return torch.zeros(num_samples, 1000) # n,1000
 
         if prompt_type == 'one_hot':
             path = ROOT / 'class_condition' / 'prompt_encoding' / 'one_hot.pt'
