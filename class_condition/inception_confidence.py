@@ -202,8 +202,6 @@ def collect_training_data(
 
     labels_all = torch.tensor([c for c in range(1000) for _ in range(int(per_class))], dtype=torch.long)
     num_samples = int(labels_all.numel())
-    if num_samples != 10000:
-        raise ValueError(f"Expected 10k samples (1000*10), got {num_samples}")
 
     latent_size = pipe.transformer.config.sample_size
     latent_channels = pipe.transformer.config.in_channels
