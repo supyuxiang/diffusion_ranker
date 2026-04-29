@@ -478,6 +478,7 @@ def train_prob_on_data(
     hiddens = obj["hiddens"].float()
     rewards = (obj["reward"] if "reward" in obj else obj["rewards"]).view(-1).float()
 
+    # check
     if hiddens.dim() != 2:
         raise ValueError(f"hiddens must be 2D, got {tuple(hiddens.shape)}")
     if hiddens.shape[0] != rewards.shape[0]:
@@ -486,7 +487,9 @@ def train_prob_on_data(
     n = int(hiddens.shape[0])
     if n < 2:
         raise ValueError(f"need >=2 rows, got {n}")
+    # check end
 
+    # split train and val
     g = torch.Generator().manual_seed(int(seed))
     perm = torch.randperm(n, generator=g)
     n_train = min(max(int(round(n * float(train_ratio))), 1), n - 1)
@@ -498,6 +501,7 @@ def train_prob_on_data(
     tr_r_raw = rewards[tr_idx]
     va_r_raw = rewards[va_idx]
 
+    # normalize reward
     r_mean = float(tr_r_raw.mean().item())
     r_std = float(tr_r_raw.std().item())
     denom = r_std + 1e-8
@@ -643,7 +647,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dtype", type=str, default="bf16", choices=("fp32", "fp16", "bf16"))
     p.add_argument("--seed", type=int, default=42)
 
-    p.add_argument("--per_samples", type=int, default=64)
+    p.add_argument("--per_samples", type=int, default=256)
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--num_inference_steps", type=int, default=10)
     p.add_argument("--guidance_scale", type=float, default=1.0)
@@ -655,7 +659,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--train_ratio", type=float, default=0.9)
     p.add_argument("--train_batch_size", type=int, default=64)
     p.add_argument("--num_workers", type=int, default=4)
-    p.add_argument("--epochs", type=int, default=100)
+    p.add_argument("--epochs", type=int, default=300)
 
     p.add_argument("--hidden_dim", type=int, default=256)
     p.add_argument("--num_layers", type=int, default=2)
