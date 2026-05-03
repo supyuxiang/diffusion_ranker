@@ -16,8 +16,7 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT))
 
 from diffusers import PixArtAlphaPipeline
 from utils import ensure_image_reward_on_path, set_seed
