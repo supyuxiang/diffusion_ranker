@@ -15,7 +15,7 @@ INPUT_DIM = 784
 HIDDEN_DIM = 400
 LATENT_DIM = 32
 EPOCHS = 20
-LR = 1e-3
+LR = 5e-4
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
