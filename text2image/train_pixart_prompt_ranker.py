@@ -1,38 +1,6 @@
 #!/usr/bin/env python3
 
 
-
-'''
-rollout:
-python "/root/diffusion_ranker/text2image/rollout_pixart_hiddens_rewards.py" --model_path "/root/autodl-tmp/PixArt-XL-2-1024-MS" --prompts_json "/root/autodl-tmp/prompt_datasets/genai_image_527_list.json" --output_root "/root/autodl-tmp/text2image_pixart_hs_reward_rollout_527_v1" --repeats_per_prompt 1 --batch_size 4 --num_inference_steps 20 --guidance_scale 4.5 --negative_prompt "blurry, low quality, watermark, text, deformed" --height 1024 --width 1024 --target_step_idx 10 --target_layer_idx 14 --mc 8 --dtype fp16 --seed 42
-
-
-
-train ranker:
-
-python "/root/diffusion_ranker/text2image/train_pixart_prompt_ranker.py" \
-  --hs_reward_path "/root/autodl-tmp/text2image_pixart_hs_reward_rollout_527_v1/pixart_prompt_hs_reward_n527_s10_l14_mc4.pt" \
-  --model_path "/root/autodl-tmp/PixArt-XL-2-1024-MS" \
-  --output_dir "/root/autodl-tmp/text2image_pixart_prompt_ranker_527_s10_l14_mc4" \
-  --seed 42 \
-  --dtype fp16 \
-  --train_ratio 0.9 \
-  --ranker_type listwise \
-  --hidden_dim 128 \
-  --num_heads 4 \
-  --num_layers 2 \
-  --dropout 0.1 \
-  --batch_size 32 \
-  --parallel_size 8 \
-  --num_bootstrap 8 \
-  --num_epochs 100 \
-  --eval_interval 1 \
-  --lr 1e-4 \
-  --weight_decay 1e-4 \
-  --alpha 0.8 \
-  --kl_type kl
-
-'''
 from __future__ import annotations
 
 import argparse
