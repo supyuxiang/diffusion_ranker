@@ -38,7 +38,7 @@ def _clipscore_rewards(
     processor: CLIPProcessor,
     class_names: list[str],
 ) -> torch.Tensor:
-    prompts = [f"A photo of a {class_names[int(lab)]}" for lab in labels.tolist()]
+    prompts = [f"A photo of a {class_names[int(lab)]}." for lab in labels.tolist()]
     inputs = processor(text=prompts, images=images, return_tensors="pt", padding=True)
     inputs = {k: v.to(clip.device) for k, v in inputs.items()}
     out = clip(**inputs)
@@ -343,7 +343,7 @@ def collect_training_data(
                     "num_samples": int(num_samples),
                     "mc": int(mc),
                     "reward_name": "clipscore",
-                    "prompt_template": "A photo of a {class_name}",
+                    "prompt_template": "A photo of a {class_name}.",
                 },
             },
             out,
