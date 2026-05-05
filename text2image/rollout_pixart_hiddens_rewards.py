@@ -5,23 +5,23 @@
 rollout:
 python "/root/diffusion_ranker/text2image/rollout_pixart_hiddens_rewards.py" \
   --model_path "/root/autodl-tmp/PixArt-XL-2-1024-MS" \
-  --prompts_json "/root/autodl-tmp/prompt_datasets/genai_image_527_list.json" \
-  --output_root "/root/autodl-tmp/text2image_pixart_hs_reward_rollout_527_v2" \
-  --repeats_per_prompt 8 \
+  --prompts_json "/root/autodl-tmp/prompt_datasets/genai_image_1600_list.json" \
+  --output_root "/root/autodl-tmp/text2image_pixart_hs_reward_rollout_1600_v2" \
+  --repeats_per_prompt 500 \
   --batch_size 4 \
   --num_inference_steps 20 \
   --guidance_scale 4.5 \
   --negative_prompt "blurry, low quality, watermark, text, deformed" \
   --height 1024 --width 1024 \
   --target_step_idx 10 --target_layer_idx 14 \
-  --mc 8 --dtype fp16 --seed 42
+  --mc 5 --dtype fp16 --seed 42
 
 train ranker:
 
 python "/root/diffusion_ranker/text2image/train_pixart_prompt_ranker.py" \
-  --hs_reward_path "/root/autodl-tmp/text2image_pixart_hs_reward_rollout_527_v2/pixart_prompt_hs_reward_n4216_s10_l14_mc8.pt" \
+  --hs_reward_path "/root/autodl-tmp/text2image_pixart_hs_reward_rollout_1600_v2/pixart_prompt_hs_reward_n4216_s10_l14_mc5.pt" \
   --model_path "/root/autodl-tmp/PixArt-XL-2-1024-MS" \
-  --output_dir "/root/autodl-tmp/text2image_pixart_prompt_ranker_4216_s10_l14_mc8" \
+  --output_dir "/root/autodl-tmp/text2image_pixart_prompt_ranker_1600_s10_l14_mc5" \
   --seed 42 \
   --dtype fp16 \
   --train_ratio 0.9 \
