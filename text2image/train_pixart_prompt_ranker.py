@@ -15,8 +15,7 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT))
 
 from class_condition.utils import RankerLoss, js_loss, kl_loss, mse_loss
 from text2image.ranker import (
@@ -27,7 +26,7 @@ from text2image.ranker import (
 from utils import set_seed
 
 
-def _resolve_dtype(name: str, device: torch.device) -> torch.dtype:
+def resolve_dtype(name: str, device: torch.device) -> torch.dtype:
     if device.type != "cuda":
         return torch.float32
     if name == "fp16":
@@ -57,14 +56,14 @@ class PromptGroupedDataset(Dataset):
         return self.prompt_hs[idx], self.candidate_groups[idx], self.reward_groups[idx]
 
 
-def _collate_prompt_groups(batch):
+def collate_prompt_groups(batch):
     prompts = [x[0] for x in batch]
     candidates = [x[1] for x in batch]
     rewards = [x[2] for x in batch]
     return prompts, candidates, rewards
 
 
-def _extract_unique_prompts(obj: dict, prompts_json: str | None) -> tuple[list[str], list[int]]:
+def extract_unique_prompts(obj: dict, prompts_json: str | None) -> tuple[list[str], list[int]]:
     prompt_indices = obj.get("prompt_indices", None)
     prompts_all = obj.get("prompts", None)
     if prompt_indices is None:
@@ -111,7 +110,7 @@ def _extract_unique_prompts(obj: dict, prompts_json: str | None) -> tuple[list[s
 
 
 @torch.inference_mode()
-def _encode_prompts_pixart(
+def encode_prompts_pixart(
     model_path: str,
     prompts: list[str],
     *,
@@ -120,7 +119,7 @@ def _encode_prompts_pixart(
     encode_batch_size: int,
     max_sequence_length: int,
 ) -> torch.Tensor:
-    torch_dtype = _resolve_dtype(dtype_name, device)
+    torch_dtype = resolve_dtype(dtype_name, device)
     pipe = PixArtAlphaPipeline.from_pretrained(
         model_path,
         torch_dtype=torch_dtype,
@@ -146,7 +145,7 @@ def _encode_prompts_pixart(
     return torch.cat(all_vecs, dim=0).contiguous()
 
 
-def _build_grouped_data(
+def build_grouped_data(
     *,
     hs_reward_path: Path,
     prompts_json: str | None,
@@ -164,12 +163,12 @@ def _build_grouped_data(
     if hs.shape[0] != reward.shape[0] or hs.shape[0] != prompt_indices.shape[0]:
         raise ValueError("Row mismatch among hiddens/reward/prompt_indices.")
 
-    unique_prompts, sorted_old_ids = _extract_unique_prompts(obj, prompts_json=prompts_json)
+    unique_prompts, sorted_old_ids = extract_unique_prompts(obj, prompts_json=prompts_json)
     old2new = {old_id: i for i, old_id in enumerate(sorted_old_ids)}
     compact_pid = torch.tensor([old2new[int(x)] for x in prompt_indices.tolist()], dtype=torch.long)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    prompt_vecs = _encode_prompts_pixart(
+    prompt_vecs = encode_prompts_pixart(
         model_path=model_path,
         prompts=unique_prompts,
         device=device,
@@ -227,7 +226,7 @@ class Trainer:
     def __init__(self, args: argparse.Namespace):
         self.args = args
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        grouped = _build_grouped_data(
+        grouped = build_grouped_data(
             hs_reward_path=Path(args.hs_reward_path).expanduser().resolve(),
             prompts_json=args.prompts_json,
             model_path=args.model_path,
@@ -249,21 +248,21 @@ class Trainer:
             batch_size=int(args.batch_size),
             shuffle=True,
             num_workers=int(args.num_workers),
-            collate_fn=_collate_prompt_groups,
+            collate_fn=collate_prompt_groups,
         )
         self.val_loader = DataLoader(
             self.val_dataset,
             batch_size=int(args.batch_size),
             shuffle=False,
             num_workers=int(args.num_workers),
-            collate_fn=_collate_prompt_groups,
+            collate_fn=collate_prompt_groups,
         )
-        self._build_ranker()
-        self._build_opt_sched()
+        self.build_ranker()
+        self.build_opt_sched()
         self.loss_fn = RankerLoss(alpha=float(args.alpha), kl_type=str(args.kl_type))
         self.div_loss_fn = kl_loss if str(args.kl_type) == "kl" else js_loss
 
-    def _build_ranker(self):
+    def build_ranker(self):
         d_c = int(self.train_dataset.candidate_groups[0].shape[1])
         d_p = int(self.train_dataset.prompt_hs.shape[1])
         ranker_type = str(self.args.ranker_type)
@@ -302,7 +301,7 @@ class Trainer:
             raise ValueError(f"Unsupported ranker_type: {ranker_type}")
         self.ranker = self.ranker.to(self.device)
 
-    def _build_opt_sched(self):
+    def build_opt_sched(self):
         self.optimizer = torch.optim.AdamW(
             self.ranker.parameters(),
             lr=float(self.args.lr),
@@ -316,7 +315,7 @@ class Trainer:
             eta_min=float(self.args.lr) * 0.01,
         )
 
-    def _prompt_batch_loss(
+    def prompt_batch_loss(
         self,
         prompt_hs: torch.Tensor,
         candidate_hs: torch.Tensor,
@@ -373,7 +372,7 @@ class Trainer:
         div_term = self.div_loss_fn(student_logits, target).detach()
         return loss, mse_term, div_term
 
-    def _run_epoch(self, loader: DataLoader, training: bool) -> tuple[float, float, float]:
+    def run_epoch(self, loader: DataLoader, training: bool) -> tuple[float, float, float]:
         if training:
             self.ranker.train()
         else:
@@ -390,8 +389,8 @@ class Trainer:
                 batch_losses = []
                 batch_mse = []
                 batch_div = []
-                for prompt_hs, cand, rew in zip(prompt_list, cand_list, reward_list):
-                    loss, mse_term, div_term = self._prompt_batch_loss(prompt_hs, cand, rew)
+                for prompt_hs, cand, reward in zip(prompt_list, cand_list, reward_list):
+                    loss, mse_term, div_term = self.prompt_batch_loss(prompt_hs, cand, reward)
                     if torch.isfinite(loss):
                         batch_losses.append(loss)
                         batch_mse.append(mse_term)
@@ -427,12 +426,12 @@ class Trainer:
         best_epoch = -1
 
         for epoch in range(int(self.args.num_epochs)):
-            tr_loss, tr_mse, tr_div = self._run_epoch(self.train_loader, training=True)
+            tr_loss, tr_mse, tr_div = self.run_epoch(self.train_loader, training=True)
             self.scheduler.step()
             if epoch % int(self.args.eval_interval) != 0:
                 continue
 
-            va_loss, va_mse, va_div = self._run_epoch(self.val_loader, training=False)
+            va_loss, va_mse, va_div = self.run_epoch(self.val_loader, training=False)
             rec = {
                 "epoch": int(epoch),
                 "train_loss": float(tr_loss),
