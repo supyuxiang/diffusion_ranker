@@ -327,6 +327,51 @@ class DiffusionProb_SingleClass(nn.Module):
         return self.reward_head(x)
 
 
+
+
+class DiffusionRanker_Transformer_NoAddPrompt(nn.Module):
+    def __init__(
+        self,
+        input_dim_candidate:int,
+        hidden_dim:int,
+        num_layers:int=2,
+        num_heads:int=4,
+        dropout_prob:float=0.1,
+        half:bool=True,
+    ):
+        super().__init__()
+        self.input_dim_candidate = input_dim_candidate
+        self.hidden_dim = hidden_dim
+        self.linear_candidate = nn.Linear(input_dim_candidate, hidden_dim)
+        self.layers = nn.ModuleList(
+            [
+                TransformerBlock(hidden_dim, num_heads, dropout_prob) for _ in range(num_layers)
+            ]
+        )
+        self.reward_head = nn.Linear(hidden_dim,1)
+        
+    def _init_weights(self) -> None:
+        nn.init.xavier_uniform_(self.reward_head.weight)
+        nn.init.zeros_(self.reward_head.bias)
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+        if half:
+            self.to(torch.bfloat16)
+    
+    def forward(self, candidate_hstates):
+        x = self.linear_candidate(candidate_hstates)
+        for layer in self.layers:
+            x = layer(x)
+        return self.reward_head(x)
+
+    def count_params(self) -> int:
+        return sum(p.numel() for p in self.parameters())
+
+
+
 default_ranker = DiffusionRanker_Transformer(
     input_dim_candidate=1152,
     input_dim_prompt=4096,
@@ -358,6 +403,15 @@ cross_attention_ranker = DiffusionRanker_CrossAttention(
     half=True,
 )
 
+
+no_add_prompt_ranker = DiffusionRanker_Transformer_NoAddPrompt(
+    input_dim_candidate=1152,
+    hidden_dim=64,
+    num_layers=2,
+    num_heads=2,
+    dropout_prob=0.1,
+    half=True,
+)
 
 if __name__ == "__main__":
     print(default_ranker.count_params())

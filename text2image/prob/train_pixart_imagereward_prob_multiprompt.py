@@ -588,7 +588,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output_dir", type=str, default="/root/autodl-tmp/text2image_pixart_ir_prob_multiprompt")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", type=str, default="fp16", choices=("fp32", "fp16", "bf16"))
-    p.add_argument("--num_samples_per_prompt", type=int, default=10)
+    p.add_argument("--num_samples_per_prompt", type=int, default=500)
     p.add_argument("--collect_batch_size", type=int, default=4)
     p.add_argument("--num_inference_steps", type=int, default=20)
     p.add_argument("--guidance_scale", type=float, default=4.5)
