@@ -14,8 +14,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT))
 
 from utils import dit_loader, set_seed
 from class_condition.prob.dataset import HiddenRewardDataset
@@ -36,11 +35,7 @@ def _save_training_plots(
     val_gt_raw: torch.Tensor,
     val_pred_raw: torch.Tensor,
 ) -> None:
-    try:
-        import matplotlib.pyplot as plt
-    except Exception as e:
-        print(f"[plot] skip plotting because matplotlib is unavailable: {e}")
-        return
+    import matplotlib.pyplot as plt
 
     output_dir.mkdir(parents=True, exist_ok=True)
     epochs = [int(item["epoch"]) for item in history]
@@ -74,11 +69,7 @@ def _save_training_plots(
 
 
 def _save_step_pearson_plot(output_dir: Path, step_results: dict[int, dict]) -> None:
-    try:
-        import matplotlib.pyplot as plt
-    except Exception as e:
-        print(f"[plot] skip step pearson plot because matplotlib is unavailable: {e}")
-        return
+    import matplotlib.pyplot as plt
     steps = sorted(step_results.keys())
     pears = [float(step_results[s]["val_pearson_raw"]) for s in steps]
     fig = plt.figure(figsize=(8, 5))

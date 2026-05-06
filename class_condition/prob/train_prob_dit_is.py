@@ -16,8 +16,7 @@ from torchvision.transforms import CenterCrop, Compose, Resize
 from tqdm import tqdm
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT))
 
 from utils import INCEPTION_WEIGHTS_PATH, dit_loader, set_seed
 from class_condition.prob.dataset import HiddenRewardDataset
@@ -36,11 +35,7 @@ def _save_training_plots(
     val_gt_raw: torch.Tensor,
     val_pred_raw: torch.Tensor,
 ) -> None:
-    try:
-        import matplotlib.pyplot as plt
-    except Exception as e:
-        print(f"[plot] skip plotting because matplotlib is unavailable: {e}")
-        return
+    import matplotlib.pyplot as plt
 
     output_dir.mkdir(parents=True, exist_ok=True)
     epochs = [int(item["epoch"]) for item in history]
@@ -74,11 +69,7 @@ def _save_training_plots(
 
 
 def _save_step_pearson_plot(output_dir: Path, step_results: dict[int, dict]) -> None:
-    try:
-        import matplotlib.pyplot as plt
-    except Exception as e:
-        print(f"[plot] skip step pearson plot because matplotlib is unavailable: {e}")
-        return
+    import matplotlib.pyplot as plt
     steps = sorted(step_results.keys())
     pears = [float(step_results[s]["val_pearson_raw"]) for s in steps]
     fig = plt.figure(figsize=(8, 5))
@@ -487,7 +478,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", type=str, default="bf16", choices=("fp32", "fp16", "bf16"))
     p.add_argument("--model_name", type=str, default="dit-xl-2-256")
-    p.add_argument("--num_samples", type=int, default=5000)
+    p.add_argument("--num_samples", type=int, default=100000)
     p.add_argument("--collect_batch_size", type=int, default=32)
     p.add_argument("--num_inference_steps", type=int, default=25)
     p.add_argument("--guidance_scale", type=float, default=1.0)
