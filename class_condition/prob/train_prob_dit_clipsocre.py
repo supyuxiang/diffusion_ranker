@@ -43,7 +43,6 @@ def _save_training_plots(
     except Exception as e:
         print(f"[plot] skip plotting because matplotlib is unavailable: {e}")
         return
-
     output_dir.mkdir(parents=True, exist_ok=True)
     epochs = [int(item["epoch"]) for item in history]
     train_loss = [float(item["train_loss"]) for item in history]
@@ -75,12 +74,26 @@ def _save_training_plots(
     plt.close(fig)
 
 
-def _clipscore_rewards(
-    images,
-    prompts: list[str],
-    clip: CLIPModel,
-    processor: CLIPProcessor,
-) -> torch.Tensor:
+def _save_step_pearson_plot(output_dir: Path, step_results: dict[int, dict]) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception as e:
+        print(f"[plot] skip step pearson plot because matplotlib is unavailable: {e}")
+        return
+    steps = sorted(step_results.keys())
+    pears = [float(step_results[s]["val_pearson_raw"]) for s in steps]
+    fig = plt.figure(figsize=(8, 5))
+    plt.plot(steps, pears, marker="o")
+    plt.xlabel("step")
+    plt.ylabel("Pearson (val, raw reward)")
+    plt.title("Step vs Pearson")
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    fig.savefig(output_dir / "step_pearson.png", dpi=180)
+    plt.close(fig)
+
+
+def _clipscore_rewards(images, prompts: list[str], clip: CLIPModel, processor: CLIPProcessor) -> torch.Tensor:
     inputs = processor(text=prompts, images=images, return_tensors="pt", padding=True)
     inputs = {k: v.to(clip.device) for k, v in inputs.items()}
     out = clip(**inputs)
@@ -108,12 +121,7 @@ def _mc_clipscore_from_snapshot(
     processor: CLIPProcessor,
 ) -> torch.Tensor:
     if start_step_idx >= len(timesteps):
-        return _clipscore_rewards(
-            decode_dit_latents_to_pil(pipe, x_start, guidance_scale),
-            prompts,
-            clip,
-            processor,
-        )
+        return _clipscore_rewards(decode_dit_latents_to_pil(pipe, x_start, guidance_scale), prompts, clip, processor)
 
     rewards_ls: list[torch.Tensor] = []
     for i in range(int(mc)):
@@ -128,28 +136,18 @@ def _mc_clipscore_from_snapshot(
             x_in = scheduler.scale_model_input(x, t)
             timesteps_b = broadcast_timesteps(t, x_in)
             noise_pred = pipe.transformer(x_in, timestep=timesteps_b, class_labels=class_labels_input).sample
-
             if guidance_scale > 1:
                 eps, tail = noise_pred[:, :latent_channels], noise_pred[:, latent_channels:]
                 cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
                 half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
                 eps = torch.cat([half_eps, half_eps], dim=0)
                 noise_pred = torch.cat([eps, tail], dim=1)
-
             if pipe.transformer.config.out_channels // 2 == latent_channels:
                 model_output, _ = torch.split(noise_pred, latent_channels, dim=1)
             else:
                 model_output = noise_pred
             x = scheduler.step(model_output, t, x, generator=gen).prev_sample
-
-        rewards_ls.append(
-            _clipscore_rewards(
-                decode_dit_latents_to_pil(pipe, x, guidance_scale),
-                prompts,
-                clip,
-                processor,
-            )
-        )
+        rewards_ls.append(_clipscore_rewards(decode_dit_latents_to_pil(pipe, x, guidance_scale), prompts, clip, processor))
     return torch.stack(rewards_ls, dim=0).mean(dim=0)
 
 
@@ -287,7 +285,6 @@ def collect_single_class_data(
                 all_reward[s].append(reward)
             all_seed.extend([batch_seed + i for i in range(batch_n)])
             all_labels.append(cls.detach().cpu().long())
-
             del latents, x, cls, cls_null, class_labels_input, snapshot_x_by_step, snapshot_scheduler_by_step
             gc.collect()
             if device.type == "cuda":
@@ -370,18 +367,8 @@ def train_prob_hidden_only(
     train_r = (train_r_raw - r_mean) / denom
     val_r = (val_r_raw - r_mean) / denom
 
-    train_loader = DataLoader(
-        HiddenRewardDataset(train_h, train_r),
-        batch_size=int(train_batch_size),
-        shuffle=True,
-        num_workers=4,
-    )
-    val_loader = DataLoader(
-        HiddenRewardDataset(val_h, val_r),
-        batch_size=int(train_batch_size),
-        shuffle=False,
-        num_workers=4,
-    )
+    train_loader = DataLoader(HiddenRewardDataset(train_h, train_r), batch_size=int(train_batch_size), shuffle=True, num_workers=4)
+    val_loader = DataLoader(HiddenRewardDataset(val_h, val_r), batch_size=int(train_batch_size), shuffle=False, num_workers=4)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = RewardProb(
@@ -478,7 +465,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num_inference_steps", type=int, default=25)
     p.add_argument("--guidance_scale", type=float, default=1.0)
     p.add_argument("--target_step_indices", type=str, default="1,5,10,15,20,24")
-    p.add_argument("--train_step_idx", type=int, default=24)
+    p.add_argument("--train_step_idx", type=int, default=-1)
     p.add_argument("--target_layer_idx", type=int, default=16)
     p.add_argument("--mc", type=int, default=8)
     p.add_argument("--clip_model_dir", type=str, default=str(_DEFAULT_CLIP_DIR))
@@ -500,11 +487,12 @@ def main() -> None:
     data_dir = output_dir / "data"
     run_dir = output_dir / "train_run"
     target_steps = tuple(sorted(set(int(x.strip()) for x in str(args.target_step_indices).split(",") if x.strip())))
-    if int(args.train_step_idx) not in target_steps:
+    if int(args.train_step_idx) >= 0 and int(args.train_step_idx) not in target_steps:
         raise ValueError(f"train_step_idx {args.train_step_idx} must be in target_step_indices={target_steps}")
 
     if str(args.data_pt).strip():
         data_pt = Path(args.data_pt).expanduser().resolve()
+        data_pt_by_step = {}
     else:
         data_pt_by_step = collect_single_class_data(
             output_dir=data_dir,
@@ -520,22 +508,32 @@ def main() -> None:
             seed=int(args.seed),
             clip_model_dir=str(args.clip_model_dir),
         )
-        data_pt = data_pt_by_step[int(args.train_step_idx)]
+        data_pt = data_pt_by_step[target_steps[-1]]
 
-    result = train_prob_hidden_only(
-        data_pt=data_pt,
-        output_dir=run_dir,
-        seed=int(args.seed),
-        train_ratio=float(args.train_ratio),
-        train_batch_size=int(args.train_batch_size),
-        hidden_dim=int(args.hidden_dim),
-        num_layers=int(args.prob_num_layers),
-        dropout_prob=float(args.dropout_prob),
-        epochs=int(args.epochs),
-        lr=float(args.lr),
-        weight_decay=float(args.weight_decay),
+    steps_to_train = [int(args.train_step_idx)] if int(args.train_step_idx) >= 0 else list(target_steps)
+    all_results: dict[int, dict] = {}
+    for s in steps_to_train:
+        step_dir = run_dir / f"step_{s}"
+        result = train_prob_hidden_only(
+            data_pt=data_pt_by_step[s] if not str(args.data_pt).strip() else data_pt,
+            output_dir=step_dir,
+            seed=int(args.seed),
+            train_ratio=float(args.train_ratio),
+            train_batch_size=int(args.train_batch_size),
+            hidden_dim=int(args.hidden_dim),
+            num_layers=int(args.prob_num_layers),
+            dropout_prob=float(args.dropout_prob),
+            epochs=int(args.epochs),
+            lr=float(args.lr),
+            weight_decay=float(args.weight_decay),
+        )
+        all_results[s] = result
+    (run_dir / "step_metrics.json").write_text(
+        json.dumps({str(k): v for k, v in all_results.items()}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    _save_step_pearson_plot(run_dir, all_results)
+    print(json.dumps({"trained_steps": steps_to_train, "results": all_results}, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

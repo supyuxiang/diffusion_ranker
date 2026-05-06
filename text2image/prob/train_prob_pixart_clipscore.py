@@ -199,6 +199,25 @@ def _save_training_plots(
     plt.close(fig)
 
 
+def _save_step_pearson_plot(output_dir: Path, step_results: dict[int, dict]) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception as e:
+        print(f"[plot] skip step pearson plot because matplotlib is unavailable: {e}")
+        return
+    steps = sorted(step_results.keys())
+    pears = [float(step_results[s]["val_pearson_raw"]) for s in steps]
+    fig = plt.figure(figsize=(8, 5))
+    plt.plot(steps, pears, marker="o")
+    plt.xlabel("step")
+    plt.ylabel("Pearson (val, raw reward)")
+    plt.title("Step vs Pearson")
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    fig.savefig(output_dir / "step_pearson.png", dpi=180)
+    plt.close(fig)
+
+
 @torch.inference_mode()
 def collect_hiddens_and_rewards_for_prompts(
     *,
@@ -559,7 +578,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--height", type=int, default=1024)
     p.add_argument("--width", type=int, default=1024)
     p.add_argument("--target_step_indices", type=str, default="1,5,10,15,20,24")
-    p.add_argument("--train_step_idx", type=int, default=24)
+    p.add_argument("--train_step_idx", type=int, default=-1)
     p.add_argument("--target_layer_idx", type=int, default=14)
     p.add_argument("--mc", type=int, default=5)
     p.add_argument("--epochs", type=int, default=200)
@@ -579,7 +598,7 @@ def main() -> None:
 
     output_dir = Path(args.output_dir).expanduser().resolve()
     target_steps = tuple(sorted(set(int(x.strip()) for x in str(args.target_step_indices).split(",") if x.strip())))
-    if int(args.train_step_idx) not in target_steps:
+    if int(args.train_step_idx) >= 0 and int(args.train_step_idx) not in target_steps:
         raise ValueError(f"train_step_idx {args.train_step_idx} must be in target_step_indices={target_steps}")
 
     data_dir = output_dir / "data"
@@ -632,23 +651,29 @@ def main() -> None:
         seed=int(args.seed) + 777,
         dtype_name=str(args.dtype),
     )
-    train_pt = train_pt_by_step[int(args.train_step_idx)]
-    val_pt = val_pt_by_step[int(args.train_step_idx)]
-
-    result = train_prob_pixart_clipscore(
-        train_pt=train_pt,
-        val_pt=val_pt,
-        output_dir=run_dir,
-        train_batch_size=int(args.train_batch_size),
-        hidden_dim=int(args.hidden_dim),
-        num_layers=int(args.prob_num_layers),
-        dropout_prob=float(args.dropout_prob),
-        epochs=int(args.epochs),
-        lr=float(args.lr),
-        weight_decay=float(args.weight_decay),
-        val_interval=int(args.val_interval),
+    steps_to_train = [int(args.train_step_idx)] if int(args.train_step_idx) >= 0 else list(target_steps)
+    all_results: dict[int, dict] = {}
+    for s in steps_to_train:
+        result = train_prob_pixart_clipscore(
+            train_pt=train_pt_by_step[s],
+            val_pt=val_pt_by_step[s],
+            output_dir=run_dir / f"step_{s}",
+            train_batch_size=int(args.train_batch_size),
+            hidden_dim=int(args.hidden_dim),
+            num_layers=int(args.prob_num_layers),
+            dropout_prob=float(args.dropout_prob),
+            epochs=int(args.epochs),
+            lr=float(args.lr),
+            weight_decay=float(args.weight_decay),
+            val_interval=int(args.val_interval),
+        )
+        all_results[s] = result
+    (run_dir / "step_metrics.json").write_text(
+        json.dumps({str(k): v for k, v in all_results.items()}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    _save_step_pearson_plot(run_dir, all_results)
+    print(json.dumps({"trained_steps": steps_to_train, "results": all_results}, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

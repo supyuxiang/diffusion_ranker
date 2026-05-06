@@ -73,6 +73,25 @@ def _save_training_plots(
     plt.close(fig)
 
 
+def _save_step_pearson_plot(output_dir: Path, step_results: dict[int, dict]) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception as e:
+        print(f"[plot] skip step pearson plot because matplotlib is unavailable: {e}")
+        return
+    steps = sorted(step_results.keys())
+    pears = [float(step_results[s]["val_pearson_raw"]) for s in steps]
+    fig = plt.figure(figsize=(8, 5))
+    plt.plot(steps, pears, marker="o")
+    plt.xlabel("step")
+    plt.ylabel("Pearson (val, raw reward)")
+    plt.title("Step vs Pearson")
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    fig.savefig(output_dir / "step_pearson.png", dpi=180)
+    plt.close(fig)
+
+
 def _build_inception_logits_extractor(device: torch.device):
     from torch_fidelity.utils import create_feature_extractor
 
@@ -473,9 +492,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num_inference_steps", type=int, default=25)
     p.add_argument("--guidance_scale", type=float, default=1.0)
     p.add_argument("--target_step_indices", type=str, default="1,5,10,15,20,24")
-    p.add_argument("--train_step_idx", type=int, default=24)
+    p.add_argument("--train_step_idx", type=int, default=-1)
     p.add_argument("--target_layer_idx", type=int, default=16)
-    p.add_argument("--mc", type=int, default=8)
+    p.add_argument("--mc", type=int, default=5)
     p.add_argument("--train_ratio", type=float, default=0.9)
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--lr", type=float, default=1e-3)
@@ -494,7 +513,7 @@ def main() -> None:
     data_dir = output_dir / "data"
     run_dir = output_dir / "train_run"
     target_steps = tuple(sorted(set(int(x.strip()) for x in str(args.target_step_indices).split(",") if x.strip())))
-    if int(args.train_step_idx) not in target_steps:
+    if int(args.train_step_idx) >= 0 and int(args.train_step_idx) not in target_steps:
         raise ValueError(f"train_step_idx {args.train_step_idx} must be in target_step_indices={target_steps}")
 
     if str(args.data_pt).strip():
@@ -513,22 +532,30 @@ def main() -> None:
             guidance_scale=float(args.guidance_scale),
             seed=int(args.seed),
         )
-        data_pt = data_pt_by_step[int(args.train_step_idx)]
-
-    result = train_prob_hidden_only(
-        data_pt=data_pt,
-        output_dir=run_dir,
-        seed=int(args.seed),
-        train_ratio=float(args.train_ratio),
-        train_batch_size=int(args.train_batch_size),
-        hidden_dim=int(args.hidden_dim),
-        num_layers=int(args.prob_num_layers),
-        dropout_prob=float(args.dropout_prob),
-        epochs=int(args.epochs),
-        lr=float(args.lr),
-        weight_decay=float(args.weight_decay),
+    steps_to_train = [int(args.train_step_idx)] if int(args.train_step_idx) >= 0 else list(target_steps)
+    all_results: dict[int, dict] = {}
+    for s in steps_to_train:
+        step_dir = run_dir / f"step_{s}"
+        result = train_prob_hidden_only(
+            data_pt=data_pt_by_step[s] if not str(args.data_pt).strip() else data_pt,
+            output_dir=step_dir,
+            seed=int(args.seed),
+            train_ratio=float(args.train_ratio),
+            train_batch_size=int(args.train_batch_size),
+            hidden_dim=int(args.hidden_dim),
+            num_layers=int(args.prob_num_layers),
+            dropout_prob=float(args.dropout_prob),
+            epochs=int(args.epochs),
+            lr=float(args.lr),
+            weight_decay=float(args.weight_decay),
+        )
+        all_results[s] = result
+    (run_dir / "step_metrics.json").write_text(
+        json.dumps({str(k): v for k, v in all_results.items()}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    _save_step_pearson_plot(run_dir, all_results)
+    print(json.dumps({"trained_steps": steps_to_train, "results": all_results}, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
