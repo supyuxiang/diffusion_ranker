@@ -29,12 +29,56 @@ from class_condition.prob.utils import (
 )
 
 
+def _save_training_plots(
+    *,
+    output_dir: Path,
+    history: list[dict],
+    val_gt_raw: torch.Tensor,
+    val_pred_raw: torch.Tensor,
+) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception as e:
+        print(f"[plot] skip plotting because matplotlib is unavailable: {e}")
+        return
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    epochs = [int(item["epoch"]) for item in history]
+    train_loss = [float(item["train_loss"]) for item in history]
+    val_loss = [float(item["val_loss"]) for item in history]
+
+    fig = plt.figure(figsize=(7, 5))
+    plt.plot(epochs, train_loss, label="train_loss")
+    plt.plot(epochs, val_loss, label="val_loss")
+    plt.xlabel("epoch")
+    plt.ylabel("MSE (normalized reward)")
+    plt.title("Training Curve")
+    plt.legend()
+    plt.tight_layout()
+    fig.savefig(output_dir / "loss_curve.png", dpi=160)
+    plt.close(fig)
+
+    gt = val_gt_raw.view(-1).detach().cpu().float().numpy()
+    pred = val_pred_raw.view(-1).detach().cpu().float().numpy()
+    fig = plt.figure(figsize=(6, 6))
+    plt.scatter(gt, pred, s=8, alpha=0.5)
+    lo = float(min(gt.min(), pred.min()))
+    hi = float(max(gt.max(), pred.max()))
+    plt.plot([lo, hi], [lo, hi], "r--", linewidth=1)
+    plt.xlabel("val reward (raw)")
+    plt.ylabel("pred reward (raw)")
+    plt.title("Validation Prediction Scatter")
+    plt.tight_layout()
+    fig.savefig(output_dir / "val_scatter.png", dpi=160)
+    plt.close(fig)
+
+
 @torch.inference_mode()
 def _mc_imagereward_from_snapshot(
     *,
     pipe,
     x_start: torch.Tensor,
-    prompt: str,
+    prompts: list[str],
     start_step_idx: int,
     timesteps: torch.Tensor,
     scheduler_snapshot,
@@ -46,7 +90,7 @@ def _mc_imagereward_from_snapshot(
     rm_model,
 ) -> torch.Tensor:
     def _score_batch(images):
-        vals = [float(rm_model.score(prompt, img)) for img in images]
+        vals = [float(rm_model.score(p, img)) for p, img in zip(prompts, images)]
         return torch.tensor(vals, dtype=torch.float32)
 
     if start_step_idx >= len(timesteps):
@@ -84,7 +128,6 @@ def _mc_imagereward_from_snapshot(
 def collect_single_class_data(
     *,
     output_dir: Path,
-    class_idx: int,
     num_samples: int = 5000,
     target_step_indices: tuple[int, ...] = (1, 5, 10, 15, 20, 24),
     target_layer_idx: int = 16,
@@ -99,15 +142,11 @@ def collect_single_class_data(
     output_dir = Path(output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if not (0 <= int(class_idx) < 1000):
-        raise ValueError(f"class_idx must be in [0, 999], got {class_idx}")
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pipe = dit_loader(model_name, device=device, dtype=dtype)
     pipe.set_progress_bar_config(disable=True)
     rm_model = load_imagereward(device)
     class_names = load_imagenet_class_names()
-    prompt = f"A photo of a {class_names[int(class_idx)]}"
 
     n_blocks = len(pipe.transformer.transformer_blocks)
     if not (0 <= int(target_layer_idx) < n_blocks):
@@ -125,6 +164,7 @@ def collect_single_class_data(
     all_hidden: dict[int, list[torch.Tensor]] = {s: [] for s in target_steps}
     all_reward: dict[int, list[torch.Tensor]] = {s: [] for s in target_steps}
     all_seed: list[int] = []
+    all_labels: list[torch.Tensor] = []
 
     current_step = {"value": -1}
     current_batch = {"value": 0}
@@ -157,9 +197,10 @@ def collect_single_class_data(
                 dtype=pipe.transformer.dtype,
             )
             x = torch.cat([latents] * 2, dim=0) if guidance_scale > 1 else latents
-            cls = torch.full((batch_n,), int(class_idx), device=device, dtype=torch.long)
+            cls = torch.randint(0, 1000, (batch_n,), generator=gen, device=device, dtype=torch.long)
             cls_null = torch.full((batch_n,), 1000, device=device, dtype=torch.long)
             class_labels_input = torch.cat([cls, cls_null], dim=0) if guidance_scale > 1 else cls
+            prompts_batch = [f"A photo of a {class_names[int(i)]}" for i in cls.detach().cpu().tolist()]
 
             pipe.scheduler.set_timesteps(int(num_inference_steps))
             timesteps = pipe.scheduler.timesteps
@@ -199,7 +240,7 @@ def collect_single_class_data(
                 reward = _mc_imagereward_from_snapshot(
                     pipe=pipe,
                     x_start=snapshot_x_by_step[s],
-                    prompt=prompt,
+                    prompts=prompts_batch,
                     start_step_idx=s + 1,
                     timesteps=timesteps,
                     scheduler_snapshot=snapshot_scheduler_by_step[s],
@@ -213,6 +254,7 @@ def collect_single_class_data(
                 all_hidden[s].append(hidden_buf[k])
                 all_reward[s].append(reward)
             all_seed.extend([batch_seed + i for i in range(batch_n)])
+            all_labels.append(cls.detach().cpu().long())
             del latents, x, cls, cls_null, class_labels_input, snapshot_x_by_step, snapshot_scheduler_by_step
             gc.collect()
             if device.type == "cuda":
@@ -221,23 +263,21 @@ def collect_single_class_data(
         handle.remove()
 
     seeds = torch.tensor(all_seed, dtype=torch.long)
+    labels = torch.cat(all_labels, dim=0)
     out_by_step: dict[int, Path] = {}
     for s in target_steps:
         hiddens = torch.cat(all_hidden[s], dim=0).float()
         rewards = torch.cat(all_reward[s], dim=0).float()
         if hiddens.shape[0] != int(num_samples) or rewards.shape[0] != int(num_samples):
             raise RuntimeError(f"rows mismatch at step {s}: hidden={hiddens.shape[0]} reward={rewards.shape[0]} expected={num_samples}")
-        out = output_dir / f"class_ir_hs_only_c{class_idx}_n{num_samples}_s{s}_l{target_layer_idx}_mc{mc}.pt"
+        out = output_dir / f"class_ir_hs_only_randcls_n{num_samples}_s{s}_l{target_layer_idx}_mc{mc}.pt"
         torch.save(
             {
                 "hiddens": hiddens,
                 "reward": rewards,
-                "labels": torch.full((int(num_samples),), int(class_idx), dtype=torch.long),
+                "labels": labels,
                 "seed": seeds,
                 "meta": {
-                    "class_idx": int(class_idx),
-                    "class_name": class_names[int(class_idx)],
-                    "prompt": prompt,
                     "num_samples": int(num_samples),
                     "target_step_idx": int(s),
                     "target_step_indices": target_steps,
@@ -247,6 +287,8 @@ def collect_single_class_data(
                     "mc": int(mc),
                     "model_name": str(model_name),
                     "dtype": str(dtype),
+                    "class_sampling": "uniform_random_per_sample",
+                    "prompt_template": "A photo of a {class_name}",
                     "prob_input": "hidden_only",
                 },
             },
@@ -385,6 +427,7 @@ def train_prob_hidden_only(
     }
     (output_dir / "train_history.json").write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
     (output_dir / "final_metrics.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    _save_training_plots(output_dir=output_dir, history=history, val_gt_raw=val_gt_raw, val_pred_raw=val_pred_raw)
     return result
 
 
@@ -395,7 +438,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", type=str, default="bf16", choices=("fp32", "fp16", "bf16"))
     p.add_argument("--model_name", type=str, default="dit-xl-2-256")
-    p.add_argument("--class_idx", type=int, default=256)
     p.add_argument("--num_samples", type=int, default=5000)
     p.add_argument("--collect_batch_size", type=int, default=32)
     p.add_argument("--num_inference_steps", type=int, default=25)
@@ -430,7 +472,6 @@ def main() -> None:
     else:
         data_pt_by_step = collect_single_class_data(
             output_dir=data_dir,
-            class_idx=int(args.class_idx),
             num_samples=int(args.num_samples),
             target_step_indices=target_steps,
             target_layer_idx=int(args.target_layer_idx),

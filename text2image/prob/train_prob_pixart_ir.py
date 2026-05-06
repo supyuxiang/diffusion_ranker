@@ -148,6 +148,50 @@ def _pearsonr_torch(x: torch.Tensor, y: torch.Tensor, eps: float = 1e-8) -> floa
     return float((vx * vy).sum().item() / denom.item())
 
 
+def _save_training_plots(
+    *,
+    output_dir: Path,
+    history: list[dict],
+    val_gt_raw: torch.Tensor,
+    val_pred_raw: torch.Tensor,
+) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception as e:
+        print(f"[plot] skip plotting because matplotlib is unavailable: {e}")
+        return
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    epochs = [int(item["epoch"]) for item in history]
+    train_loss = [float(item["train_loss"]) for item in history]
+    val_loss = [float(item["val_loss"]) for item in history]
+
+    fig = plt.figure(figsize=(7, 5))
+    plt.plot(epochs, train_loss, label="train_loss")
+    plt.plot(epochs, val_loss, label="val_loss")
+    plt.xlabel("epoch")
+    plt.ylabel("MSE (normalized reward)")
+    plt.title("Training Curve")
+    plt.legend()
+    plt.tight_layout()
+    fig.savefig(output_dir / "loss_curve.png", dpi=160)
+    plt.close(fig)
+
+    gt = val_gt_raw.view(-1).detach().cpu().float().numpy()
+    pred = val_pred_raw.view(-1).detach().cpu().float().numpy()
+    fig = plt.figure(figsize=(6, 6))
+    plt.scatter(gt, pred, s=8, alpha=0.5)
+    lo = float(min(gt.min(), pred.min()))
+    hi = float(max(gt.max(), pred.max()))
+    plt.plot([lo, hi], [lo, hi], "r--", linewidth=1)
+    plt.xlabel("val reward (raw)")
+    plt.ylabel("pred reward (raw)")
+    plt.title("Validation Prediction Scatter")
+    plt.tight_layout()
+    fig.savefig(output_dir / "val_scatter.png", dpi=160)
+    plt.close(fig)
+
+
 @torch.inference_mode()
 def collect_hiddens_and_rewards_for_prompts(
     *,
@@ -479,6 +523,7 @@ def train_prob_pixart_ir(
     }
     (output_dir / "train_history.json").write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
     (output_dir / "final_metrics.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    _save_training_plots(output_dir=output_dir, history=history, val_gt_raw=val_gt_raw, val_pred_raw=val_pred_raw)
     return result
 
 
