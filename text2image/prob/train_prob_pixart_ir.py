@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+
+'''
+example:
+
+python "/root/diffusion_ranker/text2image/prob/train_prob_pixart_ir.py" \
+  --model_path "/root/autodl-tmp/PixArt-XL-2-1024-MS" \
+  --train_prompts_json "/root/autodl-tmp/coco2017/prompts/coco2017_train_prompts_15000.json" \
+  --val_prompts_json "/root/autodl-tmp/coco2017/prompts/coco2017_test_prompts_5000.json" \
+  --output_dir "/root/autodl-tmp/text2image_pixart_ir_prob_coco_15k5k"
+
+'''
 from __future__ import annotations
 
 import argparse
@@ -19,9 +30,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from diffusers import PixArtAlphaPipeline
-from utils import ensure_image_reward_on_path, set_seed
-
+from utils import set_seed
+from text2image.prob.dataset import HiddenRewardDataset
+from text2image.prob.prob import RewardProb
 from text2image.utils import _resolve_dtype
+from text2image.prob.utils import _load_prompts, load_imagereward
+
 
 _DEFAULT_IMAGEREWARD_DIR = Path("/root/autodl-tmp/ImageReward")
 _DEFAULT_IMAGEREWARD_CKPT = _DEFAULT_IMAGEREWARD_DIR / "ImageReward.pt"
@@ -34,7 +48,7 @@ def _broadcast_timesteps(t, latent_model_input: torch.Tensor) -> torch.Tensor:
     if not torch.is_tensor(t):
         dt = torch.float64 if isinstance(t, float) else torch.int64
         t = torch.tensor([t], dtype=dt, device=latent_model_input.device)
-    elif len(t.shape) == 0:
+    if len(t.shape) == 0:
         t = t[None].to(latent_model_input.device)
     return t.expand(latent_model_input.shape[0])
 
@@ -63,110 +77,13 @@ def _decode_pixart_latents_to_pil(pipe: PixArtAlphaPipeline, latents: torch.Tens
     return image
 
 
-def load_imagereward(
-    device: torch.device,
-    ckpt_path: Path = _DEFAULT_IMAGEREWARD_CKPT,
-    med_config: Path = _DEFAULT_IMAGEREWARD_MED,
-):
-    ensure_image_reward_on_path()
-    import ImageReward as RM
-    from transformers import BertTokenizer
-
-    os.environ.setdefault("HF_HUB_OFFLINE", "1")
-    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-
-    _ = BertTokenizer.from_pretrained("bert-base-uncased", local_files_only=True)
-    _orig = BertTokenizer.from_pretrained
-
-    def _offline_from_pretrained(*args, **kwargs):
-        kwargs.setdefault("local_files_only", True)
-        return _orig(*args, **kwargs)
-
-    BertTokenizer.from_pretrained = _offline_from_pretrained
-    model = RM.load(str(ckpt_path), device=device, med_config=str(med_config))
-    model.eval()
-    return model
-
-
-def _load_prompts(path: Path) -> list[str]:
-    obj = json.loads(path.read_text(encoding="utf-8"))
-    prompts: list[str] = []
-    if isinstance(obj, dict):
-        # COCO-style captions json: {"annotations":[{"caption": "..."}], ...}
-        if isinstance(obj.get("annotations"), list):
-            for i, row in enumerate(obj["annotations"]):
-                if not isinstance(row, dict):
-                    continue
-                p = str(row.get("caption", "")).strip()
-                if p:
-                    prompts.append(p)
-            if len(prompts) == 0:
-                raise ValueError(f"No valid caption found in annotations of {path}")
-        else:
-            # VQAScore-style json: {"00000": {"prompt": "..."}}
-            for k in sorted(obj.keys()):
-                row = obj[k]
-                if not isinstance(row, dict):
-                    continue
-                p = str(row.get("prompt", "")).strip()
-                if p:
-                    prompts.append(p)
-    elif isinstance(obj, list):
-        for i, row in enumerate(obj):
-            if isinstance(row, str):
-                p = row.strip()
-            elif isinstance(row, dict):
-                # support both {"prompt": "..."} and {"caption": "..."}
-                p = str(row.get("prompt", row.get("caption", ""))).strip()
-            else:
-                raise ValueError(f"Unsupported prompt type at index={i}: {type(row)}")
-            if p:
-                prompts.append(p)
-    else:
-        raise ValueError(f"Unsupported prompt json type: {type(obj)}")
-    prompts = list(dict.fromkeys(prompts))
-    if len(prompts) == 0:
-        raise ValueError(f"No valid prompt found in {path}")
-    return prompts
-
-
-def _sample_and_split_prompts(prompts_pool: list[str], num_prompts: int, train_ratio: float, seed: int):
-    if num_prompts <= 1:
-        raise ValueError("num_prompts must be >= 2")
-    if num_prompts > len(prompts_pool):
-        raise ValueError(f"num_prompts={num_prompts} > available prompts={len(prompts_pool)}")
-    g = torch.Generator().manual_seed(int(seed))
-    perm = torch.randperm(len(prompts_pool), generator=g).tolist()
-    picked = [prompts_pool[i] for i in perm[: int(num_prompts)]]
-    n_train = min(max(int(round(len(picked) * float(train_ratio))), 1), len(picked) - 1)
-    train_prompts = picked[:n_train]
-    val_prompts = picked[n_train:]
-    return picked, train_prompts, val_prompts
-
-
-def _sample_and_split_prompts_fixed_counts(
-    prompts_pool: list[str], num_train_prompts: int, num_val_prompts: int, seed: int
-):
-    if num_train_prompts <= 0 or num_val_prompts <= 0:
-        raise ValueError("num_train_prompts and num_val_prompts must be >= 1")
-    total = int(num_train_prompts) + int(num_val_prompts)
-    if total > len(prompts_pool):
-        raise ValueError(f"requested total prompts={total} > available prompts={len(prompts_pool)}")
-    g = torch.Generator().manual_seed(int(seed))
-    perm = torch.randperm(len(prompts_pool), generator=g).tolist()
-    picked = [prompts_pool[i] for i in perm[:total]]
-    train_prompts = picked[: int(num_train_prompts)]
-    val_prompts = picked[int(num_train_prompts) :]
-    return picked, train_prompts, val_prompts
-
-
 def _imagereward_batch(images: list[Image.Image], prompt: str, model) -> torch.Tensor:
     vals = [float(model.score(prompt, img)) for img in images]
     return torch.tensor(vals, dtype=torch.float32)
 
 
 @torch.inference_mode()
-def _mc_rollout_imagereward(
+def mc_rollout_imagereward(
     *,
     pipe: PixArtAlphaPipeline,
     latents_start: torch.Tensor,
@@ -222,58 +139,6 @@ def _mc_rollout_imagereward(
     return torch.stack(rewards, dim=0).mean(dim=0)
 
 
-class RewardProb(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int = 256, num_layers: int = 2, dropout_prob: float = 0.1):
-        super().__init__()
-        self.input_proj = nn.Linear(input_dim, hidden_dim)
-        self.layers = nn.ModuleList(
-            [
-                nn.Sequential(
-                    nn.Linear(hidden_dim, 4 * hidden_dim),
-                    nn.GELU(),
-                    nn.Dropout(dropout_prob),
-                    nn.Linear(4 * hidden_dim, hidden_dim),
-                    nn.GELU(),
-                    nn.Dropout(dropout_prob),
-                )
-                for _ in range(num_layers)
-            ]
-        )
-        self.reward_head = nn.Linear(hidden_dim, 1)
-        self._init_weights()
-
-    def _init_weights(self) -> None:
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.input_proj(x) # input_dim -> hidden_dim
-        for layer in self.layers:
-            x = x + layer(x) # hidden_dim -> hidden_dim
-        return self.reward_head(x) # hidden_dim -> 1
-
-
-class HiddenRewardDataset(Dataset):
-    def __init__(self, hiddens: torch.Tensor, rewards: torch.Tensor):
-        self.hiddens = hiddens.float()
-        self.rewards = rewards.view(-1).float()
-        # check 
-        if self.hiddens.dim() != 2:
-            raise ValueError(f"hiddens must be 2D, got {tuple(self.hiddens.shape)}")
-        if self.hiddens.shape[0] != self.rewards.shape[0]:
-            raise ValueError(f"row mismatch: {self.hiddens.shape[0]} vs {self.rewards.shape[0]}")
-        # check end 
-
-    def __len__(self) -> int:
-        return int(self.hiddens.shape[0])
-
-    def __getitem__(self, idx: int):
-        return self.hiddens[idx], self.rewards[idx]
-
-
 def _pearsonr_torch(x: torch.Tensor, y: torch.Tensor, eps: float = 1e-8) -> float:
     x = x.view(-1).float()
     y = y.view(-1).float()
@@ -284,7 +149,7 @@ def _pearsonr_torch(x: torch.Tensor, y: torch.Tensor, eps: float = 1e-8) -> floa
 
 
 @torch.inference_mode()
-def collect_hidden_and_reward_for_prompts(
+def collect_hiddens_and_rewards_for_prompts(
     *,
     model_path: str,
     prompts: list[str],
@@ -425,7 +290,7 @@ def collect_hidden_and_reward_for_prompts(
                 if snapshot_latents is None or snapshot_scheduler is None:
                     raise RuntimeError(f"Failed to snapshot latent/scheduler at target step {target_step_idx}")
 
-                reward = _mc_rollout_imagereward(
+                reward = mc_rollout_imagereward(
                     pipe=pipe,
                     latents_start=snapshot_latents,
                     start_step_idx=target_step_idx + 1,
@@ -490,7 +355,10 @@ def collect_hidden_and_reward_for_prompts(
     return out_pt
 
 
-def train_prob_on_split_data(
+
+
+
+def train_prob_pixart_ir(
     *,
     train_pt: Path,
     val_pt: Path,
@@ -660,7 +528,7 @@ def main() -> None:
     (output_dir / "train_prompts.json").write_text(json.dumps(train_prompts, ensure_ascii=False, indent=2), encoding="utf-8")
     (output_dir / "val_prompts.json").write_text(json.dumps(val_prompts, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    train_pt = collect_hidden_and_reward_for_prompts(
+    train_pt = collect_hiddens_and_rewards_for_prompts(
         model_path=str(args.model_path),
         prompts=train_prompts,
         split_name="train",
@@ -679,7 +547,7 @@ def main() -> None:
         dtype_name=str(args.dtype),
     )
     
-    val_pt = collect_hidden_and_reward_for_prompts(
+    val_pt = collect_hiddens_and_rewards_for_prompts(
         model_path=str(args.model_path),
         prompts=val_prompts,
         split_name="val",
@@ -698,7 +566,7 @@ def main() -> None:
         dtype_name=str(args.dtype),
     )
 
-    result = train_prob_on_split_data(
+    result = train_prob_pixart_ir(
         train_pt=train_pt,
         val_pt=val_pt,
         output_dir=run_dir,
