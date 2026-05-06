@@ -7,7 +7,7 @@ python "/root/diffusion_ranker/text2image/rollout_pixart_hiddens_rewards.py" \
   --model_path "/root/autodl-tmp/PixArt-XL-2-1024-MS" \
   --prompts_json "/root/autodl-tmp/prompt_datasets/genai_image_1600_list.json" \
   --output_root "/root/autodl-tmp/text2image_pixart_hs_reward_rollout_1600_v2" \
-  --repeats_per_prompt 500 \
+  --repeats_per_prompt 50 \
   --batch_size 4 \
   --num_inference_steps 20 \
   --guidance_scale 4.5 \
