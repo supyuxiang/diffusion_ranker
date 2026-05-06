@@ -15,8 +15,8 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 
 from diffusers import PixArtAlphaPipeline
 from utils import ensure_image_reward_on_path, set_seed
@@ -610,19 +610,23 @@ def train_prob_on_split_data(
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("PixArt hidden -> ImageReward prob trainer (multi-prompt)")
     p.add_argument("--model_path", type=str, default="/root/autodl-tmp/PixArt-XL-2-1024-MS")
-    p.add_argument("--prompts_json", type=str, default=str(_DEFAULT_VQASCORE_PROMPTS))
-    p.add_argument("--split_mode", type=str, default="ratio", choices=("ratio", "fixed_counts"))
-    p.add_argument("--num_prompts", type=int, default=1000)
-    p.add_argument("--train_ratio", type=float, default=0.9)
-    p.add_argument("--num_train_prompts", type=int, default=15000)
-    p.add_argument("--num_val_prompts", type=int, default=5000)
+    p.add_argument(
+        "--train_prompts_json",
+        type=str,
+        default="/root/autodl-tmp/coco2017/prompts/coco2017_train_prompts_15000.json",
+    )
+    p.add_argument(
+        "--val_prompts_json",
+        type=str,
+        default="/root/autodl-tmp/coco2017/prompts/coco2017_test_prompts_5000.json",
+    )
     p.add_argument("--negative_prompt", type=str, default="blurry, low quality, watermark, text, deformed")
     p.add_argument("--output_dir", type=str, default="/root/autodl-tmp/text2image_pixart_ir_prob_multiprompt")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", type=str, default="fp16", choices=("fp32", "fp16", "bf16"))
-    p.add_argument("--num_samples_per_prompt", type=int, default=500)
+    p.add_argument("--num_samples_per_prompt", type=int, default=5)
     p.add_argument("--collect_batch_size", type=int, default=4)
-    p.add_argument("--num_inference_steps", type=int, default=20)
+    p.add_argument("--num_inference_steps", type=int, default=25)
     p.add_argument("--guidance_scale", type=float, default=4.5)
     p.add_argument("--height", type=int, default=1024)
     p.add_argument("--width", type=int, default=1024)
@@ -649,21 +653,9 @@ def main() -> None:
     run_dir = output_dir / "train_run"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    prompt_pool = _load_prompts(Path(args.prompts_json).expanduser().resolve())
-    if str(args.split_mode) == "fixed_counts":
-        selected, train_prompts, val_prompts = _sample_and_split_prompts_fixed_counts(
-            prompt_pool,
-            num_train_prompts=int(args.num_train_prompts),
-            num_val_prompts=int(args.num_val_prompts),
-            seed=int(args.seed),
-        )
-    else:
-        selected, train_prompts, val_prompts = _sample_and_split_prompts(
-            prompt_pool,
-            num_prompts=int(args.num_prompts),
-            train_ratio=float(args.train_ratio),
-            seed=int(args.seed),
-        )
+    train_prompts = _load_prompts(Path(args.train_prompts_json).expanduser().resolve())
+    val_prompts = _load_prompts(Path(args.val_prompts_json).expanduser().resolve())
+    selected = train_prompts + val_prompts
     (output_dir / "selected_prompts.json").write_text(json.dumps(selected, ensure_ascii=False, indent=2), encoding="utf-8")
     (output_dir / "train_prompts.json").write_text(json.dumps(train_prompts, ensure_ascii=False, indent=2), encoding="utf-8")
     (output_dir / "val_prompts.json").write_text(json.dumps(val_prompts, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -686,6 +678,7 @@ def main() -> None:
         seed=int(args.seed),
         dtype_name=str(args.dtype),
     )
+    
     val_pt = collect_hidden_and_reward_for_prompts(
         model_path=str(args.model_path),
         prompts=val_prompts,
