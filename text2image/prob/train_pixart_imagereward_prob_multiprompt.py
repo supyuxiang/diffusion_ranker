@@ -88,23 +88,36 @@ def load_imagereward(
     return model
 
 
-def _load_prompts_from_vqascore_json(path: Path) -> list[str]:
+def _load_prompts(path: Path) -> list[str]:
     obj = json.loads(path.read_text(encoding="utf-8"))
     prompts: list[str] = []
     if isinstance(obj, dict):
-        for k in sorted(obj.keys()):
-            row = obj[k]
-            if not isinstance(row, dict):
-                continue
-            p = str(row.get("prompt", "")).strip()
-            if p:
-                prompts.append(p)
+        # COCO-style captions json: {"annotations":[{"caption": "..."}], ...}
+        if isinstance(obj.get("annotations"), list):
+            for i, row in enumerate(obj["annotations"]):
+                if not isinstance(row, dict):
+                    continue
+                p = str(row.get("caption", "")).strip()
+                if p:
+                    prompts.append(p)
+            if len(prompts) == 0:
+                raise ValueError(f"No valid caption found in annotations of {path}")
+        else:
+            # VQAScore-style json: {"00000": {"prompt": "..."}}
+            for k in sorted(obj.keys()):
+                row = obj[k]
+                if not isinstance(row, dict):
+                    continue
+                p = str(row.get("prompt", "")).strip()
+                if p:
+                    prompts.append(p)
     elif isinstance(obj, list):
         for i, row in enumerate(obj):
             if isinstance(row, str):
                 p = row.strip()
             elif isinstance(row, dict):
-                p = str(row.get("prompt", "")).strip()
+                # support both {"prompt": "..."} and {"caption": "..."}
+                p = str(row.get("prompt", row.get("caption", ""))).strip()
             else:
                 raise ValueError(f"Unsupported prompt type at index={i}: {type(row)}")
             if p:
@@ -128,6 +141,22 @@ def _sample_and_split_prompts(prompts_pool: list[str], num_prompts: int, train_r
     n_train = min(max(int(round(len(picked) * float(train_ratio))), 1), len(picked) - 1)
     train_prompts = picked[:n_train]
     val_prompts = picked[n_train:]
+    return picked, train_prompts, val_prompts
+
+
+def _sample_and_split_prompts_fixed_counts(
+    prompts_pool: list[str], num_train_prompts: int, num_val_prompts: int, seed: int
+):
+    if num_train_prompts <= 0 or num_val_prompts <= 0:
+        raise ValueError("num_train_prompts and num_val_prompts must be >= 1")
+    total = int(num_train_prompts) + int(num_val_prompts)
+    if total > len(prompts_pool):
+        raise ValueError(f"requested total prompts={total} > available prompts={len(prompts_pool)}")
+    g = torch.Generator().manual_seed(int(seed))
+    perm = torch.randperm(len(prompts_pool), generator=g).tolist()
+    picked = [prompts_pool[i] for i in perm[:total]]
+    train_prompts = picked[: int(num_train_prompts)]
+    val_prompts = picked[int(num_train_prompts) :]
     return picked, train_prompts, val_prompts
 
 
@@ -582,8 +611,11 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("PixArt hidden -> ImageReward prob trainer (multi-prompt)")
     p.add_argument("--model_path", type=str, default="/root/autodl-tmp/PixArt-XL-2-1024-MS")
     p.add_argument("--prompts_json", type=str, default=str(_DEFAULT_VQASCORE_PROMPTS))
+    p.add_argument("--split_mode", type=str, default="ratio", choices=("ratio", "fixed_counts"))
     p.add_argument("--num_prompts", type=int, default=1000)
     p.add_argument("--train_ratio", type=float, default=0.9)
+    p.add_argument("--num_train_prompts", type=int, default=15000)
+    p.add_argument("--num_val_prompts", type=int, default=5000)
     p.add_argument("--negative_prompt", type=str, default="blurry, low quality, watermark, text, deformed")
     p.add_argument("--output_dir", type=str, default="/root/autodl-tmp/text2image_pixart_ir_prob_multiprompt")
     p.add_argument("--seed", type=int, default=42)
@@ -617,13 +649,21 @@ def main() -> None:
     run_dir = output_dir / "train_run"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    prompt_pool = _load_prompts_from_vqascore_json(Path(args.prompts_json).expanduser().resolve())
-    selected, train_prompts, val_prompts = _sample_and_split_prompts(
-        prompt_pool,
-        num_prompts=int(args.num_prompts),
-        train_ratio=float(args.train_ratio),
-        seed=int(args.seed),
-    )
+    prompt_pool = _load_prompts(Path(args.prompts_json).expanduser().resolve())
+    if str(args.split_mode) == "fixed_counts":
+        selected, train_prompts, val_prompts = _sample_and_split_prompts_fixed_counts(
+            prompt_pool,
+            num_train_prompts=int(args.num_train_prompts),
+            num_val_prompts=int(args.num_val_prompts),
+            seed=int(args.seed),
+        )
+    else:
+        selected, train_prompts, val_prompts = _sample_and_split_prompts(
+            prompt_pool,
+            num_prompts=int(args.num_prompts),
+            train_ratio=float(args.train_ratio),
+            seed=int(args.seed),
+        )
     (output_dir / "selected_prompts.json").write_text(json.dumps(selected, ensure_ascii=False, indent=2), encoding="utf-8")
     (output_dir / "train_prompts.json").write_text(json.dumps(train_prompts, ensure_ascii=False, indent=2), encoding="utf-8")
     (output_dir / "val_prompts.json").write_text(json.dumps(val_prompts, ensure_ascii=False, indent=2), encoding="utf-8")
