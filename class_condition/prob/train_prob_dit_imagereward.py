@@ -86,16 +86,16 @@ def collect_single_class_data(
     output_dir: Path,
     class_idx: int,
     num_samples: int = 5000,
-    target_step_idx: int = 6,
+    target_step_indices: tuple[int, ...] = (1, 5, 10, 15, 20, 24),
     target_layer_idx: int = 16,
     mc: int = 8,
     model_name: str = "dit-xl-2-256",
     dtype: str = "bf16",
-    num_inference_steps: int = 10,
+    num_inference_steps: int = 25,
     batch_size: int = 32,
     guidance_scale: float = 1.0,
     seed: int = 42,
-) -> Path:
+) -> dict[int, Path]:
     output_dir = Path(output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -112,14 +112,18 @@ def collect_single_class_data(
     n_blocks = len(pipe.transformer.transformer_blocks)
     if not (0 <= int(target_layer_idx) < n_blocks):
         raise ValueError(f"target_layer_idx must be in [0, {n_blocks - 1}]")
-    if not (0 <= int(target_step_idx) < int(num_inference_steps)):
-        raise ValueError(f"target_step_idx must be in [0, {int(num_inference_steps) - 1}]")
+    target_steps = sorted(set(int(s) for s in target_step_indices))
+    if not target_steps:
+        raise ValueError("target_step_indices cannot be empty")
+    for s in target_steps:
+        if not (0 <= s < int(num_inference_steps)):
+            raise ValueError(f"target step {s} out of range [0, {int(num_inference_steps) - 1}]")
 
     latent_size = pipe.transformer.config.sample_size
     latent_channels = pipe.transformer.config.in_channels
     n_batches = (int(num_samples) + int(batch_size) - 1) // int(batch_size)
-    all_hidden: list[torch.Tensor] = []
-    all_reward: list[torch.Tensor] = []
+    all_hidden: dict[int, list[torch.Tensor]] = {s: [] for s in target_steps}
+    all_reward: dict[int, list[torch.Tensor]] = {s: [] for s in target_steps}
     all_seed: list[int] = []
 
     current_step = {"value": -1}
@@ -127,12 +131,12 @@ def collect_single_class_data(
     hidden_buf: dict[str, torch.Tensor] = {}
 
     def _hook(_module, _inp, out) -> None:
-        if current_step["value"] != int(target_step_idx):
+        if current_step["value"] not in target_steps:
             return
         h = out[0] if isinstance(out, (tuple, list)) else out
         if guidance_scale > 1:
             h = h[: current_batch["value"]]
-        hidden_buf["h"] = h.mean(dim=1).detach().float().cpu()
+        hidden_buf[str(current_step["value"])] = h.mean(dim=1).detach().float().cpu()
 
     handle = pipe.transformer.transformer_blocks[int(target_layer_idx)].register_forward_hook(_hook)
     try:
@@ -160,8 +164,8 @@ def collect_single_class_data(
             pipe.scheduler.set_timesteps(int(num_inference_steps))
             timesteps = pipe.scheduler.timesteps
             hidden_buf.clear()
-            snapshot_x = None
-            snapshot_scheduler = None
+            snapshot_x_by_step: dict[int, torch.Tensor] = {}
+            snapshot_scheduler_by_step: dict[int, object] = {}
 
             for st_i, t in enumerate(timesteps):
                 current_step["value"] = st_i
@@ -182,70 +186,74 @@ def collect_single_class_data(
                 else:
                     model_output = noise_pred
                 x = pipe.scheduler.step(model_output, t, x, generator=gen).prev_sample
-                if st_i == int(target_step_idx):
-                    snapshot_x = x.detach().clone()
-                    snapshot_scheduler = copy.deepcopy(pipe.scheduler)
+                if st_i in target_steps:
+                    snapshot_x_by_step[st_i] = x.detach().clone()
+                    snapshot_scheduler_by_step[st_i] = copy.deepcopy(pipe.scheduler)
 
-            if "h" not in hidden_buf:
-                raise RuntimeError(f"Failed to capture hidden at step {target_step_idx}")
-            if snapshot_x is None or snapshot_scheduler is None:
-                raise RuntimeError(f"Failed to snapshot x/scheduler at step {target_step_idx}")
-
-            reward = _mc_imagereward_from_snapshot(
-                pipe=pipe,
-                x_start=snapshot_x,
-                prompt=prompt,
-                start_step_idx=int(target_step_idx) + 1,
-                timesteps=timesteps,
-                scheduler_snapshot=snapshot_scheduler,
-                class_labels_input=class_labels_input,
-                latent_channels=latent_channels,
-                guidance_scale=float(guidance_scale),
-                seed_base=int(seed) + bi * 10_007 + int(target_step_idx) * 97,
-                mc=int(mc),
-                rm_model=rm_model,
-            )
-            all_hidden.append(hidden_buf["h"])
-            all_reward.append(reward)
+            for s in target_steps:
+                k = str(s)
+                if k not in hidden_buf:
+                    raise RuntimeError(f"Failed to capture hidden at step {s}")
+                if s not in snapshot_x_by_step or s not in snapshot_scheduler_by_step:
+                    raise RuntimeError(f"Failed to snapshot x/scheduler at step {s}")
+                reward = _mc_imagereward_from_snapshot(
+                    pipe=pipe,
+                    x_start=snapshot_x_by_step[s],
+                    prompt=prompt,
+                    start_step_idx=s + 1,
+                    timesteps=timesteps,
+                    scheduler_snapshot=snapshot_scheduler_by_step[s],
+                    class_labels_input=class_labels_input,
+                    latent_channels=latent_channels,
+                    guidance_scale=float(guidance_scale),
+                    seed_base=int(seed) + bi * 10_007 + s * 97,
+                    mc=int(mc),
+                    rm_model=rm_model,
+                )
+                all_hidden[s].append(hidden_buf[k])
+                all_reward[s].append(reward)
             all_seed.extend([batch_seed + i for i in range(batch_n)])
-            del latents, x, cls, cls_null, class_labels_input, snapshot_x, snapshot_scheduler
+            del latents, x, cls, cls_null, class_labels_input, snapshot_x_by_step, snapshot_scheduler_by_step
             gc.collect()
             if device.type == "cuda":
                 torch.cuda.empty_cache()
     finally:
         handle.remove()
 
-    hiddens = torch.cat(all_hidden, dim=0).float()
-    rewards = torch.cat(all_reward, dim=0).float()
     seeds = torch.tensor(all_seed, dtype=torch.long)
-    if hiddens.shape[0] != int(num_samples) or rewards.shape[0] != int(num_samples):
-        raise RuntimeError(f"rows mismatch: hidden={hiddens.shape[0]} reward={rewards.shape[0]} expected={num_samples}")
-
-    out = output_dir / f"class_ir_hs_only_c{class_idx}_n{num_samples}_s{target_step_idx}_l{target_layer_idx}_mc{mc}.pt"
-    torch.save(
-        {
-            "hiddens": hiddens,
-            "reward": rewards,
-            "labels": torch.full((int(num_samples),), int(class_idx), dtype=torch.long),
-            "seed": seeds,
-            "meta": {
-                "class_idx": int(class_idx),
-                "class_name": class_names[int(class_idx)],
-                "prompt": prompt,
-                "num_samples": int(num_samples),
-                "target_step_idx": int(target_step_idx),
-                "target_layer_idx": int(target_layer_idx),
-                "num_inference_steps": int(num_inference_steps),
-                "guidance_scale": float(guidance_scale),
-                "mc": int(mc),
-                "model_name": str(model_name),
-                "dtype": str(dtype),
-                "prob_input": "hidden_only",
+    out_by_step: dict[int, Path] = {}
+    for s in target_steps:
+        hiddens = torch.cat(all_hidden[s], dim=0).float()
+        rewards = torch.cat(all_reward[s], dim=0).float()
+        if hiddens.shape[0] != int(num_samples) or rewards.shape[0] != int(num_samples):
+            raise RuntimeError(f"rows mismatch at step {s}: hidden={hiddens.shape[0]} reward={rewards.shape[0]} expected={num_samples}")
+        out = output_dir / f"class_ir_hs_only_c{class_idx}_n{num_samples}_s{s}_l{target_layer_idx}_mc{mc}.pt"
+        torch.save(
+            {
+                "hiddens": hiddens,
+                "reward": rewards,
+                "labels": torch.full((int(num_samples),), int(class_idx), dtype=torch.long),
+                "seed": seeds,
+                "meta": {
+                    "class_idx": int(class_idx),
+                    "class_name": class_names[int(class_idx)],
+                    "prompt": prompt,
+                    "num_samples": int(num_samples),
+                    "target_step_idx": int(s),
+                    "target_step_indices": target_steps,
+                    "target_layer_idx": int(target_layer_idx),
+                    "num_inference_steps": int(num_inference_steps),
+                    "guidance_scale": float(guidance_scale),
+                    "mc": int(mc),
+                    "model_name": str(model_name),
+                    "dtype": str(dtype),
+                    "prob_input": "hidden_only",
+                },
             },
-        },
-        out,
-    )
-    return out
+            out,
+        )
+        out_by_step[s] = out
+    return out_by_step
 
 
 def train_prob_hidden_only(
@@ -390,9 +398,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--class_idx", type=int, default=256)
     p.add_argument("--num_samples", type=int, default=5000)
     p.add_argument("--collect_batch_size", type=int, default=32)
-    p.add_argument("--num_inference_steps", type=int, default=10)
+    p.add_argument("--num_inference_steps", type=int, default=25)
     p.add_argument("--guidance_scale", type=float, default=1.0)
-    p.add_argument("--target_step_idx", type=int, default=6)
+    p.add_argument("--target_step_indices", type=str, default="1,5,10,15,20,24")
+    p.add_argument("--train_step_idx", type=int, default=24)
     p.add_argument("--target_layer_idx", type=int, default=16)
     p.add_argument("--mc", type=int, default=8)
     p.add_argument("--train_ratio", type=float, default=0.9)
@@ -412,15 +421,18 @@ def main() -> None:
     output_dir = Path(args.output_dir).expanduser().resolve()
     data_dir = output_dir / "data"
     run_dir = output_dir / "train_run"
+    target_steps = tuple(sorted(set(int(x.strip()) for x in str(args.target_step_indices).split(",") if x.strip())))
+    if int(args.train_step_idx) not in target_steps:
+        raise ValueError(f"train_step_idx {args.train_step_idx} must be in target_step_indices={target_steps}")
 
     if str(args.data_pt).strip():
         data_pt = Path(args.data_pt).expanduser().resolve()
     else:
-        data_pt = collect_single_class_data(
+        data_pt_by_step = collect_single_class_data(
             output_dir=data_dir,
             class_idx=int(args.class_idx),
             num_samples=int(args.num_samples),
-            target_step_idx=int(args.target_step_idx),
+            target_step_indices=target_steps,
             target_layer_idx=int(args.target_layer_idx),
             mc=int(args.mc),
             model_name=str(args.model_name),
@@ -430,6 +442,7 @@ def main() -> None:
             guidance_scale=float(args.guidance_scale),
             seed=int(args.seed),
         )
+        data_pt = data_pt_by_step[int(args.train_step_idx)]
 
     result = train_prob_hidden_only(
         data_pt=data_pt,

@@ -165,9 +165,9 @@ def collect_hiddens_and_rewards_for_prompts(
     output_dir: Path,
     clip_model_dir: Path,
     num_samples_per_prompt: int = 8,
-    num_inference_steps: int = 20,
+    num_inference_steps: int = 25,
     guidance_scale: float = 4.5,
-    target_step_idx: int = 10,
+    target_step_indices: tuple[int, ...] = (1, 5, 10, 15, 20, 24),
     target_layer_idx: int = 14,
     mc: int = 4,
     collect_batch_size: int = 4,
@@ -175,7 +175,7 @@ def collect_hiddens_and_rewards_for_prompts(
     width: int = 1024,
     seed: int = 42,
     dtype_name: str = "fp16",
-) -> Path:
+) -> dict[int, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch_dtype = _resolve_dtype(dtype_name, device)
@@ -189,14 +189,18 @@ def collect_hiddens_and_rewards_for_prompts(
     n_blocks = len(pipe.transformer.transformer_blocks)
     if not (0 <= target_layer_idx < n_blocks):
         raise ValueError(f"target_layer_idx must in [0, {n_blocks - 1}]")
-    if not (0 <= target_step_idx < num_inference_steps):
-        raise ValueError(f"target_step_idx must in [0, {num_inference_steps - 1}]")
+    target_steps = sorted(set(int(s) for s in target_step_indices))
+    if not target_steps:
+        raise ValueError("target_step_indices cannot be empty")
+    for s in target_steps:
+        if not (0 <= s < num_inference_steps):
+            raise ValueError(f"target step {s} out of range [0, {num_inference_steps - 1}]")
 
     latent_channels = pipe.transformer.config.in_channels
     latent_size = pipe.transformer.config.sample_size
 
-    all_hidden: list[torch.Tensor] = []
-    all_reward: list[torch.Tensor] = []
+    all_hidden: dict[int, list[torch.Tensor]] = {s: [] for s in target_steps}
+    all_reward: dict[int, list[torch.Tensor]] = {s: [] for s in target_steps}
     all_seed: list[int] = []
     all_prompt_idx: list[int] = []
 
@@ -205,12 +209,12 @@ def collect_hiddens_and_rewards_for_prompts(
     hidden_buf: dict[str, torch.Tensor] = {}
 
     def _hook(_module, _inp, out) -> None:
-        if cur_step["value"] != target_step_idx:
+        if cur_step["value"] not in target_steps:
             return
         h = out[0] if isinstance(out, (tuple, list)) else out
         if do_cfg:
             h = h[: cur_batch["value"]]
-        hidden_buf["h"] = h.mean(dim=1).detach().float().cpu()
+        hidden_buf[str(cur_step["value"])] = h.mean(dim=1).detach().float().cpu()
 
     handle = pipe.transformer.transformer_blocks[target_layer_idx].register_forward_hook(_hook)
     try:
@@ -261,8 +265,8 @@ def collect_hiddens_and_rewards_for_prompts(
                 pipe.scheduler.set_timesteps(int(num_inference_steps), device=device)
                 timesteps = pipe.scheduler.timesteps
 
-                snapshot_latents = None
-                snapshot_scheduler = None
+                snapshot_latents_by_step: dict[int, torch.Tensor] = {}
+                snapshot_scheduler_by_step: dict[int, object] = {}
                 hidden_buf.clear()
 
                 for step_i, t in enumerate(timesteps):
@@ -288,81 +292,84 @@ def collect_hiddens_and_rewards_for_prompts(
                         noise_pred = noise_pred.chunk(2, dim=1)[0]
 
                     latents = pipe.scheduler.step(noise_pred, t, latents, generator=generator, return_dict=False)[0]
-                    if step_i == target_step_idx:
-                        snapshot_latents = latents.detach().clone()
-                        snapshot_scheduler = copy.deepcopy(pipe.scheduler)
+                    if step_i in target_steps:
+                        snapshot_latents_by_step[step_i] = latents.detach().clone()
+                        snapshot_scheduler_by_step[step_i] = copy.deepcopy(pipe.scheduler)
 
-                if "h" not in hidden_buf:
-                    raise RuntimeError(f"Failed to capture hidden at target step {target_step_idx}")
-                if snapshot_latents is None or snapshot_scheduler is None:
-                    raise RuntimeError(f"Failed to snapshot latent/scheduler at target step {target_step_idx}")
-
-                reward = mc_rollout_clipscore(
-                    pipe=pipe,
-                    latents_start=snapshot_latents,
-                    start_step_idx=target_step_idx + 1,
-                    timesteps=timesteps,
-                    scheduler_snapshot=snapshot_scheduler,
-                    prompt_embeds_cfg=prompt_embeds_cfg,
-                    prompt_attention_mask_cfg=prompt_attention_mask_cfg,
-                    added_cond_kwargs=added_cond_kwargs,
-                    guidance_scale=float(guidance_scale),
-                    seed_base=batch_seed + target_step_idx * 13,
-                    mc=int(mc),
-                    prompt=prompt,
-                    clip=clip,
-                    processor=processor,
-                )
-
-                all_hidden.append(hidden_buf["h"])
-                all_reward.append(reward)
+                for s in target_steps:
+                    k = str(s)
+                    if k not in hidden_buf:
+                        raise RuntimeError(f"Failed to capture hidden at target step {s}")
+                    if s not in snapshot_latents_by_step or s not in snapshot_scheduler_by_step:
+                        raise RuntimeError(f"Failed to snapshot latent/scheduler at target step {s}")
+                    reward = mc_rollout_clipscore(
+                        pipe=pipe,
+                        latents_start=snapshot_latents_by_step[s],
+                        start_step_idx=s + 1,
+                        timesteps=timesteps,
+                        scheduler_snapshot=snapshot_scheduler_by_step[s],
+                        prompt_embeds_cfg=prompt_embeds_cfg,
+                        prompt_attention_mask_cfg=prompt_attention_mask_cfg,
+                        added_cond_kwargs=added_cond_kwargs,
+                        guidance_scale=float(guidance_scale),
+                        seed_base=batch_seed + s * 13,
+                        mc=int(mc),
+                        prompt=prompt,
+                        clip=clip,
+                        processor=processor,
+                    )
+                    all_hidden[s].append(hidden_buf[k])
+                    all_reward[s].append(reward)
                 all_seed.extend([batch_seed + i for i in range(batch_n)])
                 all_prompt_idx.extend([prompt_idx] * batch_n)
 
                 del prompt_embeds, prompt_attention_mask, negative_prompt_embeds, negative_prompt_attention_mask
-                del prompt_embeds_cfg, prompt_attention_mask_cfg, latents, snapshot_latents, snapshot_scheduler
+                del prompt_embeds_cfg, prompt_attention_mask_cfg, latents, snapshot_latents_by_step, snapshot_scheduler_by_step
                 gc.collect()
                 if device.type == "cuda":
                     torch.cuda.empty_cache()
     finally:
         handle.remove()
 
-    hiddens = torch.cat(all_hidden, dim=0).float()
-    rewards = torch.cat(all_reward, dim=0).float()
     seeds = torch.tensor(all_seed, dtype=torch.long)
     prompt_indices = torch.tensor(all_prompt_idx, dtype=torch.long)
     expected = int(len(prompts) * int(num_samples_per_prompt))
-    if hiddens.shape[0] != expected or rewards.shape[0] != expected:
-        raise RuntimeError(f"Unexpected rows, hidden={hiddens.shape[0]}, reward={rewards.shape[0]}, expected={expected}")
-
-    out_pt = output_dir / f"pixart_clipscore_hs_reward_{split_name}_p{len(prompts)}_npp{num_samples_per_prompt}.pt"
-    torch.save(
-        {
-            "hiddens": hiddens,
-            "reward": rewards,
-            "seed": seeds,
-            "prompt_indices": prompt_indices,
-            "prompts": prompts,
-            "meta": {
-                "split_name": split_name,
-                "model_path": str(model_path),
-                "negative_prompt": negative_prompt,
-                "clip_model_dir": str(clip_model_dir),
-                "num_prompts": int(len(prompts)),
-                "num_samples_per_prompt": int(num_samples_per_prompt),
-                "num_inference_steps": int(num_inference_steps),
-                "target_step_idx": int(target_step_idx),
-                "target_layer_idx": int(target_layer_idx),
-                "mc": int(mc),
-                "guidance_scale": float(guidance_scale),
-                "height": int(height),
-                "width": int(width),
-                "reward_name": "clipscore",
+    out_by_step: dict[int, Path] = {}
+    for s in target_steps:
+        hiddens = torch.cat(all_hidden[s], dim=0).float()
+        rewards = torch.cat(all_reward[s], dim=0).float()
+        if hiddens.shape[0] != expected or rewards.shape[0] != expected:
+            raise RuntimeError(f"Unexpected rows at step {s}, hidden={hiddens.shape[0]}, reward={rewards.shape[0]}, expected={expected}")
+        out_pt = output_dir / f"pixart_clipscore_hs_reward_{split_name}_p{len(prompts)}_npp{num_samples_per_prompt}_s{s}_l{target_layer_idx}.pt"
+        torch.save(
+            {
+                "hiddens": hiddens,
+                "reward": rewards,
+                "seed": seeds,
+                "prompt_indices": prompt_indices,
+                "prompts": prompts,
+                "meta": {
+                    "split_name": split_name,
+                    "model_path": str(model_path),
+                    "negative_prompt": negative_prompt,
+                    "clip_model_dir": str(clip_model_dir),
+                    "num_prompts": int(len(prompts)),
+                    "num_samples_per_prompt": int(num_samples_per_prompt),
+                    "num_inference_steps": int(num_inference_steps),
+                    "target_step_idx": int(s),
+                    "target_step_indices": target_steps,
+                    "target_layer_idx": int(target_layer_idx),
+                    "mc": int(mc),
+                    "guidance_scale": float(guidance_scale),
+                    "height": int(height),
+                    "width": int(width),
+                    "reward_name": "clipscore",
+                },
             },
-        },
-        out_pt,
-    )
-    return out_pt
+            out_pt,
+        )
+        out_by_step[s] = out_pt
+    return out_by_step
 
 
 def train_prob_pixart_clipscore(
@@ -506,7 +513,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--guidance_scale", type=float, default=4.5)
     p.add_argument("--height", type=int, default=1024)
     p.add_argument("--width", type=int, default=1024)
-    p.add_argument("--target_step_idx", type=int, default=10)
+    p.add_argument("--target_step_indices", type=str, default="1,5,10,15,20,24")
+    p.add_argument("--train_step_idx", type=int, default=24)
     p.add_argument("--target_layer_idx", type=int, default=14)
     p.add_argument("--mc", type=int, default=5)
     p.add_argument("--epochs", type=int, default=200)
@@ -525,6 +533,10 @@ def main() -> None:
     set_seed(int(args.seed))
 
     output_dir = Path(args.output_dir).expanduser().resolve()
+    target_steps = tuple(sorted(set(int(x.strip()) for x in str(args.target_step_indices).split(",") if x.strip())))
+    if int(args.train_step_idx) not in target_steps:
+        raise ValueError(f"train_step_idx {args.train_step_idx} must be in target_step_indices={target_steps}")
+
     data_dir = output_dir / "data"
     run_dir = output_dir / "train_run"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -536,7 +548,7 @@ def main() -> None:
     (output_dir / "train_prompts.json").write_text(json.dumps(train_prompts, ensure_ascii=False, indent=2), encoding="utf-8")
     (output_dir / "val_prompts.json").write_text(json.dumps(val_prompts, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    train_pt = collect_hiddens_and_rewards_for_prompts(
+    train_pt_by_step = collect_hiddens_and_rewards_for_prompts(
         model_path=str(args.model_path),
         prompts=train_prompts,
         split_name="train",
@@ -546,7 +558,7 @@ def main() -> None:
         num_samples_per_prompt=int(args.num_samples_per_prompt),
         num_inference_steps=int(args.num_inference_steps),
         guidance_scale=float(args.guidance_scale),
-        target_step_idx=int(args.target_step_idx),
+        target_step_indices=target_steps,
         target_layer_idx=int(args.target_layer_idx),
         mc=int(args.mc),
         collect_batch_size=int(args.collect_batch_size),
@@ -556,7 +568,7 @@ def main() -> None:
         dtype_name=str(args.dtype),
     )
 
-    val_pt = collect_hiddens_and_rewards_for_prompts(
+    val_pt_by_step = collect_hiddens_and_rewards_for_prompts(
         model_path=str(args.model_path),
         prompts=val_prompts,
         split_name="val",
@@ -566,7 +578,7 @@ def main() -> None:
         num_samples_per_prompt=int(args.num_samples_per_prompt),
         num_inference_steps=int(args.num_inference_steps),
         guidance_scale=float(args.guidance_scale),
-        target_step_idx=int(args.target_step_idx),
+        target_step_indices=target_steps,
         target_layer_idx=int(args.target_layer_idx),
         mc=int(args.mc),
         collect_batch_size=int(args.collect_batch_size),
@@ -575,6 +587,8 @@ def main() -> None:
         seed=int(args.seed) + 777,
         dtype_name=str(args.dtype),
     )
+    train_pt = train_pt_by_step[int(args.train_step_idx)]
+    val_pt = val_pt_by_step[int(args.train_step_idx)]
 
     result = train_prob_pixart_clipscore(
         train_pt=train_pt,
